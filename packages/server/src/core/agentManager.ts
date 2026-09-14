@@ -137,8 +137,17 @@ export class AgentManager {
             text: `_used ${event.description}_`,
             createdAt: new Date().toISOString(),
           });
-        } else if (event.type === "error") {
+        } else if (event.type === "error" && event.message.trim()) {
           hadError = true;
+          this.bus.postMessage({
+            id: nanoid(),
+            channel: "group",
+            authorId: runtime.config.id,
+            authorHandle: runtime.config.handle,
+            mentions: [],
+            text: `error: ${event.message.trim()}`,
+            createdAt: new Date().toISOString(),
+          });
           runtime.status = "error";
           this.emitStatus(agentId);
         }

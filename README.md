@@ -5,9 +5,10 @@ same project at the same time** — Claude Code, Codex CLI, Gemini CLI, Qwen Cod
 you've got — where they can see each other's work, task each other in a shared group chat,
 and you control how much they're allowed to do without asking first.
 
-> Status: **early skeleton (v0.1)**. The Claude Code adapter is real and working; other
-> providers are stubbed with a clear contract to fill in (see [ARCHITECTURE.md](ARCHITECTURE.md)).
-> The goal right now is "one provider works end to end, cleanly" before adding more.
+> Status: **early skeleton (v0.1)**. Claude Code and Codex CLI adapters are real and
+> working; Gemini CLI and Qwen Code are stubbed with a clear contract to fill in (see
+> [ARCHITECTURE.md](ARCHITECTURE.md)). The goal right now is "a couple of providers work
+> end to end, cleanly" before adding more.
 
 ## Why this exists
 
@@ -53,9 +54,10 @@ packages/
 
 Prerequisites:
 - Node.js 20+ and npm
-- At least one provider CLI installed and **already signed in with your subscription**,
-  e.g. [Claude Code](https://code.claude.com/docs/en/headless): `npm install -g @anthropic-ai/claude-code`
-  then `claude` once interactively to log in.
+- At least one provider CLI installed and **already signed in with your subscription**:
+  - Claude Code: `npm install -g @anthropic-ai/claude-code`, then run `claude` once to log in
+  - Codex CLI: `npm install -g @openai/codex`, then run `codex login`
+  - Gemini CLI / Qwen Code: not wired up yet, see roadmap below
 
 ```bash
 git clone https://github.com/Kryhr/solace-agentic-chats.git
@@ -64,23 +66,28 @@ npm install
 npm run dev
 ```
 
-This starts the server on `http://localhost:4310` and the UI on `http://localhost:5173`
-(the UI dev server proxies `/api` and `/ws` to the backend). Every project lives under one
-workspace folder created automatically on first run — `~/Desktop/solace-workspace` by
-default, override with the `SOLACE_WORKSPACE_ROOT` env var. Open the UI, click
-**+ Add agent**, pick an existing project or create a new one right there (no typing paths
-by hand), pick `claude-code` as the provider, and start chatting.
+One command starts both the server (`http://localhost:4310`) and the UI
+(`http://localhost:5173`) in the same terminal. Every project lives under one workspace
+folder created automatically on first run — `~/Desktop/solace-workspace` by default,
+override with the `SOLACE_WORKSPACE_ROOT` env var.
+
+Open the UI: the **Providers** panel in the sidebar shows which CLIs it found installed on
+your machine, with a **Test connection** button that runs a real trivial prompt through
+each one so you can confirm sign-in actually works before adding an agent for it. Then
+click **+ Add agent**, pick an existing project or create a new one right there, choose a
+provider that shows as connected, and start chatting — @mention its handle to give it a
+turn (autocompletes as you type).
 
 ## Roadmap (deliberately not built yet)
 
 Per-project rule: don't add more until the current thing works cleanly. Rough order:
 
-1. Get the Claude Code adapter fully solid (accurate stream-json parsing, per-turn context
-   window management, graceful cancel).
-2. Implement the Codex CLI and Gemini CLI adapters against the same `ProviderAdapter`
-   interface.
-3. Real per-action approval flow (a popup asking "allow `Edit(file.ts)`?" instead of the
+1. Implement the Gemini CLI and Qwen Code adapters against the same `ProviderAdapter`
+   interface used by Claude Code and Codex CLI.
+2. Real per-action approval flow (a popup asking "allow `Edit(file.ts)`?" instead of the
    current allow-listed-tools approximation of trust levels).
+3. Click into an agent hub to see its full turn-by-turn history (including tool calls and
+   reasoning, not just what it posted to the group chat).
 4. Multiple accounts per provider (run N instances of the same CLI under different
    profiles/credentials, load-balance tasks across them).
 5. Slash commands for the group chat (`/task @codex "build the parser"`, `/status`, etc).

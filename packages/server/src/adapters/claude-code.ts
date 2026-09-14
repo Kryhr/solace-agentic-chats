@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
 import * as readline from "node:readline";
 import type { TrustLevel } from "@solace/shared";
+import { spawnCli } from "../core/spawnCli";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 
 /**
@@ -40,8 +40,8 @@ export const claudeCodeAdapter: ProviderAdapter = {
     ];
 
     await new Promise<void>((resolve) => {
-      const child = spawn("claude", args, { cwd, shell: process.platform === "win32" });
-      const rl = readline.createInterface({ input: child.stdout });
+      const child = spawnCli("claude", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+      const rl = readline.createInterface({ input: child.stdout! });
 
       rl.on("line", (line) => {
         if (!line.trim()) return;
@@ -66,11 +66,17 @@ export const claudeCodeAdapter: ProviderAdapter = {
         }
       });
 
-      child.stderr.on("data", (chunk) => {
-        onEvent({ type: "error", message: chunk.toString() });
+      // Claude Code can write informational notices to stderr even on success, so don't
+      // treat stderr output itself as failure - only report it if the process exits non-zero.
+      let stderrBuffer = "";
+      child.stderr!.on("data", (chunk) => {
+        stderrBuffer += chunk.toString();
       });
 
-      child.on("close", () => {
+      child.on("close", (code) => {
+        if (code !== 0 && stderrBuffer.trim()) {
+          onEvent({ type: "error", message: stderrBuffer.trim() });
+        }
         onEvent({ type: "done" });
         resolve();
       });

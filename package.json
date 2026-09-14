@@ -7,10 +7,13 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "npm run dev --workspace=packages/server & npm run dev --workspace=packages/web",
+    "dev": "concurrently -n server,web -c blue,green \"npm:server\" \"npm:web\"",
     "build": "npm run build --workspace=packages/shared && npm run build --workspace=packages/server && npm run build --workspace=packages/web",
     "server": "npm run dev --workspace=packages/server",
     "web": "npm run dev --workspace=packages/web"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
   },
   "license": "MIT"
 }

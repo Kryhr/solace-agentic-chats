@@ -45,6 +45,13 @@ export interface ChatMessage {
   createdAt: string;
 }
 
+export interface ProviderStatus {
+  provider: ProviderId;
+  /** Is the provider's own CLI binary found on PATH at all. */
+  installed: boolean;
+  detail?: string;
+}
+
 export interface PendingApproval {
   id: string;
   agentId: string;

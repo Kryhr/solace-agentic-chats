@@ -1,5 +1,5 @@
 import type { AgentConfig, AgentStatus, TrustLevel } from "@solace/shared";
-import { colorForHandle, initialsForHandle } from "../lib/color";
+import { ProviderIcon } from "./ProviderIcon";
 
 const TRUST_LABELS: Record<TrustLevel, string> = {
   "confirm-all": "Read-only",
@@ -23,14 +23,11 @@ export function AgentCard({
     <div className="agent-card">
       <div className="row">
         <div className="agent-identity">
-          <span className="agent-avatar" style={{ background: colorForHandle(agent.handle) }}>
-            {initialsForHandle(agent.handle)}
-          </span>
+          <ProviderIcon provider={agent.provider} />
           <span className="agent-handle" title={agent.handle}>
             {agent.handle}
           </span>
         </div>
-        <span className="agent-provider">{agent.provider}</span>
       </div>
       <div className="row" style={{ gap: 6 }}>
         <span className={`status-dot status-${state}`} title={state} />

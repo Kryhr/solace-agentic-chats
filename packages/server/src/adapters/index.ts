@@ -1,7 +1,8 @@
 import type { ProviderId } from "@solace/shared";
 import type { ProviderAdapter } from "./types";
 import { claudeCodeAdapter } from "./claude-code";
-import { codexCliAdapter, geminiCliAdapter, qwenCodeAdapter } from "./stubs";
+import { codexCliAdapter } from "./codex-cli";
+import { geminiCliAdapter, qwenCodeAdapter } from "./stubs";
 
 const adapters: Record<Exclude<ProviderId, "custom">, ProviderAdapter> = {
   "claude-code": claudeCodeAdapter,

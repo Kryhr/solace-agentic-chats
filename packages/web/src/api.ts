@@ -1,4 +1,4 @@
-import type { AgentConfig, AgentStatus, ChatMessage, ServerEvent } from "@solace/shared";
+import type { AgentConfig, AgentStatus, ChatMessage, ProviderId, ProviderStatus, ServerEvent } from "@solace/shared";
 
 export interface ProjectInfo {
   name: string;
@@ -42,6 +42,14 @@ export async function updateAgent(id: string, patch: Partial<Pick<AgentConfig, "
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   });
+}
+
+export async function fetchProviderStatuses(): Promise<ProviderStatus[]> {
+  return fetch("/api/providers/status").then((r) => r.json());
+}
+
+export async function testProviderConnection(provider: ProviderId): Promise<{ ok: boolean; message: string }> {
+  return fetch(`/api/providers/${provider}/test`, { method: "POST" }).then((r) => r.json());
 }
 
 export async function sendChatMessage(text: string): Promise<void> {

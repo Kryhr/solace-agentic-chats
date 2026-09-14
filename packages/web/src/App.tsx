@@ -4,6 +4,7 @@ import { connectSocket, createAgent, fetchAgents, fetchHistory, sendChatMessage,
 import { AgentCard } from "./components/AgentCard";
 import { AddAgentModal } from "./components/AddAgentModal";
 import { ChatPanel } from "./components/ChatPanel";
+import { ProvidersPanel } from "./components/ProvidersPanel";
 
 export default function App() {
   const [agents, setAgents] = useState<AgentConfig[]>([]);
@@ -53,8 +54,10 @@ export default function App() {
         <button className="add-agent-btn" onClick={() => setShowAddAgent(true)}>
           + Add agent
         </button>
+        <div className="sidebar-section-label">Providers</div>
+        <ProvidersPanel />
       </aside>
-      <ChatPanel history={history} onSend={(text) => void sendChatMessage(text)} />
+      <ChatPanel history={history} agents={agents} onSend={(text) => void sendChatMessage(text)} />
       {showAddAgent && (
         <AddAgentModal
           onClose={() => setShowAddAgent(false)}

@@ -6,6 +6,8 @@ import type { AgentConfig, ServerEvent } from "@solace/shared";
 import { ChatBus } from "./core/chatBus";
 import { AgentManager } from "./core/agentManager";
 import { WORKSPACE_ROOT, createProject, ensureWorkspaceRoot, listProjects } from "./core/workspace";
+import { checkAllProviders, testProvider } from "./core/providerStatus";
+import type { ProviderId } from "@solace/shared";
 
 const PORT = Number(process.env.PORT ?? 4310);
 
@@ -62,6 +64,12 @@ async function main() {
   app.delete<{ Params: { id: string } }>("/api/agents/:id", async (req) => {
     agents.removeAgent(req.params.id);
     return { ok: true };
+  });
+
+  app.get("/api/providers/status", async () => checkAllProviders());
+
+  app.post<{ Params: { provider: ProviderId } }>("/api/providers/:provider/test", async (req) => {
+    return testProvider(req.params.provider, WORKSPACE_ROOT);
   });
 
   app.get("/api/chat/history", async () => bus.getHistory());
