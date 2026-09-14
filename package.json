@@ -1,0 +1,16 @@
+{
+  "name": "solace-agentic-chats",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Local-first hub where multiple AI coding agents (Claude, Codex, Gemini, Qwen, ...) work on the same project and can talk to each other.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=packages/server & npm run dev --workspace=packages/web",
+    "build": "npm run build --workspace=packages/shared && npm run build --workspace=packages/server && npm run build --workspace=packages/web",
+    "server": "npm run dev --workspace=packages/server",
+    "web": "npm run dev --workspace=packages/web"
+  },
+  "license": "MIT"
+}

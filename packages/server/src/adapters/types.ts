@@ -1,0 +1,30 @@
+import type { ProviderId, TrustLevel } from "@solace/shared";
+
+export type AdapterEvent =
+  | { type: "text"; text: string }
+  | { type: "tool-use"; description: string }
+  | { type: "done" }
+  | { type: "error"; message: string };
+
+export interface RunTurnOptions {
+  cwd: string;
+  /** The prompt for this turn: the triggering chat message, plus any context the caller wants included. */
+  prompt: string;
+  trustLevel: TrustLevel;
+  onEvent: (event: AdapterEvent) => void;
+}
+
+/**
+ * One ProviderAdapter = one CLI coding agent (Claude Code, Codex CLI, Gemini CLI, ...).
+ *
+ * To add a new provider: implement runTurn() by spawning that CLI's non-interactive/headless
+ * mode, translate its output into AdapterEvents, and register it in adapters/index.ts.
+ * Auth is intentionally NOT handled here — every supported CLI already has its own
+ * `<cli> login` / subscription sign-in flow; we just shell out to whatever is already
+ * authenticated in the user's environment. That's what makes "sign in with your subscription,
+ * not just an API key" work for free.
+ */
+export interface ProviderAdapter {
+  id: ProviderId;
+  runTurn(options: RunTurnOptions): Promise<void>;
+}
