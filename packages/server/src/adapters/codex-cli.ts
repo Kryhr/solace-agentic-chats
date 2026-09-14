@@ -21,7 +21,7 @@ function sandboxFlagsForTrustLevel(trustLevel: TrustLevel): string[] {
 
 export const codexCliAdapter: ProviderAdapter = {
   id: "codex-cli",
-  async runTurn({ cwd, prompt, trustLevel, onEvent }: RunTurnOptions): Promise<void> {
+  async runTurn({ cwd, prompt, trustLevel, onEvent, signal }: RunTurnOptions): Promise<void> {
     const args = [
       "exec",
       "--json",
@@ -37,6 +37,12 @@ export const codexCliAdapter: ProviderAdapter = {
       const rl = readline.createInterface({ input: child.stdout! });
 
       let reportedError = false;
+      let timedOut = false;
+      const onAbort = () => {
+        timedOut = true;
+        child.kill();
+      };
+      signal?.addEventListener("abort", onAbort);
 
       rl.on("line", (line) => {
         if (!line.trim()) return;
@@ -75,7 +81,10 @@ export const codexCliAdapter: ProviderAdapter = {
       });
 
       child.on("close", (code) => {
-        if (code !== 0 && !reportedError && stderrBuffer.trim()) {
+        signal?.removeEventListener("abort", onAbort);
+        if (timedOut) {
+          onEvent({ type: "error", message: "turn cancelled: exceeded the maximum turn duration" });
+        } else if (code !== 0 && !reportedError && stderrBuffer.trim()) {
           onEvent({ type: "error", message: stderrBuffer.trim() });
         }
         onEvent({ type: "done" });
@@ -83,6 +92,7 @@ export const codexCliAdapter: ProviderAdapter = {
       });
 
       child.on("error", (err) => {
+        signal?.removeEventListener("abort", onAbort);
         onEvent({ type: "error", message: `failed to start codex CLI: ${err.message}` });
         onEvent({ type: "done" });
         resolve();

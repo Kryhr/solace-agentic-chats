@@ -10,6 +10,13 @@ export class ChatBus {
   private history: ChatMessage[] = [];
   private listeners = new Set<Listener>();
 
+  /** Set by index.ts to persist state after every new message. */
+  onChange: (() => void) | null = null;
+
+  constructor(initialHistory: ChatMessage[] = []) {
+    this.history = initialHistory;
+  }
+
   getHistory(): ChatMessage[] {
     return this.history;
   }
@@ -26,6 +33,7 @@ export class ChatBus {
   postMessage(message: ChatMessage) {
     this.history.push(message);
     this.emit({ type: "chat:message", payload: message });
+    this.onChange?.();
   }
 
   emitEvent(event: ServerEvent) {

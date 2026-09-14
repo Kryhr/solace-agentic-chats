@@ -7,6 +7,7 @@ import { ChatBus } from "./core/chatBus";
 import { AgentManager } from "./core/agentManager";
 import { WORKSPACE_ROOT, createProject, ensureWorkspaceRoot, listProjects } from "./core/workspace";
 import { checkAllProviders, testProvider } from "./core/providerStatus";
+import { debounce, loadState, saveState } from "./core/persistence";
 import type { ProviderId } from "@solace/shared";
 
 const PORT = Number(process.env.PORT ?? 4310);
@@ -18,8 +19,13 @@ async function main() {
   await app.register(cors, { origin: true });
   await app.register(websocketPlugin);
 
-  const bus = new ChatBus();
-  const agents = new AgentManager(bus);
+  const persisted = loadState(WORKSPACE_ROOT);
+  const bus = new ChatBus(persisted.history);
+  const agents = new AgentManager(bus, persisted.agents);
+
+  const persist = debounce(() => saveState(WORKSPACE_ROOT, { agents: agents.listAgents(), history: bus.getHistory() }), 300);
+  bus.onChange = persist;
+  agents.onChange = persist;
 
   app.get("/api/projects", async () => ({ root: WORKSPACE_ROOT, projects: listProjects() }));
 

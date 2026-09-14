@@ -100,16 +100,10 @@ export function ChatPanel({
           const text = isToolUse(m.text) ? m.text.slice(6, -1) : m.text;
           return (
             <div key={m.id} className={`message-row ${isUser ? "from-user" : ""}`}>
-              {isUser ? (
-                <span className="user-avatar">you</span>
-              ) : author ? (
-                <ProviderIcon provider={author.provider} />
-              ) : (
-                <span className="user-avatar">?</span>
-              )}
+              {!isUser && (author ? <ProviderIcon provider={author.provider} /> : <span className="user-avatar">?</span>)}
               <div className="message">
                 <div className="meta">
-                  <span>{m.authorHandle}</span>
+                  <span className="meta-author">{m.authorHandle}</span>
                   <span>·</span>
                   <span>{formatTime(m.createdAt)}</span>
                   {m.mentions.map((h) => (

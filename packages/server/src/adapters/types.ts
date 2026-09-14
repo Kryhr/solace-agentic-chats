@@ -12,6 +12,8 @@ export interface RunTurnOptions {
   prompt: string;
   trustLevel: TrustLevel;
   onEvent: (event: AdapterEvent) => void;
+  /** Aborting kills the underlying CLI process - used to enforce a max turn duration. */
+  signal?: AbortSignal;
 }
 
 /**

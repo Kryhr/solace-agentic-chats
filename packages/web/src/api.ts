@@ -62,11 +62,49 @@ export async function sendChatMessage(text: string): Promise<void> {
 
 type Hello = { type: "hello"; history: ChatMessage[]; agents: AgentConfig[]; statuses: AgentStatus[] };
 
-export function connectSocket(onEvent: (event: ServerEvent | Hello) => void): () => void {
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  const socket = new WebSocket(`${proto}://${location.host}/ws`);
-  socket.onmessage = (msg) => {
-    onEvent(JSON.parse(msg.data));
+/**
+ * A dropped connection (server restart, laptop sleep, network blip) used to just go silent
+ * forever - the UI looked "connected" but never received another update again. This reconnects
+ * with backoff and re-requests a fresh "hello" snapshot every time, so the client is never
+ * stuck showing stale state.
+ */
+export function connectSocket(
+  onEvent: (event: ServerEvent | Hello) => void,
+  onConnectionChange?: (connected: boolean) => void,
+): () => void {
+  let socket: WebSocket | null = null;
+  let stopped = false;
+  let retryDelay = 1000;
+  let retryHandle: ReturnType<typeof setTimeout> | null = null;
+
+  const connect = () => {
+    if (stopped) return;
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    socket = new WebSocket(`${proto}://${location.host}/ws`);
+
+    socket.onopen = () => {
+      retryDelay = 1000;
+      onConnectionChange?.(true);
+    };
+    socket.onmessage = (msg) => {
+      onEvent(JSON.parse(msg.data));
+    };
+    socket.onclose = () => {
+      onConnectionChange?.(false);
+      if (stopped) return;
+      retryHandle = setTimeout(connect, retryDelay);
+      retryDelay = Math.min(retryDelay * 2, 15000);
+    };
+    socket.onerror = () => {
+      socket?.close();
+    };
   };
-  return () => socket.close();
+
+  connect();
+
+  return () => {
+    stopped = true;
+    if (retryHandle) clearTimeout(retryHandle);
+    socket?.close();
+  };
 }

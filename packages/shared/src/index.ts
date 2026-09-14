@@ -63,6 +63,9 @@ export interface PendingApproval {
 // WebSocket event envelope shared between server and web.
 export type ServerEvent =
   | { type: "agent:status"; payload: AgentStatus }
+  | { type: "agent:added"; payload: AgentConfig }
+  | { type: "agent:updated"; payload: AgentConfig }
+  | { type: "agent:removed"; payload: { agentId: string } }
   | { type: "chat:message"; payload: ChatMessage }
   | { type: "approval:requested"; payload: PendingApproval }
   | { type: "approval:resolved"; payload: { id: string; approved: boolean } };

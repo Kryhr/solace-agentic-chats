@@ -79,6 +79,21 @@ body {
   grid-template-columns: 288px 1fr;
   height: 100%;
   min-width: 0;
+  position: relative;
+}
+
+.reconnect-banner {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  background: var(--warn);
+  color: var(--gray-950);
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 5px 14px;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
 }
 
 .sidebar {
@@ -197,6 +212,7 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-transform: capitalize;
 }
 
 .agent-provider {
@@ -280,16 +296,18 @@ body {
   font-size: 0.8125rem;
   font-weight: 500;
   flex: 1;
+  text-transform: capitalize;
 }
 
-.install-dot {
+.connection-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   flex-shrink: 0;
 }
-.install-dot.yes { background: var(--ok); }
-.install-dot.no { background: var(--text-faint); }
+.connection-dot.unknown { background: var(--text-faint); }
+.connection-dot.ok { background: var(--ok); }
+.connection-dot.fail { background: var(--danger); }
 
 .provider-hint {
   font-size: 0.6875rem;
@@ -375,7 +393,6 @@ body {
 }
 .message-row.from-user {
   align-self: flex-end;
-  flex-direction: row-reverse;
 }
 
 .message {
@@ -401,9 +418,15 @@ body {
   font-family: var(--font-mono);
 }
 
+.message .meta-author {
+  text-transform: capitalize;
+  color: var(--text-muted);
+}
+
 .message .mention {
   color: var(--accent-strong);
   font-weight: 600;
+  text-transform: capitalize;
 }
 
 .message .body {
@@ -459,6 +482,7 @@ body {
   border-radius: var(--radius-sm);
   cursor: pointer;
   text-align: left;
+  text-transform: capitalize;
 }
 .mention-option:hover,
 .mention-option.active {

@@ -11,6 +11,11 @@ interface AgentRuntime {
   queue: string[];
 }
 
+/** Large open-ended asks (e.g. "build a whole site") can legitimately take a while, but a
+ * turn must eventually end so a genuinely stuck CLI doesn't leave an agent stuck "thinking"
+ * forever with no feedback. */
+const MAX_TURN_MS = 15 * 60 * 1000;
+
 /**
  * Owns the set of configured agents and routes group-chat turns to them.
  *
@@ -23,22 +28,38 @@ interface AgentRuntime {
 export class AgentManager {
   private agents = new Map<string, AgentRuntime>();
 
-  constructor(private bus: ChatBus) {}
+  /** Set by index.ts to persist state after every agent add/update/remove. */
+  onChange: (() => void) | null = null;
+
+  constructor(
+    private bus: ChatBus,
+    initialAgents: AgentConfig[] = [],
+  ) {
+    for (const config of initialAgents) {
+      this.agents.set(config.id, { config, status: "idle", busy: false, queue: [] });
+    }
+  }
 
   addAgent(config: AgentConfig) {
     this.agents.set(config.id, { config, status: "idle", busy: false, queue: [] });
+    this.bus.emitEvent({ type: "agent:added", payload: config });
     this.emitStatus(config.id);
+    this.onChange?.();
   }
 
   removeAgent(id: string) {
     this.agents.delete(id);
+    this.bus.emitEvent({ type: "agent:removed", payload: { agentId: id } });
+    this.onChange?.();
   }
 
   updateAgent(id: string, patch: Partial<Pick<AgentConfig, "trustLevel" | "currentTask">>) {
     const runtime = this.agents.get(id);
     if (!runtime) return;
     Object.assign(runtime.config, patch);
+    this.bus.emitEvent({ type: "agent:updated", payload: runtime.config });
     this.emitStatus(id);
+    this.onChange?.();
   }
 
   listAgents(): AgentConfig[] {
@@ -112,10 +133,13 @@ export class AgentManager {
 
     let hadError = false;
     const adapter = getAdapter(runtime.config.provider);
+    const controller = new AbortController();
+    const turnTimeout = setTimeout(() => controller.abort(), MAX_TURN_MS);
     await adapter.runTurn({
       cwd: runtime.config.cwd,
       prompt,
       trustLevel: runtime.config.trustLevel,
+      signal: controller.signal,
       onEvent: (event) => {
         if (event.type === "text" && event.text.trim()) {
           this.bus.postMessage({
@@ -153,6 +177,7 @@ export class AgentManager {
         }
       },
     });
+    clearTimeout(turnTimeout);
 
     runtime.busy = false;
     runtime.status = hadError ? "error" : "idle";

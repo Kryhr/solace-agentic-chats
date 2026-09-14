@@ -29,7 +29,7 @@ function flagsForTrustLevel(trustLevel: TrustLevel): string[] {
 
 export const claudeCodeAdapter: ProviderAdapter = {
   id: "claude-code",
-  async runTurn({ cwd, prompt, trustLevel, onEvent }: RunTurnOptions): Promise<void> {
+  async runTurn({ cwd, prompt, trustLevel, onEvent, signal }: RunTurnOptions): Promise<void> {
     const args = [
       "-p",
       prompt,
@@ -42,6 +42,13 @@ export const claudeCodeAdapter: ProviderAdapter = {
     await new Promise<void>((resolve) => {
       const child = spawnCli("claude", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
       const rl = readline.createInterface({ input: child.stdout! });
+
+      let timedOut = false;
+      const onAbort = () => {
+        timedOut = true;
+        child.kill();
+      };
+      signal?.addEventListener("abort", onAbort);
 
       rl.on("line", (line) => {
         if (!line.trim()) return;
@@ -74,7 +81,10 @@ export const claudeCodeAdapter: ProviderAdapter = {
       });
 
       child.on("close", (code) => {
-        if (code !== 0 && stderrBuffer.trim()) {
+        signal?.removeEventListener("abort", onAbort);
+        if (timedOut) {
+          onEvent({ type: "error", message: "turn cancelled: exceeded the maximum turn duration" });
+        } else if (code !== 0 && stderrBuffer.trim()) {
           onEvent({ type: "error", message: stderrBuffer.trim() });
         }
         onEvent({ type: "done" });
@@ -82,6 +92,7 @@ export const claudeCodeAdapter: ProviderAdapter = {
       });
 
       child.on("error", (err) => {
+        signal?.removeEventListener("abort", onAbort);
         onEvent({ type: "error", message: `failed to start claude CLI: ${err.message}` });
         onEvent({ type: "done" });
         resolve();
