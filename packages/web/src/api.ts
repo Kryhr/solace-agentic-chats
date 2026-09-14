@@ -1,7 +1,27 @@
 import type { AgentConfig, AgentStatus, ChatMessage, ServerEvent } from "@solace/shared";
 
+export interface ProjectInfo {
+  name: string;
+  path: string;
+}
+
 export async function fetchAgents(): Promise<AgentConfig[]> {
   return fetch("/api/agents").then((r) => r.json());
+}
+
+export async function fetchProjects(): Promise<{ root: string; projects: ProjectInfo[] }> {
+  return fetch("/api/projects").then((r) => r.json());
+}
+
+export async function createProject(name: string): Promise<ProjectInfo> {
+  const res = await fetch("/api/projects", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? "Failed to create project");
+  return data;
 }
 
 export async function fetchHistory(): Promise<ChatMessage[]> {

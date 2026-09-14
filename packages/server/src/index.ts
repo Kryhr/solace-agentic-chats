@@ -5,16 +5,32 @@ import { nanoid } from "nanoid";
 import type { AgentConfig, ServerEvent } from "@solace/shared";
 import { ChatBus } from "./core/chatBus";
 import { AgentManager } from "./core/agentManager";
+import { WORKSPACE_ROOT, createProject, ensureWorkspaceRoot, listProjects } from "./core/workspace";
 
 const PORT = Number(process.env.PORT ?? 4310);
 
 async function main() {
+  ensureWorkspaceRoot();
+
   const app = Fastify({ logger: true });
   await app.register(cors, { origin: true });
   await app.register(websocketPlugin);
 
   const bus = new ChatBus();
   const agents = new AgentManager(bus);
+
+  app.get("/api/projects", async () => ({ root: WORKSPACE_ROOT, projects: listProjects() }));
+
+  app.post<{ Body: { name: string } }>("/api/projects", async (req, reply) => {
+    try {
+      const project = createProject(req.body.name);
+      reply.code(201);
+      return project;
+    } catch (err) {
+      reply.code(400);
+      return { error: (err as Error).message };
+    }
+  });
 
   // Every connected browser tab gets a live feed of chat + status events.
   app.get("/ws", { websocket: true }, (socket) => {
@@ -57,6 +73,7 @@ async function main() {
 
   await app.listen({ port: PORT, host: "0.0.0.0" });
   app.log.info(`solace-agentic-chats server listening on http://localhost:${PORT}`);
+  app.log.info(`workspace root: ${WORKSPACE_ROOT}`);
 }
 
 main().catch((err) => {

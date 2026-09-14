@@ -65,9 +65,11 @@ npm run dev
 ```
 
 This starts the server on `http://localhost:4310` and the UI on `http://localhost:5173`
-(the UI dev server proxies `/api` and `/ws` to the backend). Open the UI, click
-**+ Add agent**, point it at a project folder on disk, pick `claude-code` as the provider,
-and start chatting.
+(the UI dev server proxies `/api` and `/ws` to the backend). Every project lives under one
+workspace folder created automatically on first run — `~/Desktop/solace-workspace` by
+default, override with the `SOLACE_WORKSPACE_ROOT` env var. Open the UI, click
+**+ Add agent**, pick an existing project or create a new one right there (no typing paths
+by hand), pick `claude-code` as the provider, and start chatting.
 
 ## Roadmap (deliberately not built yet)
 
