@@ -1,12 +1,14 @@
 import { useState } from "react";
-import type { AgentConfig } from "@solace/shared";
+import { isChatChannel, type AgentConfig } from "@solace/shared";
 import type { ChatArchive } from "../api";
 
 function formatChannel(archive: ChatArchive, agentsById: Record<string, AgentConfig>): string {
-  // Prefer the label captured at archive time (survives the agent later being removed);
-  // only fall back to a live lookup for archives saved before that field existed.
+  // Prefer the label captured at archive time (survives the agent, or the chat, later being
+  // removed); only fall back to a live lookup for archives saved before that field existed.
   if (archive.channelLabel) return archive.channelLabel;
-  if (archive.channel === "group") return "Group chat";
+  // A pre-chats archive of the one group chat - its channel migrated to { chatId: "group" }
+  // but it never carried a label, and "Group chat" is what it was actually called.
+  if (isChatChannel(archive.channel)) return "Group chat";
   const agent = agentsById[archive.channel.agentId];
   return agent ? `${agent.handle}'s hub` : "an agent's hub";
 }

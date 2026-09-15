@@ -4,6 +4,7 @@ import websocketPlugin from "@fastify/websocket";
 import { nanoid } from "nanoid";
 import type { AgentConfig, ServerEvent } from "@solace/shared";
 import { ChatBus } from "./core/chatBus";
+import { ChatStore } from "./core/chatStore";
 import { AgentManager } from "./core/agentManager";
 import { WORKSPACE_ROOT, createProject, ensureWorkspaceRoot, listProjects } from "./core/workspace";
 import { checkAllProviders, testProvider } from "./core/providerStatus";
@@ -57,7 +58,16 @@ async function main() {
   const bus = new ChatBus(persisted.history);
   const approvals = new ApprovalRegistry();
   const archive = new ArchiveStore(persisted.archives);
-  const agents = new AgentManager(bus, persisted.agents, approvals, persisted.queues, persisted.sessions, persisted.rateLimits);
+  const chats = new ChatStore(persisted.chats, persisted.projects);
+  const agents = new AgentManager(
+    bus,
+    chats,
+    persisted.agents,
+    approvals,
+    persisted.queues,
+    persisted.sessions,
+    persisted.rateLimits,
+  );
 
   const persist = debounce(
     () =>
@@ -68,13 +78,29 @@ async function main() {
         queues: agents.getPersistableQueues(),
         sessions: agents.getPersistableSessions(),
         rateLimits: agents.listRateLimits(),
+        chats: chats.listChats(),
+        projects: chats.listProjects(),
       }),
     300,
   );
   bus.onChange = persist;
   agents.onChange = persist;
+  chats.onChange = () => {
+    persist();
+    // Every tab shows the same sidebar, so a chat created or renamed in one has to appear in
+    // the others without a reload - this is the only event that carries that roster.
+    bus.emitEvent({ type: "chats:updated", payload: { chats: chats.listChats(), projects: chats.listProjects() } });
+  };
 
-  app.get("/api/projects", async () => ({ root: WORKSPACE_ROOT, projects: listProjects() }));
+  // `projects` is every directory under the workspace root (what the Add-agent modal picks a
+  // cwd from); `linked` is the subset the user has actually adopted as a Solace project. The
+  // two are deliberately different lists: a folder existing is not the same as the user having
+  // said "this is a project of mine".
+  app.get("/api/projects", async () => ({
+    root: WORKSPACE_ROOT,
+    projects: listProjects(),
+    linked: chats.listProjects(),
+  }));
 
   app.post<{ Body: { name: string } }>("/api/projects", async (req, reply) => {
     try {
@@ -87,14 +113,92 @@ async function main() {
     }
   });
 
+  /** Adopt a directory as a project, creating it if it isn't there yet. See ChatStore.linkProject. */
+  app.post<{ Body: { name: string } }>("/api/projects/link", async (req, reply) => {
+    try {
+      const project = chats.linkProject(String(req.body?.name ?? ""));
+      reply.code(201);
+      return project;
+    } catch (err) {
+      reply.code(400);
+      return { error: (err as Error).message };
+    }
+  });
+
+  /**
+   * Unlink a project. This deletes NOTHING on disk - not the folder, not a file in it - and the
+   * chats filed under it simply become unfiled. The UI says so in as many words before asking.
+   */
+  app.delete<{ Params: { id: string } }>("/api/projects/:id", async (req, reply) => {
+    const removed = chats.unlinkProject(req.params.id);
+    if (!removed) {
+      reply.code(404);
+      return { error: "project not found" };
+    }
+    return { ok: true, path: removed.path };
+  });
+
+  app.get("/api/chats", async () => ({ chats: chats.listChats(), projects: chats.listProjects() }));
+
+  app.post<{ Body: { title?: string; projectId?: string } }>("/api/chats", async (req, reply) => {
+    const chat = chats.createChat(req.body?.title, req.body?.projectId);
+    reply.code(201);
+    return chat;
+  });
+
+  app.patch<{ Params: { id: string }; Body: { title?: string; projectId?: string | null } }>(
+    "/api/chats/:id",
+    async (req, reply) => {
+      if (!chats.updateChat(req.params.id, req.body ?? {})) {
+        reply.code(404);
+        return { error: "chat not found" };
+      }
+      return { ok: true };
+    },
+  );
+
+  /**
+   * Archive-then-remove, the same shape /clear and agent removal already use: the transcript
+   * moves to Saved chats with the title it had at this moment, and only the room itself goes
+   * away. Nothing here can lose a message.
+   */
+  app.delete<{ Params: { id: string } }>("/api/chats/:id", async (req, reply) => {
+    const chat = chats.getChat(req.params.id);
+    if (!chat) {
+      reply.code(404);
+      return { error: "chat not found" };
+    }
+    const channel = { chatId: chat.id };
+    const removed = bus.clearChannel(channel);
+    archive.add(channel, removed, chat.title);
+    chats.removeChat(chat.id);
+    return { ok: true };
+  });
+
+  app.get<{ Params: { id: string } }>("/api/chats/:id/history", async (req) => bus.getHistoryFor({ chatId: req.params.id }));
+
+  app.post<{ Params: { id: string }; Body: { text: string } }>("/api/chats/:id/messages", async (req, reply) => {
+    const chat = chats.getChat(req.params.id);
+    if (!chat) {
+      reply.code(404);
+      return { error: "chat not found" };
+    }
+    const channel = { chatId: chat.id };
+    const handled = await tryHandleCommand(req.body.text, { channel, agents, bus, chats, archive });
+    if (!handled) agents.submitMessage(chat.id, "user", "you", req.body.text);
+    return { ok: true };
+  });
+
   // Every connected browser tab gets a live feed of chat + status events.
   app.get("/ws", { websocket: true }, (socket) => {
-    // Group channel only - a client fetches an agent's direct history on demand when it opens
-    // that agent's hub (fetchAgentDirectHistory), same as the initial REST fetch below.
+    // Rosters only - no transcript. With many chats, shipping every one of them on connect
+    // would send the whole history file to a tab that will open exactly one; the client fetches
+    // the chat it opens, the same way it already fetches an agent hub's history on demand.
     socket.send(
       JSON.stringify({
         type: "hello",
-        history: bus.getHistoryFor("group"),
+        chats: chats.listChats(),
+        projects: chats.listProjects(),
         agents: agents.listAgents(),
         statuses: agents.listStatuses(),
         rateLimits: agents.listRateLimits(),
@@ -184,23 +288,14 @@ async function main() {
     return testProvider(req.params.provider, WORKSPACE_ROOT);
   });
 
-  // Group channel only - direct per-agent history is served by /api/agents/:id/chat below.
-  app.get("/api/chat/history", async () => bus.getHistoryFor("group"));
-
-  app.post<{ Body: { text: string } }>("/api/chat", async (req) => {
-    const handled = await tryHandleCommand(req.body.text, { channel: "group", agents, bus, archive });
-    if (!handled) agents.submitMessage("user", "you", req.body.text);
-    return { ok: true };
-  });
-
-  // Direct 1:1 channel with a single agent, separate from the shared group chat.
+  // Direct 1:1 channel with a single agent, separate from any chat.
   app.get<{ Params: { id: string } }>("/api/agents/:id/chat", async (req) => {
     return bus.getHistoryFor({ agentId: req.params.id });
   });
 
   app.post<{ Params: { id: string }; Body: { text: string } }>("/api/agents/:id/chat", async (req) => {
     const channel = { agentId: req.params.id };
-    const handled = await tryHandleCommand(req.body.text, { channel, agents, bus, archive });
+    const handled = await tryHandleCommand(req.body.text, { channel, agents, bus, chats, archive });
     if (!handled) agents.submitDirectMessage(req.params.id, req.body.text);
     return { ok: true };
   });

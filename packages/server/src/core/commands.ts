@@ -1,7 +1,8 @@
 import { nanoid } from "nanoid";
-import type { ChatChannel } from "@solace/shared";
+import { isChatChannel, type ChatChannel } from "@solace/shared";
 import type { AgentManager } from "./agentManager";
 import type { ChatBus } from "./chatBus";
+import type { ChatStore } from "./chatStore";
 import type { ArchiveStore } from "./archiveStore";
 import { checkGithubAuth } from "./github";
 import { listCredentials, listSshCredentials } from "./credentials";
@@ -12,6 +13,7 @@ export interface CommandContext {
   channel: ChatChannel;
   agents: AgentManager;
   bus: ChatBus;
+  chats: ChatStore;
   archive: ArchiveStore;
 }
 
@@ -97,16 +99,17 @@ function deployPrompt(target: SshCredentialMeta, instruction: string): string {
   return lines.join("\n");
 }
 
-/** The name this channel is filed under in Saved chats, resolved once at archive time. */
+/** The name this channel is filed under in Saved chats, resolved once at archive time - so a
+ * chat that is later renamed or deleted still shows what it was called when it was saved. */
 function channelLabel(ctx: CommandContext): string {
-  if (ctx.channel === "group") return "Group chat";
+  if (isChatChannel(ctx.channel)) return ctx.chats.chatLabel(ctx.channel.chatId);
   const agentId = ctx.channel.agentId;
   return `${ctx.agents.listAgents().find((a) => a.id === agentId)?.handle ?? "an agent"}'s hub`;
 }
 
-/** Only meaningful inside one agent's own hub channel - group chat has no single "current agent". */
+/** Only meaningful inside one agent's own hub channel - a chat has no single "current agent". */
 function requireAgentChannel(channel: ChatChannel): string | undefined {
-  return channel === "group" ? undefined : channel.agentId;
+  return isChatChannel(channel) ? undefined : channel.agentId;
 }
 
 /**
@@ -225,7 +228,7 @@ export async function tryHandleCommand(text: string, ctx: CommandContext): Promi
     case "reset": {
       const agentId = requireAgentChannel(ctx.channel);
       if (!agentId) {
-        post(ctx.bus, ctx.channel, "/reset only works from an agent's own hub, not the group chat");
+        post(ctx.bus, ctx.channel, "/reset only works from an agent's own hub, not a chat");
         return true;
       }
       const had = ctx.agents.resetSession(agentId);
@@ -243,7 +246,7 @@ export async function tryHandleCommand(text: string, ctx: CommandContext): Promi
     case "effort": {
       const agentId = requireAgentChannel(ctx.channel);
       if (!agentId) {
-        post(ctx.bus, ctx.channel, `/${name} only works from an agent's own hub, not the group chat`);
+        post(ctx.bus, ctx.channel, `/${name} only works from an agent's own hub, not a chat`);
         return true;
       }
       if (!argText) {
@@ -317,7 +320,7 @@ export async function tryHandleCommand(text: string, ctx: CommandContext): Promi
         const repoName = subArgs.join(" ").trim();
         const agentId = requireAgentChannel(ctx.channel);
         if (!agentId) {
-          post(ctx.bus, ctx.channel, "/github init only works from an agent's own hub, not the group chat");
+          post(ctx.bus, ctx.channel, "/github init only works from an agent's own hub, not a chat");
           return true;
         }
         if (!repoName) {

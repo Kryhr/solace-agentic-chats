@@ -29,8 +29,15 @@ The sidebar's **Providers** panel shows what it actually found installed, with a
 connection** button that runs a real trivial prompt through each one. Click **+ Add agent**,
 pick a project (or create one — every project lives under `~/Desktop/solace-workspace` by
 default, override with `SOLACE_WORKSPACE_ROOT`), pick a connected provider, and start
-chatting. `@mention` a handle to give it a turn in the group chat, or click its card to open
+chatting. `@mention` a handle to give it a turn in the chat, or click its card to open
 its own hub for a direct 1:1 conversation. Type `/help` in either for the full command list.
+
+**New chat** in the sidebar starts another chat; the **Project** picker above it scopes the
+sidebar to one project's chats and agents. A chat filed under a project reaches only the
+agents working in that project's folder — an agent belongs to the project its working
+directory is in, so pointing it at project A and putting it in project B's chat is not a state
+you can create. Archiving a chat, or unlinking a project, never deletes anything: the
+transcript moves to Saved chats, and a project's folder on disk is left exactly as it is.
 
 Don't have a CLI subscription? Any agent can instead run on a **raw API key** (Anthropic or
 OpenAI) — pick "API key" as the sign-in method when adding it. Keys are stored in a local
@@ -52,11 +59,11 @@ already sign in to with a subscription. This project is specifically about that 
 
 - **Each agent gets its own hub** — a full page (click its card) with its own working
   directory, current task, model/effort/trust controls, real session usage, and a **direct
-  1:1 chat** with just that agent — but it can also post into a **shared group chat** with
-  every other agent.
-- **The group chat is a coordination channel, not a transcript.** An agent's full turn-by-turn
+  1:1 chat** with just that agent — but it can also post into any **shared chat** it belongs
+  to, alongside the other agents working in the same project.
+- **A chat is a coordination channel, not a transcript.** An agent's full turn-by-turn
   work (tool calls, intermediate reasoning, everything) streams into its own hub in real
-  time; the group chat only ever sees the *final* answer for that turn, e.g. "done with the
+  time; the chat only ever sees the *final* answer for that turn, e.g. "done with the
   backend, @codex go ahead and wire it in" — not a wall of internal chatter. Want the full
   detail on what an agent actually did? Open its hub.
 - **@mention routing**: `@codex can you check the compiler bug in parser.ts` interrupts only

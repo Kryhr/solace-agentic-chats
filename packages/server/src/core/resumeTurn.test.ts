@@ -16,7 +16,7 @@ function turn(id: string, kind: QueuedTurn["kind"], at: number, prompt = id): Qu
   return {
     id,
     prompt,
-    replyChannel: "group",
+    replyChannel: { chatId: "c1" },
     mentionChainDepth: 0,
     kind,
     receivedAt: new Date(1_700_000_000_000 + at).toISOString(),

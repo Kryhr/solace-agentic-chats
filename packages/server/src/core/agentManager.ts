@@ -1,17 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { nanoid } from "nanoid";
-import type {
-  AgentConfig,
-  AgentRunState,
-  AgentStatus,
-  ChatChannel,
-  ChatMessage,
-  ProviderRateLimit,
-  ToolCallSummary,
-  TurnUsage,
+import {
+  isChatChannel,
+  type AgentConfig,
+  type AgentRunState,
+  type AgentStatus,
+  type ChatChannel,
+  type ChatMessage,
+  type ProviderRateLimit,
+  type ToolCallSummary,
+  type TurnUsage,
 } from "@solace/shared";
 import { getAdapter } from "../adapters";
 import { ChatBus } from "./chatBus";
+import type { ChatStore } from "./chatStore";
 import { parseMentions } from "./mentions";
 import { RateLimitStore } from "./rateLimits";
 import type { ApprovalRegistry } from "./approvalRegistry";
@@ -39,7 +41,7 @@ export interface QueuedTurn {
    * operator. This is what makes a reply land back with whoever actually asked: requiring an
    * agent to re-@mention someone who just addressed it directly is not how a conversation
    * works, and in practice they don't - one agent wrote "Claude, one audit item..." with no
-   * "@", so the reply reached nobody and the thread died silently. See routeGroupMessage. */
+   * "@", so the reply reached nobody and the thread died silently. See routeChatMessage. */
   addressedBy?: { id: string; handle: string };
   /** Set on the single cold retry allowed after a stale-session failure, so that retry can
    * never itself trigger another one. See looksLikeStaleSession. */
@@ -164,7 +166,7 @@ export const MAX_TURN_MS = 15 * 60 * 1000;
  * cap at all, it has no natural stopping point either. */
 const MAX_MENTION_CHAIN_DEPTH = 6;
 
-/** How an agent says "I'm done, don't hand this back to me" - see routeGroupMessage. Matched
+/** How an agent says "I'm done, don't hand this back to me" - see routeChatMessage. Matched
  * anywhere in the reply (agents reliably put it on its own last line, but pinning it to the
  * very end would make a single trailing period silently disable the off-ramp). */
 const END_THREAD_MARKER = /\[no-reply\]/i;
@@ -412,7 +414,9 @@ function addUsage(total: TurnUsage, delta: TurnUsage): TurnUsage {
  * and in each agent's own direct channel (see ARCHITECTURE.md#group-chat-routing and
  * #agent-hub-direct-chat).
  *
- * Routing rule for the group channel (see routeGroupMessage):
+ * Routing rule inside one chat (see routeChatMessage). Every rule below applies within that
+ * chat only: a chat filed under a project reaches just the agents whose cwd is in that
+ * project's directory, so "everyone" never means an agent that cannot do this work.
  *   - A human message with @mentions only triggers a turn for the mentioned agent(s).
  *   - A human message with no @mentions triggers every agent - each gets its own turn and
  *     decides for itself whether it's relevant to them.
@@ -438,6 +442,10 @@ export class AgentManager {
 
   constructor(
     private bus: ChatBus,
+    /** Which chats exist, and which agents each one reaches - see ChatStore.agentsForChat.
+     * Routing needs this: a message in a project's chat must not summon an agent whose cwd is
+     * some other project's directory. */
+    private chats: ChatStore,
     initialAgents: AgentConfig[] = [],
     private approvals?: ApprovalRegistry,
     initialQueues: PersistedAgentQueue[] = [],
@@ -721,10 +729,13 @@ export class AgentManager {
     this.bus.emitEvent({ type: "agent:status", payload: this.statusFor(runtime) });
   }
 
-  /** Human operator posts a message into the shared group chat. No @mention reaches every
-   * other agent (each gets its own turn); an @mention reaches only the mentioned agent(s). */
-  submitMessage(authorId: string, authorHandle: string, text: string) {
-    this.routeGroupMessage(authorId, authorHandle, text, { broadcastIfUnmentioned: true, mentionChainDepth: 0 });
+  /** Human operator posts a message into one chat. No @mention reaches every agent in that chat
+   * (each gets its own turn); an @mention reaches only the mentioned agent(s). */
+  submitMessage(chatId: string, authorId: string, authorHandle: string, text: string) {
+    this.routeChatMessage(chatId, authorId, authorHandle, text, {
+      broadcastIfUnmentioned: true,
+      mentionChainDepth: 0,
+    });
   }
 
   /**
@@ -740,7 +751,8 @@ export class AgentManager {
    * cascade into everyone replying to everyone forever. Only an explicit @mention can trigger
    * another agent from an agent-authored message.
    */
-  private routeGroupMessage(
+  private routeChatMessage(
+    chatId: string,
     authorId: string,
     authorHandle: string,
     text: string,
@@ -757,15 +769,31 @@ export class AgentManager {
       declaredKind?: IncomingKind;
     },
   ) {
-    const knownHandles = [...this.agents.values()].map((a) => a.config.handle);
-    const mentions = parseMentions(text, knownHandles);
+    // The chat can be deleted while a turn is still running. Posting into it anyway would write
+    // a message keyed to a room nothing can open. Nothing is lost by returning here: every line
+    // of a chat turn is already mirrored into the agent's own hub as it is produced.
+    if (!this.chats.getChat(chatId)) return;
+    const channel: ChatChannel = { chatId };
+    // Only the agents this chat actually reaches can be @mentioned in it. Parsing against the
+    // full roster instead would let "@claude" in one project's chat resolve to an agent whose
+    // cwd is a different project - it would read and edit the wrong files, confidently.
+    const members = this.chats.agentsForChat(chatId, this.listAgents());
+    const memberIds = new Set(members.map((a) => a.id));
+    const mentions = parseMentions(text, members.map((a) => a.handle));
+    // An @mention that names a real agent this chat cannot reach is the one case where silence
+    // is actively misleading: with no mentions parsed, an unaddressed human message broadcasts,
+    // so "@codex do this" would be answered by everyone EXCEPT codex. Say so instead.
+    const unreachable = parseMentions(
+      text,
+      this.listAgents().filter((a) => !memberIds.has(a.id)).map((a) => a.handle),
+    );
     // The end-of-thread marker is routing metadata, not something the human should have to
     // read - strip it from what gets displayed, but keep the raw text for the check below.
     const scrubbedIncoming = scrubSecrets(text);
     if (scrubbedIncoming.redacted) {
       this.bus.postMessage({
         id: nanoid(),
-        channel: "group",
+        channel,
         authorId: "system",
         authorHandle: "system",
         mentions: [],
@@ -779,7 +807,7 @@ export class AgentManager {
 
     const message: ChatMessage = {
       id: nanoid(),
-      channel: "group",
+      channel,
       authorId,
       authorHandle,
       mentions,
@@ -793,6 +821,24 @@ export class AgentManager {
       agentKind: authorId === "user" ? undefined : "answer",
     };
     this.bus.postMessage(message);
+
+    if (unreachable.length > 0) {
+      const chatName = this.chats.chatLabel(chatId);
+      this.bus.postMessage({
+        id: nanoid(),
+        channel,
+        authorId: "system",
+        authorHandle: "system",
+        mentions: [],
+        systemKind: "verification",
+        text:
+          `${unreachable.map((h) => `@${h}`).join(", ")} ${unreachable.length === 1 ? "is" : "are"} not in "${chatName}" - ` +
+          `an agent belongs to the project its working directory is in, and ${unreachable.length === 1 ? "that one's" : "those"} ` +
+          `is elsewhere. Nothing was sent to ${unreachable.length === 1 ? "it" : "them"}.`,
+        createdAt: new Date().toISOString(),
+      });
+      return;
+    }
 
     // Who this message actually reaches. An explicit @mention is still the way to pull in
     // someone new, but an agent answering the agent that just addressed it doesn't have to
@@ -815,7 +861,7 @@ export class AgentManager {
       if (opts.mentionChainDepth === MAX_MENTION_CHAIN_DEPTH + 1) {
         this.bus.postMessage({
           id: nanoid(),
-          channel: "group",
+          channel,
           authorId: "system",
           authorHandle: "system",
           mentions: [],
@@ -829,10 +875,11 @@ export class AgentManager {
     const isAgentAuthor = this.agents.has(authorId);
     for (const runtime of this.agents.values()) {
       if (runtime.config.id === authorId) continue; // an agent doesn't reply to itself
+      if (!memberIds.has(runtime.config.id)) continue; // works in a different project's directory
       // targets empty here means an unaddressed *human* message (the broadcast case above) -
-      // everyone gets a turn and decides relevance for themselves.
+      // everyone in this chat gets a turn and decides relevance for themselves.
       if (targets.length > 0 && !targets.includes(runtime.config.handle)) continue;
-      this.enqueueTurn(runtime.config.id, this.buildGroupPrompt(authorHandle, displayText, runtime.config.id), "group", {
+      this.enqueueTurn(runtime.config.id, this.buildGroupPrompt(chatId, authorHandle, displayText, runtime.config.id), channel, {
         mentionChainDepth: opts.mentionChainDepth + 1,
         addressedBy: isAgentAuthor ? { id: authorId, handle: authorHandle } : undefined,
         // An agent that declared what it was sending is believed; everything else (every human
@@ -851,7 +898,7 @@ export class AgentManager {
    * that announced "now I'll message the group with the direction I'm taking" had no mechanism
    * to do so at all.
    *
-   * Deliberately delegates to routeGroupMessage rather than posting directly: mention parsing,
+   * Deliberately delegates to routeChatMessage rather than posting directly: mention parsing,
    * the [no-reply] off-ramp, the chain-depth cap and the reply-to-whoever-addressed-you rule
    * all already live there, and a second, parallel copy of that logic is exactly how an agent's
    * "@codex, thoughts?" once ended up as inert text that reached nobody.
@@ -865,7 +912,7 @@ export class AgentManager {
     token: unknown,
     text: string,
     kind?: "question" | "work" | "fyi",
-  ): { ok: true } | { ok: false; reason: "no-turn" | "capped" | "empty"; error: string } {
+  ): { ok: true } | { ok: false; reason: "no-turn" | "capped" | "empty" | "no-chat"; error: string } {
     if (!this.verifyTurnToken(agentId, token)) {
       return { ok: false, reason: "no-turn", error: "no matching in-flight turn" };
     }
@@ -874,6 +921,18 @@ export class AgentManager {
     if (!turn) return { ok: false, reason: "no-turn", error: "no matching in-flight turn" };
     const trimmed = typeof text === "string" ? text.trim() : "";
     if (!trimmed) return { ok: false, reason: "empty", error: "message text was empty" };
+
+    // The chat this turn is running for. A turn started from the agent's own hub has no chat of
+    // its own, and this tool still has to reach somewhere the user will actually look - see
+    // ChatStore.defaultChatIdFor for why that fallback is deterministic rather than "whichever
+    // chat is open". With no chats at all there is genuinely nowhere to post, and saying so is
+    // better than dropping the message and letting the agent believe it was delivered.
+    const chatId = isChatChannel(turn.replyChannel)
+      ? turn.replyChannel.chatId
+      : this.chats.defaultChatIdFor(runtime.config);
+    if (!chatId) {
+      return { ok: false, reason: "no-chat", error: "there are no chats to post into - the user has not created one" };
+    }
 
     const posts = (turn.midTurnPosts ??= []);
     if (posts.length >= MAX_MID_TURN_POSTS) {
@@ -888,12 +947,12 @@ export class AgentManager {
     posts.push(trimmed);
 
     // "work"/"fyi" are statements, not questions, so they must not automatically bounce a turn
-    // back to whoever addressed this agent - that reply path is what routeGroupMessage's
+    // back to whoever addressed this agent - that reply path is what routeChatMessage's
     // [no-reply] marker exists to opt out of. An explicit @mention in the text still always
     // goes through, because that is a deliberate act.
     const routed = kind === "question" || END_THREAD_MARKER.test(trimmed) ? trimmed : `${trimmed}\n\n[no-reply]`;
 
-    this.routeGroupMessage(agentId, runtime.config.handle, routed, {
+    this.routeChatMessage(chatId, agentId, runtime.config.handle, routed, {
       broadcastIfUnmentioned: false,
       mentionChainDepth: turn.mentionChainDepth + 1,
       model: runtime.lastResolvedModel ?? runtime.config.model,
@@ -928,10 +987,13 @@ export class AgentManager {
    * versions of the same page. This prepends real, currently-known data (the same roster
    * `/status` already reports) rather than assuming an agent will infer it from context alone.
    */
-  private buildGroupPrompt(fromHandle: string, text: string, forAgentId: string): string {
+  private buildGroupPrompt(chatId: string, fromHandle: string, text: string, forAgentId: string): string {
     const runtime = this.agents.get(forAgentId);
     const self = runtime?.config;
-    const others = [...this.agents.values()].map((a) => a.config).filter((a) => a.id !== forAgentId);
+    // The roster is the agents in THIS chat, not every agent configured in the app. Listing
+    // someone an @mention here cannot actually reach would invite exactly the handoff that
+    // silently goes nowhere.
+    const others = this.chats.agentsForChat(chatId, this.listAgents()).filter((a) => a.id !== forAgentId);
     if (!self) {
       return `[group chat message from ${fromHandle}]: ${text}`;
     }
@@ -1188,7 +1250,8 @@ export class AgentManager {
     let hadError = false;
     let cancelled = false;
     let lastText = "";
-    const isGroupTurn = replyChannel === "group";
+    const chatTurnId = isChatChannel(replyChannel) ? replyChannel.chatId : undefined;
+    const isGroupTurn = chatTurnId !== undefined;
     const ownChannel: ChatChannel = { agentId: runtime.config.id };
     // The id of the last "progress" message posted to the agent's own channel this turn. Once
     // the turn genuinely completes it is promoted to "answer" - see the promotion block at the
@@ -1470,13 +1533,13 @@ export class AgentManager {
       lastText.trim().length > 0 &&
       (turn.midTurnPosts ?? []).some((p) => normalizeForDuplicateCheck(p) === normalizeForDuplicateCheck(lastText));
 
-    if (isGroupTurn && lastText.trim() && !hadError && !alreadyPostedMidTurn && !wasInterrupted) {
+    if (chatTurnId && lastText.trim() && !hadError && !alreadyPostedMidTurn && !wasInterrupted) {
       // Route the agent's own final answer through the same mention-parsing/triggering logic
-      // as a human message - see routeGroupMessage's doc comment for why this matters. Guard
+      // as a human message - see routeChatMessage's doc comment for why this matters. Guard
       // against the agent having been removed while this turn was running, same reasoning as
       // the post() closure above.
       if (this.agents.has(runtime.config.id)) {
-        this.routeGroupMessage(runtime.config.id, runtime.config.handle, lastText.trim(), {
+        this.routeChatMessage(chatTurnId, runtime.config.id, runtime.config.handle, lastText.trim(), {
           broadcastIfUnmentioned: false,
           mentionChainDepth: mentionChainDepth + 1,
           model: runtime.lastResolvedModel ?? runtime.config.model,

@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useRef } from "react";
-import type { AgentConfig, AgentStatus, ChatMessage, ProviderModelInfo, ProviderRateLimit } from "@solace/shared";
+import type {
+  AgentConfig,
+  AgentStatus,
+  ChatMessage,
+  ChatMeta,
+  ProjectMeta,
+  ProviderModelInfo,
+  ProviderRateLimit,
+} from "@solace/shared";
 import { ProviderIcon, UserAvatar } from "./ProviderIcon";
 import { Composer } from "./Composer";
 import { ThinkingIndicator } from "./ThinkingIndicator";
@@ -11,20 +19,28 @@ function formatTime(iso: string): string {
 }
 
 export function ChatPanel({
+  chat,
+  project,
   history,
   agents,
   statuses,
   modelCatalog,
   rateLimits,
   connected,
+  onNewChat,
   onSend,
 }: {
+  /** Undefined when there is no chat at all - every one has been archived. */
+  chat: ChatMeta | undefined;
+  /** The project this chat is filed under, if any. */
+  project: ProjectMeta | undefined;
   history: ChatMessage[];
   agents: AgentConfig[];
   statuses: Record<string, AgentStatus>;
   modelCatalog: ProviderModelInfo[];
   rateLimits: ProviderRateLimit[];
   connected: boolean;
+  onNewChat: () => void;
   onSend: (text: string) => Promise<void>;
 }) {
   const historyRef = useRef<HTMLDivElement>(null);
@@ -52,6 +68,28 @@ export function ChatPanel({
 
   const shouldAnimate = trackEntrance(history.map((m) => m.id));
 
+  // Every chat can be archived, and the app must still say something useful when they all have
+  // been - an empty transcript with a live composer pointed at nothing would be a dead end.
+  if (!chat) {
+    return (
+      <div className="chat">
+        <div className="chat-history">
+          <div className="chat-empty">
+            <div className="chat-empty-title">No chats</div>
+            <div className="chat-empty-body">
+              Every chat has been archived. Their transcripts are still in Saved chats.
+              <div className="chat-empty-action">
+                <button className="btn-primary" onClick={onNewChat}>
+                  New chat
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="chat">
       {/* The group view had no header at all while the hub had one, so the two halves of the
@@ -59,10 +97,20 @@ export function ChatPanel({
           action. Mirrors .hub-page-header's structure so both read as the same page chrome. */}
       <div className="hub-page-header chat-header">
         <div className="hub-page-identity">
-          <h2>Group chat</h2>
+          <h2>{chat.title}</h2>
           <span className="hub-subtitle">
+            {/* Named before the agent count, because which project a chat is filed under is what
+                decides which agents it reaches at all. */}
+            {project && (
+              <>
+                {project.name}
+                <span className="sep">·</span>
+              </>
+            )}
             {agents.length === 0
-              ? "no agents yet"
+              ? project
+                ? "no agents in this project"
+                : "no agents yet"
               : `${agents.length} agent${agents.length === 1 ? "" : "s"}`}
             {thinkingAgents.length > 0 && (
               <>
@@ -89,10 +137,17 @@ export function ChatPanel({
       <div className="chat-history" ref={historyRef} onScroll={onHistoryScroll}>
         {history.length === 0 && (
           <div className="chat-empty">
-            <div className="chat-empty-title">{agents.length === 0 ? "No agents yet" : "Nothing sent yet"}</div>
+            <div className="chat-empty-title">{agents.length === 0 ? "No agents here" : "Nothing sent yet"}</div>
             <div className="chat-empty-body">
               {agents.length === 0 ? (
-                <>Add an agent from the sidebar to start a shared session. Every agent you add joins this group chat.</>
+                project ? (
+                  <>
+                    This chat is filed under <strong>{project.name}</strong>, so it reaches only agents working in that
+                    folder. Add one pointed at <code>{project.path}</code>.
+                  </>
+                ) : (
+                  <>Add an agent from the sidebar to start a shared session. This chat is unfiled, so every agent joins it.</>
+                )
               ) : (
                 <>
                   Type <kbd>@</kbd> to direct a message at one agent, or <kbd>/</kbd> for commands. Plain messages go to
@@ -164,8 +219,8 @@ export function ChatPanel({
       </div>
 
       <Composer
-        placeholder={connected ? "Message the group…" : "Reconnecting…"}
-        ariaLabel="Message the group chat"
+        placeholder={connected ? `Message ${chat.title}…` : "Reconnecting…"}
+        ariaLabel={`Message ${chat.title}`}
         mentionAgents={agents}
         usage={{ rateLimits, providersInUse: [...new Set(agents.map((a) => a.provider))] }}
         onSend={onSend}

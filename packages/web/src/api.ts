@@ -1,7 +1,10 @@
 import type {
   AgentConfig,
   AgentStatus,
+  ChatChannel,
   ChatMessage,
+  ChatMeta,
+  ProjectMeta,
   CredentialMeta,
   CredentialReveal,
   LocalServerFinding,
@@ -24,8 +27,57 @@ export async function fetchAgents(): Promise<AgentConfig[]> {
   return fetch("/api/agents").then((r) => r.json());
 }
 
-export async function fetchProjects(): Promise<{ root: string; projects: ProjectInfo[] }> {
+export async function fetchProjects(): Promise<{ root: string; projects: ProjectInfo[]; linked: ProjectMeta[] }> {
   return fetch("/api/projects").then((r) => r.json());
+}
+
+/** Adopt a directory as a project, creating it if it doesn't exist yet. */
+export async function linkProject(name: string): Promise<ProjectMeta> {
+  const res = await fetch("/api/projects/link", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? "Failed to add project");
+  return data;
+}
+
+/** Unlinks only. The server never touches the folder - see the server route's comment. */
+export async function unlinkProject(id: string): Promise<void> {
+  await fetch(`/api/projects/${id}`, { method: "DELETE" });
+}
+
+export async function fetchChats(): Promise<{ chats: ChatMeta[]; projects: ProjectMeta[] }> {
+  return fetch("/api/chats").then((r) => r.json());
+}
+
+export async function createChat(title?: string, projectId?: string): Promise<ChatMeta> {
+  const res = await fetch("/api/chats", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title, projectId }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? "Failed to create chat");
+  return data;
+}
+
+export async function updateChat(id: string, patch: { title?: string; projectId?: string | null }): Promise<void> {
+  await fetch(`/api/chats/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+}
+
+/** Archives the transcript into Saved chats, then removes the room - nothing is destroyed. */
+export async function deleteChat(id: string): Promise<void> {
+  await fetch(`/api/chats/${id}`, { method: "DELETE" });
+}
+
+export async function fetchChatHistory(chatId: string): Promise<ChatMessage[]> {
+  return fetch(`/api/chats/${chatId}/history`).then((r) => r.json());
 }
 
 export async function createProject(name: string): Promise<ProjectInfo> {
@@ -37,10 +89,6 @@ export async function createProject(name: string): Promise<ProjectInfo> {
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? "Failed to create project");
   return data;
-}
-
-export async function fetchHistory(): Promise<ChatMessage[]> {
-  return fetch("/api/chat/history").then((r) => r.json());
 }
 
 export async function createAgent(config: Omit<AgentConfig, "id">): Promise<AgentConfig> {
@@ -80,7 +128,7 @@ export async function fetchAgentDirectHistory(agentId: string): Promise<ChatMess
 
 export interface ChatArchive {
   id: string;
-  channel: "group" | { agentId: string };
+  channel: ChatChannel;
   clearedAt: string;
   messages: ChatMessage[];
   /** Captured server-side at archive time so the label survives the agent later being
@@ -293,8 +341,8 @@ export async function importSkillsRepo(repoUrl: string): Promise<SkillInfo[]> {
   return data.skills;
 }
 
-export async function sendChatMessage(text: string): Promise<void> {
-  const res = await fetch("/api/chat", {
+export async function sendChatMessage(chatId: string, text: string): Promise<void> {
+  const res = await fetch(`/api/chats/${chatId}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text }),
@@ -304,7 +352,10 @@ export async function sendChatMessage(text: string): Promise<void> {
 
 type Hello = {
   type: "hello";
-  history: ChatMessage[];
+  /** Rosters only - a tab fetches the transcript of the one chat it opens (fetchChatHistory),
+   * the same way it already fetches an agent hub's history on demand. */
+  chats: ChatMeta[];
+  projects: ProjectMeta[];
   agents: AgentConfig[];
   statuses: AgentStatus[];
   /** Latest real rate-limit observation per provider, so a reconnecting tab shows the meter

@@ -380,7 +380,48 @@ export interface ProviderPermissionInfo {
   availableModes: TrustLevel[];
 }
 
-export type ChatChannel = "group" | { agentId: string };
+/**
+ * A chat room. There used to be exactly one, addressed by the literal string "group", and the
+ * only way to "start a new one" was /clear - which archived and emptied the single room you
+ * already had. A chat is now a real entity with an id, so there can be many.
+ *
+ * LEGACY_CHAT_ID is the id the one pre-existing group chat migrates onto. It is the literal
+ * old channel string on purpose: the migration is then `"group"` -> `{ chatId: "group" }`,
+ * which is both trivially correct and idempotent - running it twice changes nothing, because
+ * a channel that is already an object is left alone.
+ */
+export interface ChatMeta {
+  id: string;
+  title: string;
+  createdAt: string;
+  /** ProjectMeta.id this chat is filed under. Absent = unfiled, which reaches every agent. */
+  projectId?: string;
+}
+
+export const LEGACY_CHAT_ID = "group";
+
+/**
+ * A project is a directory under WORKSPACE_ROOT (see server/core/workspace.ts) that the user
+ * has adopted into Solace. `path` is the real folder; nothing in this app ever deletes it.
+ *
+ * Note there is deliberately no `agentIds` here. An agent already has a `cwd`, which is the
+ * directory its CLI genuinely runs in - a second, independently-editable "which project is this
+ * agent in" field could disagree with it, and then one of the two would be lying. Membership is
+ * derived from cwd instead, so it cannot drift. See server/core/chatStore.ts#agentInProject.
+ */
+export interface ProjectMeta {
+  id: string;
+  name: string;
+  path: string;
+  createdAt: string;
+}
+
+export type ChatChannel = { chatId: string } | { agentId: string };
+
+/** Narrowing helper, because `"chatId" in channel` reads badly at every one of its call sites. */
+export function isChatChannel(channel: ChatChannel): channel is { chatId: string } {
+  return "chatId" in channel;
+}
 
 /**
  * What an agent message actually is.
@@ -479,4 +520,8 @@ export type ServerEvent =
   | { type: "usage:rate-limit"; payload: ProviderRateLimit }
   /** A chat was copied into Saved chats without being cleared, so the archives list has
    * changed even though no channel was emptied. */
-  | { type: "archive:saved"; payload: { channel: ChatChannel } };
+  | { type: "archive:saved"; payload: { channel: ChatChannel } }
+  /** The whole chat + project roster, re-sent as one payload on every change rather than as
+   * added/renamed/removed deltas. There are tens of these, not thousands, and a single
+   * authoritative list is the one shape a second browser tab cannot apply out of order. */
+  | { type: "chats:updated"; payload: { chats: ChatMeta[]; projects: ProjectMeta[] } };

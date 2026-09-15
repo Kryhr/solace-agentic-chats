@@ -1,8 +1,11 @@
-import type { ChatChannel, ChatMessage, ServerEvent } from "@solace/shared";
+import { isChatChannel, type ChatChannel, type ChatMessage, type ServerEvent } from "@solace/shared";
 
 function sameChannel(a: ChatChannel, b: ChatChannel): boolean {
-  if (a === "group" || b === "group") return a === b;
-  return a.agentId === b.agentId;
+  // A chat id and an agent id are both opaque nanoids, so comparing them without first checking
+  // the channel's kind would let a chat and an agent that happened to share an id read each
+  // other's transcripts.
+  if (isChatChannel(a)) return isChatChannel(b) && a.chatId === b.chatId;
+  return !isChatChannel(b) && a.agentId === b.agentId;
 }
 
 type Listener = (event: ServerEvent) => void;

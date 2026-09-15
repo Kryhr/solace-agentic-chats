@@ -36,16 +36,38 @@ packages/web        React UI: sidebar of agent hubs, one shared chat panel
 packages/shared     types both sides import (AgentConfig, ChatMessage, ServerEvent, ...)
 ```
 
-## Group chat routing
+## Chats and projects
 
-Implemented in `AgentManager.submitMessage()`:
+A **chat** is a room with an id, a title and optionally a project (`ChatMeta`). There used to
+be exactly one, addressed by the literal channel string `"group"`; `ChatChannel` is now
+`{ chatId } | { agentId }`, and a state file written before that migrates its whole `"group"`
+history into one chat titled "Group chat" (`migrateChatChannels`, `core/persistence.ts`).
+
+A **project** is a directory under `WORKSPACE_ROOT` the user has adopted (`ProjectMeta`).
+Adopting one goes through `core/workspace.ts`'s `createProject`, the same code path the
+Add-agent modal uses. Unlinking a project removes the link and unfiles its chats; it never
+touches the folder.
+
+**An agent belongs to the project its `cwd` is inside** — there is no separate field. An agent
+already has a working directory, which is where its CLI genuinely runs; a second, independently
+editable "which project is this agent in" could disagree with it, and one of the two would then
+be lying. Membership is derived (`ChatStore.agentInProject`), so it cannot drift.
+
+## Chat routing
+
+Implemented in `AgentManager.submitMessage()` -> `routeChatMessage()`, per chat. An unfiled chat
+reaches every agent; a chat filed under a project reaches only the agents working in that
+project's directory (`ChatStore.agentsForChat`). Within that set:
 
 - A message with `@handle` mentions gives **only** those agents a turn right now. Every
   other agent keeps running whatever it was doing.
 - A message with no mentions is appended to the shared history and broadcast to every
   connected UI client, but does **not** interrupt any agent. The next time an agent *is*
   given a turn (because someone mentioned it), the prompt sent to its CLI includes recent
-  group chat history, so it has the context even though it wasn't actively watching.
+  chat history, so it has the context even though it wasn't actively watching.
+- An `@handle` naming a real agent this chat cannot reach summons nobody and posts a system
+  notice saying so. Silently dropping it would turn the message into an unaddressed one, which
+  then broadcasts — so "@codex do this" would be answered by everyone except codex.
 - Each agent has its own FIFO queue (`AgentRuntime.queue`) so if it gets mentioned again
   while mid-turn, the new prompt waits instead of racing the current one.
 
