@@ -4,6 +4,17 @@ import type { AgentConfig, ChatMessage } from "@solace/shared";
 import type { ChatArchive } from "./archiveStore";
 import type { PersistedAgentQueue } from "./agentManager";
 
+/** One agent's provider-side session. Keyed with cwd and provider as well as the id, because a
+ * session belongs to a working directory and a CLI - if the agent is repointed or switched, the
+ * stored id is meaningless and resuming it would drop the agent into an unrelated conversation. */
+export interface PersistedAgentSession {
+  agentId: string;
+  provider: string;
+  cwd: string;
+  sessionId: string;
+  updatedAt: string;
+}
+
 export interface PersistedState {
   agents: AgentConfig[];
   history: ChatMessage[];
@@ -12,9 +23,13 @@ export interface PersistedState {
    * see AgentManager's constructor/getPersistableQueues(). Optional only because state saved
    * before this field existed won't have it. */
   queues: PersistedAgentQueue[];
+  /** Each agent's provider-side conversation id, so agents keep their own memory across a
+   * server restart rather than silently starting cold. Optional on load: state files written
+   * before this existed simply have no sessions. */
+  sessions: PersistedAgentSession[];
 }
 
-const EMPTY_STATE: PersistedState = { agents: [], history: [], archives: [], queues: [] };
+const EMPTY_STATE: PersistedState = { agents: [], history: [], archives: [], queues: [], sessions: [] };
 
 function statePath(workspaceRoot: string): string {
   return join(workspaceRoot, ".solace-state.json");
@@ -51,6 +66,7 @@ export function loadState(workspaceRoot: string): PersistedState {
       history: Array.isArray(parsed.history) ? parsed.history : [],
       archives: Array.isArray(parsed.archives) ? parsed.archives : [],
       queues: Array.isArray(parsed.queues) ? parsed.queues : [],
+      sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
     };
   } catch {
     return EMPTY_STATE;

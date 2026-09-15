@@ -20,6 +20,7 @@ const HELP_TEXT = [
   "/clear - archive this channel's history (nothing is deleted - see Saved chats)",
   "/model <value> - (from an agent's own hub) switch its model",
   "/effort <value> - (from an agent's own hub) switch its thinking effort",
+  "/reset - (from an agent's own hub) forget its session so the next turn starts fresh",
   "/help - show this list",
 ].join("\n");
 
@@ -102,6 +103,23 @@ export async function tryHandleCommand(text: string, ctx: CommandContext): Promi
           ? "Group chat"
           : `${ctx.agents.listAgents().find((a) => a.id === channel.agentId)?.handle ?? "an agent"}'s hub`;
       ctx.archive.add(ctx.channel, removed, label);
+      return true;
+    }
+
+    case "reset": {
+      const agentId = requireAgentChannel(ctx.channel);
+      if (!agentId) {
+        post(ctx.bus, ctx.channel, "/reset only works from an agent's own hub, not the group chat");
+        return true;
+      }
+      const had = ctx.agents.resetSession(agentId);
+      post(
+        ctx.bus,
+        ctx.channel,
+        had
+          ? "Session cleared - the next turn starts fresh, with no memory of earlier turns."
+          : "This agent has no session yet, so its next turn already starts fresh.",
+      );
       return true;
     }
 

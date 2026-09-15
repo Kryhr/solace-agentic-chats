@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import * as readline from "node:readline";
 import { join } from "node:path";
 import type { TrustLevel } from "@solace/shared";
@@ -38,7 +39,7 @@ function flagsForTrustLevel(trustLevel: TrustLevel): string[] {
 
 export const claudeCodeAdapter: ProviderAdapter = {
   id: "claude-code",
-  async runTurn({ cwd, prompt, trustLevel, model, effort, agentId, turnToken, onEvent, signal }: RunTurnOptions): Promise<void> {
+  async runTurn({ cwd, prompt, trustLevel, model, effort, agentId, turnToken, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
     const serverPort = Number(process.env.PORT ?? 4310);
     // The prompt goes in on STDIN, never as an argv element. On Windows `claude` resolves to
     // an npm .cmd shim, so cross-spawn has to route it through `cmd.exe /d /s /c` - and a
@@ -51,8 +52,17 @@ export const claudeCodeAdapter: ProviderAdapter = {
     // bypasses cmd.exe entirely. Reproduced through a .cmd shim and re-verified against the
     // real CLI via stdin on 2026-09-15. `claude -p` with no positional prompt reads stdin,
     // which has no length or newline limits at all.
+    // Every turn used to be a brand-new stateless process, so an agent had no memory of its
+    // own previous turns: one said "I'll make both fixes and ping back when done", exited, and
+    // later truthfully answered that it had no task in progress. Claude Code persists print-mode
+    // sessions by default, so we pick the id ourselves on the first turn (--session-id wants a
+    // real UUID) and resume it after that. Choosing the id up front means we know it even if the
+    // turn dies before we parse a single line of output.
+    const resolvedSessionId = sessionId ?? randomUUID();
+    if (!sessionId) onEvent({ type: "session", sessionId: resolvedSessionId });
     const args = [
       "-p",
+      ...(sessionId ? ["--resume", sessionId] : ["--session-id", resolvedSessionId]),
       "--output-format",
       "stream-json",
       "--verbose",
@@ -93,6 +103,12 @@ export const claudeCodeAdapter: ProviderAdapter = {
           const event = JSON.parse(line);
           // The model the provider actually resolved the request to. "sonnet" is an alias, so
           // this is the only way to say which Sonnet a message really came from.
+          // Belt and braces: if the CLI ever rejects our id or forks the session, the stream is
+          // the authority on what the session actually is.
+          const streamSessionId = event?.session_id;
+          if (typeof streamSessionId === "string" && streamSessionId && streamSessionId !== resolvedSessionId) {
+            onEvent({ type: "session", sessionId: streamSessionId });
+          }
           const model = event?.message?.model;
           if (typeof model === "string" && model && model !== reportedModel) {
             reportedModel = model;

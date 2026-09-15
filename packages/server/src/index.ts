@@ -40,7 +40,7 @@ async function main() {
   const bus = new ChatBus(persisted.history);
   const approvals = new ApprovalRegistry();
   const archive = new ArchiveStore(persisted.archives);
-  const agents = new AgentManager(bus, persisted.agents, approvals, persisted.queues);
+  const agents = new AgentManager(bus, persisted.agents, approvals, persisted.queues, persisted.sessions);
 
   const persist = debounce(
     () =>
@@ -49,6 +49,7 @@ async function main() {
         history: bus.getHistory(),
         archives: archive.list(),
         queues: agents.getPersistableQueues(),
+        sessions: agents.getPersistableSessions(),
       }),
     300,
   );

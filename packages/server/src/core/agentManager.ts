@@ -7,6 +7,7 @@ import { parseMentions } from "./mentions";
 import type { ApprovalRegistry } from "./approvalRegistry";
 import { extractLiveClaims, findUnreachableClaims, unreachableClaimNotice } from "./claimCheck";
 import { getCredentialSecrets } from "./credentials";
+import type { PersistedAgentSession } from "./persistence";
 import { WORKSPACE_ROOT } from "./workspace";
 
 export interface QueuedTurn {
@@ -22,6 +23,9 @@ export interface QueuedTurn {
    * works, and in practice they don't - one agent wrote "Claude, one audit item..." with no
    * "@", so the reply reached nobody and the thread died silently. See routeGroupMessage. */
   addressedBy?: { id: string; handle: string };
+  /** Set on the single cold retry allowed after a stale-session failure, so that retry can
+   * never itself trigger another one. See looksLikeStaleSession. */
+  sessionRetryDone?: boolean;
 }
 
 /** A snapshot of one agent's still-outstanding work, for persistence.ts - see
@@ -70,6 +74,9 @@ interface AgentRuntime {
   /** The provider CLI's own session id for this agent's ongoing conversation. Undefined means
    * the next turn starts cold. */
   sessionId?: string;
+  /** The roster as it was last described to this agent, so the context block is re-sent when it
+   * actually changed rather than on every single message. */
+  lastRosterSignature?: string;
   /** The turn currently being run, if any - set right after it's popped off `queue` and
    * cleared when it finishes. Distinct from `queue` (which only holds turns waiting to
    * start) so a persistence snapshot taken mid-turn can still capture what was actually
@@ -138,6 +145,18 @@ function parseResetTime(message: string, now: Date): Date | undefined {
   return parsed;
 }
 
+/**
+ * A resume that failed because the session itself is gone (deleted transcript, a CLI upgrade
+ * that moved its store, an id from another machine). Distinguished from ordinary errors so it
+ * can be recovered from automatically - starting cold is always possible - instead of leaving
+ * the agent permanently unable to run because of a stale string we saved.
+ */
+function looksLikeStaleSession(message: string): boolean {
+  return /no conversation found|session .{0,40}not found|invalid session|unknown session|no session|conversation .{0,40}not found/i.test(
+    message,
+  );
+}
+
 function addUsage(total: TurnUsage, delta: TurnUsage): TurnUsage {
   return {
     inputTokens: (total.inputTokens ?? 0) + (delta.inputTokens ?? 0),
@@ -178,6 +197,7 @@ export class AgentManager {
     initialAgents: AgentConfig[] = [],
     private approvals?: ApprovalRegistry,
     initialQueues: PersistedAgentQueue[] = [],
+    initialSessions: PersistedAgentSession[] = [],
   ) {
     for (const config of initialAgents) {
       this.agents.set(config.id, { config, status: "idle", busy: false, queue: [], totalUsage: {} });
@@ -188,6 +208,15 @@ export class AgentManager {
     // correct - nothing lied about having answered it. A turn that was actually mid-generation
     // can't be resumed (that state is genuinely gone), so it's re-run from scratch, but with
     // an honest note explaining why instead of a message that just never got a reply.
+    // Restore each agent's own conversation, but only where it still means something: a session
+    // belongs to a cwd and a provider, so if the agent has since been repointed or switched, the
+    // stored id would drop it into an unrelated conversation. Discard rather than guess.
+    for (const saved of initialSessions) {
+      const runtime = this.agents.get(saved.agentId);
+      if (!runtime) continue;
+      if (runtime.config.cwd !== saved.cwd || runtime.config.provider !== saved.provider) continue;
+      runtime.sessionId = saved.sessionId;
+    }
     for (const saved of initialQueues) {
       if (!this.agents.has(saved.agentId)) continue; // the agent itself was removed before restart
       if (saved.inFlight) {
@@ -206,6 +235,22 @@ export class AgentManager {
         this.enqueueTurn(saved.agentId, turn.prompt, turn.replyChannel, turn.mentionChainDepth, turn.addressedBy);
       }
     }
+  }
+
+  /** A snapshot of every agent's provider-side conversation id, for persistence.ts. */
+  getPersistableSessions(): PersistedAgentSession[] {
+    const out: PersistedAgentSession[] = [];
+    for (const runtime of this.agents.values()) {
+      if (!runtime.sessionId) continue;
+      out.push({
+        agentId: runtime.config.id,
+        provider: runtime.config.provider,
+        cwd: runtime.config.cwd,
+        sessionId: runtime.sessionId,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    return out;
   }
 
   /** A snapshot of every agent's outstanding work (in-flight + still-queued turns), for
@@ -251,6 +296,21 @@ export class AgentManager {
    * turn (Windows kill() does not reliably reap a whole process tree) cannot keep acting as
    * the agent afterwards.
    */
+  /**
+   * Forget an agent's provider-side conversation so its next turn starts cold. The manual
+   * escape hatch for a session that has gone bad - confused, poisoned by an early mistake, or
+   * simply grown expensive - since resumed context is otherwise kept forever. Returns false if
+   * there was nothing to forget.
+   */
+  resetSession(agentId: string): boolean {
+    const runtime = this.agents.get(agentId);
+    if (!runtime?.sessionId) return false;
+    runtime.sessionId = undefined;
+    runtime.lastRosterSignature = undefined;
+    this.onChange?.();
+    return true;
+  }
+
   verifyTurnToken(agentId: string, token: unknown): boolean {
     const runtime = this.agents.get(agentId);
     if (!runtime?.activeTurnToken || typeof token !== "string" || !token) return false;
@@ -459,7 +519,8 @@ export class AgentManager {
    * `/status` already reports) rather than assuming an agent will infer it from context alone.
    */
   private buildGroupPrompt(fromHandle: string, text: string, forAgentId: string): string {
-    const self = this.agents.get(forAgentId)?.config;
+    const runtime = this.agents.get(forAgentId);
+    const self = runtime?.config;
     const others = [...this.agents.values()].map((a) => a.config).filter((a) => a.id !== forAgentId);
     if (!self) {
       return `[group chat message from ${fromHandle}]: ${text}`;
@@ -574,10 +635,15 @@ export class AgentManager {
         trustLevel: runtime.config.trustLevel,
         agentId: runtime.config.id,
         agentHandle: runtime.config.handle,
-        model: runtime.lastResolvedModel ?? runtime.config.model,
+        // The configured alias, NOT lastResolvedModel: what to request is the user's choice,
+        // and the resolved id is only ever for display. Feeding a resolved id back as --model
+        // would quietly pin the agent to one snapshot of an alias the user chose deliberately.
+        model: runtime.config.model,
         effort: runtime.config.effort,
         apiKey,
         baseUrl,
+        turnToken: runtime.activeTurnToken,
+        sessionId: runtime.sessionId,
         signal: controller.signal,
         onEvent: (event) => {
           if (event.type === "text" && event.text.trim()) {
@@ -639,6 +705,29 @@ export class AgentManager {
       } else if (runtime.abortKind === "stop" && this.agents.has(runtime.config.id)) {
         post(ownChannel, "_stopped before this turn finished_");
       }
+    }
+
+    // Recover from a stale session id exactly once, then never again for this turn. Without the
+    // one-shot guard this is an infinite billed retry loop; with it, the worst case is a single
+    // extra cold run of a turn that would otherwise have failed outright.
+    if (hadError && runtime.sessionId && !turn.sessionRetryDone && looksLikeStaleSession(runtime.lastError ?? "")) {
+      runtime.sessionId = undefined;
+      runtime.lastResolvedModel = undefined;
+      this.onChange?.();
+      if (this.agents.has(runtime.config.id)) {
+        this.bus.postMessage({
+          id: nanoid(),
+          channel: ownChannel,
+          authorId: "system",
+          authorHandle: "system",
+          mentions: [],
+          text: "Could not resume this agent's previous session, so it is starting a fresh one and retrying - it will not remember earlier turns.",
+          createdAt: new Date().toISOString(),
+        });
+        runtime.queue.unshift({ ...turn, sessionRetryDone: true });
+      }
+      hadError = false;
+      runtime.lastError = undefined;
     }
 
     if (hadError) {

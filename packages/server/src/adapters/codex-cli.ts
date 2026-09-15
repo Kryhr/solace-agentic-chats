@@ -38,11 +38,16 @@ function flagsForTrustLevel(trustLevel: TrustLevel): { beforeExec: string[]; for
 
 export const codexCliAdapter: ProviderAdapter = {
   id: "codex-cli",
-  async runTurn({ cwd, prompt, trustLevel, model, effort, onEvent, signal }: RunTurnOptions): Promise<void> {
+  async runTurn({ cwd, prompt, trustLevel, model, effort, agentId, turnToken, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
     const { beforeExec, forExec } = flagsForTrustLevel(trustLevel);
+    // Resume this agent's own prior conversation so it remembers its own work across turns.
+    // Deliberately NOT `--last`: that is scoped to the user's entire codex session store, so
+    // with two codex agents configured it would silently resume the other one's conversation.
+    // No captured id means we run cold rather than guess.
     const args = [
       ...beforeExec,
       "exec",
+      ...(sessionId ? ["resume", sessionId] : []),
       "--json",
       "--skip-git-repo-check",
       "-C",
@@ -56,10 +61,20 @@ export const codexCliAdapter: ProviderAdapter = {
     ];
 
     await new Promise<void>((resolve) => {
-      const child = spawnCli("codex", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawnCli("codex", args, {
+        cwd,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          SOLACE_AGENT_ID: agentId,
+          SOLACE_SERVER_PORT: String(process.env.PORT ?? 4310),
+          ...(turnToken ? { SOLACE_TURN_TOKEN: turnToken } : {}),
+        },
+      });
       const rl = readline.createInterface({ input: child.stdout! });
 
       let reportedError = false;
+      let seenSessionId: string | undefined;
       let aborted = false;
       const onAbort = () => {
         aborted = true;
@@ -71,6 +86,17 @@ export const codexCliAdapter: ProviderAdapter = {
         if (!line.trim()) return;
         try {
           const event = JSON.parse(line);
+          // Codex does not document its JSONL event schema, and the field carrying the session
+          // id is not published - so rather than hardcode a guess, take the first plausible id
+          // we see from any of the shapes observed on disk and stop looking.
+          if (!seenSessionId) {
+            const candidate =
+              event?.session_id ?? event?.thread_id ?? event?.session?.id ?? event?.item?.thread_id;
+            if (typeof candidate === "string" && candidate) {
+              seenSessionId = candidate;
+              onEvent({ type: "session", sessionId: candidate });
+            }
+          }
           // Schema: {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
           // plus item types like command_execution/file_change/reasoning we surface as tool-use
           // ("error" items are non-fatal in-stream notices, e.g. truncated skill descriptions -
