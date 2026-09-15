@@ -411,6 +411,51 @@ function splitObjectEntries(text: string): string[] {
   return entries;
 }
 
+// ---------------------------------------------------------------------------------------
+// GitHub Copilot CLI
+// ---------------------------------------------------------------------------------------
+
+/**
+ * Copilot has no model-listing subcommand and no model list in its JS bundle (checked every
+ * subcommand in `copilot --help`, every help topic, ~/.copilot/config.json, and its two
+ * SQLite stores - the only model ids on disk are the ones past sessions happened to USE).
+ *
+ * What it does ship is an RPC for exactly this. The bundled SDK's own type declarations
+ * (copilot-sdk/generated/rpc.d.ts) describe `models.getBuiltInCatalog` as returning "the
+ * running runtime's complete catalog of well-known built-in model IDs without authentication
+ * or network access" - so the list comes from the installed runtime itself, offline, with no
+ * billable turn. Verified on 2026-09-15 against the installed 1.0.83 build, which answered in
+ * ~2s with 51 entries.
+ *
+ * The response is deliberately thin - each entry is `{id}` and nothing else, e.g.
+ * `[{"id":"claude-sonnet-5"},{"id":"claude-fable-5.1"},{"id":"gpt-5.6-luna"}]`. There is no
+ * display name, description or context window to read, so none is shown; a label invented from
+ * the id would be this app writing the provider's marketing copy for it.
+ *
+ * The same type declarations are explicit that an id here "does not indicate CAPI entitlement
+ * or provider availability" - i.e. this is what the runtime KNOWS, not what the signed-in
+ * account may run. That is the same caveat the Claude Code registry carries and the UI already
+ * states for every provider.
+ */
+export function parseCopilotBuiltInCatalog(body: unknown): ModelOption[] {
+  const models = (body as { models?: unknown } | null)?.models;
+  if (!Array.isArray(models)) return [];
+  const out: ModelOption[] = [];
+  const seen = new Set<string>();
+  for (const raw of models) {
+    const id = (raw as { id?: unknown })?.id;
+    if (typeof id !== "string" || !id || seen.has(id)) continue;
+    seen.add(id);
+    // Family from the vendor+version prefix the ids themselves use ("claude-sonnet-5" ->
+    // "claude", "gpt-5.6-luna" -> "gpt-5.6"), so the variants of one line group together
+    // instead of forming a flat list of 51 ids. Derived from the id, never from a lookup table
+    // that would have to be updated by hand every time Copilot adds a vendor.
+    const family = id.match(/^(gpt-\d+(?:\.\d+)?|gemini-\d+(?:\.\d+)?|claude|grok|kimi|mai-code|o\d+)/)?.[1] ?? id;
+    out.push({ id, label: id, family, familyLabel: familyLabel(family), sourceIndex: 0 });
+  }
+  return out;
+}
+
 /** Re-tags every option with the index of the source that produced it, and drops ids an
  * earlier (more authoritative) source already supplied. Order of `groups` is the order of
  * authority, so a live answer always wins over a shipped constant. */

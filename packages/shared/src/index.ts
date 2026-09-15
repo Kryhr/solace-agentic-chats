@@ -18,7 +18,14 @@ export type { ConnectorKind, ConnectorKindId } from "./connectors";
 export const CONNECTOR_KINDS = KINDS;
 export const connectorKind = kindById;
 
-export type ProviderId = "claude-code" | "codex-cli" | "gemini-cli" | "qwen-code" | "custom" | "local";
+export type ProviderId =
+  | "claude-code"
+  | "codex-cli"
+  | "gemini-cli"
+  | "qwen-code"
+  | "copilot-cli"
+  | "custom"
+  | "local";
 
 /**
  * The providers that are actually a CLI binary on this machine. "custom" (a hosted

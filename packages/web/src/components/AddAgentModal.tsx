@@ -21,7 +21,7 @@ import { effortOptionsFor, initialModelFor } from "../lib/modelOptions";
 import { ModelPicker, ModelSourceNote } from "./ModelPicker";
 import { permissionOptionsFor, TRUST_LABELS } from "../lib/permissionOptions";
 
-const PROVIDERS: ProviderId[] = ["claude-code", "codex-cli", "gemini-cli", "qwen-code", "custom", "local"];
+const PROVIDERS: ProviderId[] = ["claude-code", "codex-cli", "gemini-cli", "qwen-code", "copilot-cli", "custom", "local"];
 const NEW_PROJECT_VALUE = "__new__";
 const NEW_KEY_VALUE = "__new__";
 // Mirrors adapters/index.ts's apiAdapters map - only these providers have a direct-API

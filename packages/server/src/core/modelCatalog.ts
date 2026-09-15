@@ -10,9 +10,11 @@ import {
   parseClaudeAdditionalModelOptions,
   parseClaudeBuildChunk,
   parseCodexModelCatalog,
+  parseCopilotBuiltInCatalog,
   parseGeminiBundleModels,
   parseQwenBundleModels,
 } from "./cliModelSources";
+import { copilotPlatformDir } from "../adapters/copilot-cli";
 
 /**
  * What each provider's CLI actually supports, verified against its own --help output rather
@@ -393,6 +395,70 @@ async function qwenModels(): Promise<{ models: ModelOption[]; sources: ModelCata
 // ---------------------------------------------------------------------------------------
 // Assembly + cache
 // ---------------------------------------------------------------------------------------
+// GitHub Copilot CLI
+// ---------------------------------------------------------------------------------------
+
+/**
+ * Asks the installed Copilot runtime for its own built-in model catalog over the SDK's
+ * `models.getBuiltInCatalog` RPC - offline, unauthenticated and not billable (see
+ * parseCopilotBuiltInCatalog for the provenance). There is no CLI flag for this, so the
+ * bundled SDK is driven directly.
+ *
+ * Spawned as `node -e <one-liner>` rather than by adding a helper script to this package: the
+ * script has to `import()` an absolute path inside the user's global npm tree, which is a
+ * runtime value, and process.execPath is a native binary so the argument is not at the mercy
+ * of cmd.exe. The one-liner is built with JSON.stringify for every interpolated path, so a
+ * space or backslash in the install location cannot break out of it - and it deliberately
+ * contains no newline, which spawnCli would reject.
+ */
+async function copilotModels(): Promise<{ models: ModelOption[]; sources: ModelCatalogSource[]; error?: string }> {
+  const platformDir = copilotPlatformDir();
+  if (!platformDir) {
+    return {
+      models: [],
+      sources: [],
+      error: "GitHub Copilot CLI doesn't appear to be installed, so no model list could be read from it.",
+    };
+  }
+  const sdk = join(platformDir, "copilot-sdk", "index.js");
+  const exe = join(platformDir, process.platform === "win32" ? "copilot.exe" : "copilot");
+  if (!existsSync(sdk) || !existsSync(exe)) {
+    return {
+      models: [],
+      sources: [],
+      error: `The installed Copilot package has no bundled SDK at ${sdk}, so its model catalog could not be read.`,
+    };
+  }
+  // file:// URL because this is an ESM import of an absolute Windows path, which bare
+  // import() rejects.
+  const sdkUrl = "file:///" + sdk.replace(/\\/g, "/");
+  const script =
+    `const s=await import(${JSON.stringify(sdkUrl)});` +
+    `const c=new s.CopilotClient({connection:s.RuntimeConnection.forStdio({path:${JSON.stringify(exe)}})});` +
+    `await c.start();const r=await c.rpc.models.getBuiltInCatalog();` +
+    `process.stdout.write(JSON.stringify(r));await c.stop();process.exit(0);`;
+  try {
+    const stdout = await runForStdout(process.execPath, ["--input-type=module", "-e", script], 30_000);
+    const models = parseCopilotBuiltInCatalog(JSON.parse(stdout));
+    if (models.length === 0) throw new Error("the runtime's built-in catalog was empty");
+    return {
+      models: mergeSourcedOptions([models]),
+      sources: [
+        {
+          kind: "cli-artifact",
+          origin: `${sdk} · models.getBuiltInCatalog (the catalog built into the installed Copilot runtime)`,
+          version: packageVersion(platformDir),
+          readAt: new Date().toISOString(),
+          count: models.length,
+        },
+      ],
+    };
+  } catch (err) {
+    return { models: [], sources: [], error: (err as Error).message };
+  }
+}
+
+// ---------------------------------------------------------------------------------------
 
 /** Reading a 230MB binary and spawning a CLI are not per-keystroke operations, so the result
  * is memoised. In memory only and short-lived, for the same reason modelDiscovery.ts refuses
@@ -409,11 +475,12 @@ export async function getModelCatalog(): Promise<ProviderModelInfo[]> {
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.value;
 
   const codexDefault = detectCodexDefault();
-  const [claude, codex, gemini, qwen] = await Promise.all([
+  const [claude, codex, gemini, qwen, copilot] = await Promise.all([
     claudeModels().catch((err) => ({ models: [], sources: [], error: (err as Error).message })),
     codexModels().catch((err) => ({ models: [], sources: [], error: (err as Error).message })),
     geminiModels().catch((err) => ({ models: [], sources: [], error: (err as Error).message })),
     qwenModels().catch((err) => ({ models: [], sources: [], error: (err as Error).message })),
+    copilotModels().catch((err) => ({ models: [], sources: [], error: (err as Error).message })),
   ]);
 
   const catalog: Record<CliProviderId, ProviderModelInfo> = {
@@ -455,6 +522,20 @@ export async function getModelCatalog(): Promise<ProviderModelInfo[]> {
       sourceError: qwen.error,
       effortLevels: [],
       currentDefaultModel: detectSettingsJsonModel(".qwen"),
+    },
+    "copilot-cli": {
+      provider: "copilot-cli",
+      models: copilot.models,
+      sources: copilot.sources,
+      sourceError: copilot.error,
+      // Copilot's own documented choice list for --effort/--reasoning-effort, which its parser
+      // enforces - passing anything else is rejected before the turn starts. "none" is included
+      // because Copilot really does accept it as a level.
+      effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+      // No per-machine default to read: ~/.copilot/config.json holds only first-launch and
+      // login bookkeeping, and the model is chosen by Copilot's own auto-router unless --model
+      // says otherwise. Left undefined rather than asserting a default that isn't written down.
+      currentDefaultModel: undefined,
     },
   };
 

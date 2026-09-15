@@ -145,3 +145,26 @@ test("real recorded codex stream produces labels from the real commands", () => 
   assert.deepEqual(labels, ["Running powershell", "Running powershell"]);
   assert.ok(!labels.includes("command_execution"), "the raw item type must never be the label");
 });
+
+/**
+ * Copilot CLI's tool vocabulary is its own again - names taken from the tool table in a real
+ * turn's session.usage_checkpoint event, and arguments from the toolRequests it actually
+ * emitted. The shell tool is named after the shell, which is why "powershell" has to be a
+ * first-class entry rather than reaching the generic fallback.
+ */
+test("copilot's own tool names produce real labels, not identifiers", () => {
+  assert.equal(
+    describeToolCall("powershell", { command: "echo hello-copilot", description: "Run requested echo command" }).label,
+    "Running echo",
+  );
+  assert.equal(describeToolCall("view", { path: "/repo/src/index.ts" }).label, "Reading index.ts");
+  assert.equal(describeToolCall("rg", { pattern: "TODO" }).label, "Searching for TODO");
+  assert.equal(describeToolCall("apply_patch", { path: "/repo/notes.md" }).label, "Editing notes.md");
+  assert.equal(describeToolCall("stop_powershell", {}).label, "Stopping a running command");
+  // Copilot addresses MCP tools as <server>-<tool>, so the group-chat bridge has to be
+  // recognised through that spelling too, not only Claude's mcp__server__tool form.
+  assert.equal(describeToolCall("solace-post_to_group", { text: "hi" }).label, "Using solace");
+  assert.equal(describeToolCall("mcp__solace__post_to_group", { text: "hi" }).label, "Using solace");
+  // A hyphenated name that is NOT one of our servers must not be invented into one.
+  assert.equal(describeToolCall("fetch_copilot_cli_documentation", {}).label, "Fetch copilot cli documentation");
+});

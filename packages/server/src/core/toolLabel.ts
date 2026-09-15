@@ -79,6 +79,12 @@ export function humanizeToolName(name: string): string {
 function mcpLabel(name: string): string | undefined {
   const parts = name.split("__");
   if (parts.length >= 3 && parts[0] === "mcp") return `Using ${parts[1]}`;
+  // Copilot CLI addresses an MCP tool as `<server>-<tool>` with a single hyphen, so the form
+  // above never matches it. Only the servers this app itself registers are recognised here:
+  // a generic "split on the first hyphen" rule would turn any hyphenated built-in tool name
+  // into a fictitious server, which is exactly the kind of guess the fallback avoids by just
+  // humanising the name the provider reported.
+  if (/^solace-/.test(name)) return "Using solace";
   return undefined;
 }
 
@@ -94,6 +100,8 @@ const LABELS: Record<string, Labeller> = {
   read: (i) => withFile("Reading", i, "file_path", "path", "absolute_path", "notebook_path"),
   read_file: (i) => withFile("Reading", i, "absolute_path", "file_path", "path"),
   read_many_files: () => "Reading files",
+  // Copilot CLI's file reader.
+  view: (i) => withFile("Reading", i, "path", "file_path", "absolute_path"),
   notebookread: (i) => withFile("Reading", i, "notebook_path", "file_path"),
 
   // ---- write / edit ----
@@ -105,6 +113,10 @@ const LABELS: Record<string, Labeller> = {
   multiedit: (i) => withFile("Editing", i, "file_path", "path"),
   notebookedit: (i) => withFile("Editing", i, "notebook_path", "file_path"),
   replace: (i) => withFile("Editing", i, "file_path", "absolute_path", "path"),
+  // Copilot CLI's edit tool. Its arguments were not captured in a run that exercised it, so
+  // the usual path keys are tried and the generic "Editing a file" is the honest fallback -
+  // the verbatim arguments are always in `detail` either way.
+  apply_patch: (i) => withFile("Editing", i, "file_path", "path", "absolute_path"),
   // Codex reports edits as a file_change item carrying the list of paths it changed.
   file_change: (i) => {
     const paths = changedPaths(i);
@@ -120,10 +132,19 @@ const LABELS: Record<string, Labeller> = {
   command_execution: (i) => withCommand(i),
   bashoutput: () => "Checking a running command",
   killshell: () => "Stopping a running command",
+  // Copilot CLI's shell tool is named for the shell it runs, so on Windows the tool the model
+  // actually calls is literally "powershell" (observed in a real turn). Its three companions
+  // manage long-running invocations rather than starting new ones.
+  powershell: (i) => withCommand(i),
+  read_powershell: () => "Checking a running command",
+  stop_powershell: () => "Stopping a running command",
+  list_powershell: () => "Checking running commands",
 
   // ---- search ----
   grep: (i) => withPattern("Searching for", i),
   search_file_content: (i) => withPattern("Searching for", i),
+  // Copilot CLI names its search tool after the binary it bundles.
+  rg: (i) => withPattern("Searching for", i),
   glob: (i) => withPattern("Finding files matching", i),
   list_directory: (i) => {
     const path = str(i, "path", "absolute_path", "dir");

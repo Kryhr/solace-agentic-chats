@@ -11,6 +11,15 @@ import type { CliProviderId, ProviderPermissionInfo, TrustLevel } from "@solace/
  *   Qwen Code: all five, 1:1 onto its own --approval-mode enum
  *   (plan/default/auto-edit/auto/yolo). Its --help hides the flag, so the choice list was read
  *   back from the CLI itself by passing an invalid value - see adapters/qwen-code.ts.
+ *   Copilot CLI: three of the five. Its --deny-tool patterns (`write`, `shell`) outrank even
+ *   --allow-all-tools, which makes plan/acceptEdits/bypassPermissions genuinely expressible -
+ *   each verified by a real turn that tried to write a file AND run a shell command (see
+ *   adapters/copilot-cli.ts). "manual" is omitted because Copilot has no external approval hook
+ *   like Claude Code's --permission-prompt-tool: its --assisted-approval hands the decision to
+ *   an LLM safety judge inside Copilot, so offering "manual" would promise a human gate that
+ *   does not exist. "auto" is omitted for the reason Gemini's is - Copilot has no unattended
+ *   middle ground distinct from full access, so it would just be a second, more cautious-sounding
+ *   name for "bypassPermissions".
  *   Gemini CLI: four of the five map 1:1 onto --approval-mode
  *   (plan/default/auto_edit/yolo). "auto" is left out rather than faked: Gemini has no
  *   classifier-judged middle ground, so offering it would just be a second name for
@@ -21,12 +30,14 @@ const CLAUDE_MODES: TrustLevel[] = ["plan", "manual", "acceptEdits", "bypassPerm
 const CODEX_MODES: TrustLevel[] = ["manual", "acceptEdits", "bypassPermissions", "auto"];
 const GEMINI_MODES: TrustLevel[] = ["plan", "manual", "acceptEdits", "bypassPermissions"];
 const QWEN_MODES: TrustLevel[] = ["plan", "manual", "acceptEdits", "bypassPermissions", "auto"];
+const COPILOT_MODES: TrustLevel[] = ["plan", "acceptEdits", "bypassPermissions"];
 
 const CATALOG: Record<CliProviderId, ProviderPermissionInfo> = {
   "claude-code": { provider: "claude-code", availableModes: CLAUDE_MODES },
   "codex-cli": { provider: "codex-cli", availableModes: CODEX_MODES },
   "gemini-cli": { provider: "gemini-cli", availableModes: GEMINI_MODES },
   "qwen-code": { provider: "qwen-code", availableModes: QWEN_MODES },
+  "copilot-cli": { provider: "copilot-cli", availableModes: COPILOT_MODES },
 };
 
 export function getPermissionCatalog(): ProviderPermissionInfo[] {

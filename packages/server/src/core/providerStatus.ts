@@ -7,6 +7,7 @@ const CLI_BIN: Record<CliProviderId, string> = {
   "codex-cli": "codex",
   "gemini-cli": "gemini",
   "qwen-code": "qwen",
+  "copilot-cli": "copilot",
 };
 
 /** The actual command, on its own, so the UI can show something copy-pasteable rather than a
@@ -18,6 +19,7 @@ export const INSTALL_COMMAND: Record<CliProviderId, string> = {
   "codex-cli": "npm install -g @openai/codex",
   "gemini-cli": "npm install -g @google/gemini-cli",
   "qwen-code": "npm install -g @qwen-code/qwen-code",
+  "copilot-cli": "npm install -g @github/copilot",
 };
 
 export const LOGIN_COMMAND: Record<CliProviderId, string> = {
@@ -25,6 +27,9 @@ export const LOGIN_COMMAND: Record<CliProviderId, string> = {
   "codex-cli": "codex login",
   "gemini-cli": "gemini",
   "qwen-code": "qwen",
+  // A real top-level subcommand, unlike the CLIs above that sign in from their interactive
+  // session (confirmed in `copilot --help`; there is no `copilot logout` counterpart).
+  "copilot-cli": "copilot login",
 };
 
 const INSTALL_HINT: Record<CliProviderId, string> = {
@@ -32,6 +37,7 @@ const INSTALL_HINT: Record<CliProviderId, string> = {
   "codex-cli": "npm install -g @openai/codex, then run `codex login` to sign in",
   "gemini-cli": "npm install -g @google/gemini-cli, then run `gemini` once to log in",
   "qwen-code": "npm install -g @qwen-code/qwen-code, then run `qwen` once to log in",
+  "copilot-cli": "npm install -g @github/copilot, then run `copilot login` to sign in",
 };
 
 export function isCliProvider(provider: ProviderId): provider is CliProviderId {
