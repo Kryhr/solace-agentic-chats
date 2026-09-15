@@ -2624,67 +2624,6 @@ body {
   text-align: center;
 }
 
-/* ---- tool-use disclosure (hub) -----------------------------------------
-   Reuses .archive-entry wholesale; these rules only quiet it down for a
-   transcript, where it sits among messages rather than in a list of its own. */
-
-/* The disclosure replaces a message body, so it lines up with the message
-   column rather than with the avatar gutter beside it. */
-.tool-run-row {
-  padding-left: calc(22px + var(--space-3));
-}
-
-.tool-run {
-  background: transparent;
-  border-color: var(--border);
-}
-.tool-run:hover {
-  background: var(--surface-1);
-}
-
-.tool-run-header {
-  padding: var(--space-2) var(--space-3);
-  color: var(--text-muted);
-}
-
-.tool-run-title {
-  font-size: var(--text-xs);
-  font-weight: 500;
-  color: var(--text-muted);
-  letter-spacing: var(--tracking-tight);
-}
-.tool-run-header:hover .tool-run-title {
-  color: var(--text-secondary);
-}
-
-/* The closed row previews the most recent call, so a collapsed group still
-   says what the agent is actually doing. */
-.tool-run-latest {
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  color: var(--text-faint);
-  min-width: 0;
-  flex-shrink: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.tool-run-body {
-  gap: var(--space-1);
-  background: var(--surface-1);
-}
-
-.tool-run-line {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  line-height: var(--lh-snug);
-  color: var(--text-muted);
-  padding-left: var(--space-3);
-  border-left: 2px solid var(--border);
-  overflow-wrap: anywhere;
-}
-
 /* .archive-entry sets overflow:hidden, which clips the offset focus ring on
    its header button. Keyboard focus has to stay visible, so this disclosure
    uses the tight (inset-safe) ring instead. */
@@ -2789,19 +2728,273 @@ body {
     font-size: var(--text-lg);
   }
 
-  /* At this width the avatar gutter is a meaningful share of the line, and
-     the disclosure reads fine flush with the rest of the transcript. */
-  .tool-run-row {
-    padding-left: 0;
-  }
-
-  /* The preview is the first thing to go when there isn't room for both it
-     and the count; the count is what the control is for. */
-  .tool-run-latest {
-    display: none;
-  }
 
   .agent-model-tag {
     max-width: 120px;
+  }
+}
+
+/* =========================================================================
+   APPENDED BLOCK â€” message rendering (activity runs, narration, answers)
+   Owner: the message-rendering pass. Everything above this line belongs to
+   the visual-language pass; nothing here redefines a token, and every
+   var(--x) below is declared in :root at the top of this file.
+
+   What this styles: the hub transcript's three registers. An activity run
+   (one calm status line standing in for a run of tool calls and reasoning),
+   mid-turn narration (present and readable, deliberately quieter), and the
+   final answer (the thing you actually came to read).
+   ========================================================================= */
+
+/* ---- activity run ------------------------------------------------------
+   Reuses .archive-entry wholesale so the app has one disclosure idiom, not
+   two; these rules only quiet it down for a transcript, where it sits among
+   messages rather than in a list of its own. */
+
+/* The disclosure replaces a message body, so it lines up with the message
+   column rather than with the 22px avatar gutter beside it. */
+.activity-run-row {
+  padding-left: calc(22px + var(--space-3));
+}
+
+.activity-run {
+  background: transparent;
+  border-color: var(--border);
+}
+.activity-run:hover {
+  background: var(--surface-1);
+}
+
+/* A run containing a non-zero exit must not sit here looking as quiet as one
+   that succeeded. The border is the whole signal â€” no alarm colour on the
+   ground, because the failure detail is one click away, not lost. */
+.activity-run.is-failed {
+  border-color: var(--danger-border);
+}
+
+.activity-run-header {
+  padding: var(--space-2) var(--space-3);
+  gap: var(--space-2);
+  color: var(--text-muted);
+}
+
+/* The glyph is the "little icon" that says what's happening. Fixed box, so
+   labels behind different icons still start at the same x. */
+.activity-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  color: var(--text-faint);
+}
+.activity-run-header:hover .activity-glyph {
+  color: var(--text-muted);
+}
+
+/* Pulsing means exactly one thing: this turn is still running. Driven by the
+   agent's real status, never by a guess that work remains. */
+.activity-glyph.is-live {
+  color: var(--accent);
+  animation: activity-pulse 1.6s var(--ease-in-out) infinite;
+}
+
+@keyframes activity-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Opacity-only, and it stops entirely for readers who asked for less motion â€”
+   the label still says what is happening, so holding still loses nothing. */
+@media (prefers-reduced-motion: reduce) {
+  .activity-glyph.is-live {
+    animation: none;
+    opacity: 1;
+  }
+}
+
+/* The derived label â€” "Reading styles.css", not Read({"file_path":â€¦}). Sans,
+   not mono: it is a sentence about what the agent is doing, not a code echo. */
+.activity-run-label {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  line-height: var(--lh-tight);
+  color: var(--text-secondary);
+  letter-spacing: var(--tracking-tight);
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activity-run-header:hover .activity-run-label {
+  color: var(--text);
+}
+
+.activity-run-failed {
+  flex-shrink: 0;
+  font-size: var(--text-2xs);
+  line-height: var(--lh-tight);
+  color: var(--danger);
+  background: var(--danger-wash);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-xs);
+  padding: 1px var(--space-1); /* optical: the chip must not out-weigh the label */
+}
+
+.activity-run-count {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-shrink: 0;
+  font-size: var(--text-2xs);
+  line-height: var(--lh-tight);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-run.is-open .activity-chevron {
+  transform: rotate(90deg);
+}
+
+.activity-run-body {
+  gap: var(--space-3);
+  background: var(--surface-1);
+}
+
+/* One step: its label, then the provider's verbatim call beneath. The rail is
+   what makes a long run scannable once it is open. */
+.activity-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--border);
+  min-width: 0;
+}
+.activity-step.is-failed {
+  border-left-color: var(--danger-border);
+}
+.activity-step-reasoning {
+  border-left-color: var(--accent-border);
+}
+
+.activity-step-kind {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-2xs);
+  line-height: var(--lh-tight);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.activity-step-exit {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+.activity-step.is-failed .activity-step-exit {
+  color: var(--danger);
+}
+
+/* The unabridged call (or the model's own reasoning). `anywhere` matters:
+   these carry absolute Windows paths and long JSON with no break opportunity,
+   and without it the transcript column would scroll sideways. */
+.activity-step-text {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--lh-snug);
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+/* Reasoning is prose the model wrote, so it reads in the sans face at reading
+   size rather than as a code echo â€” it is the one thing in here meant to be
+   read rather than checked. */
+.activity-step-reasoning .activity-step-text {
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: var(--lh-normal);
+  color: var(--text-secondary);
+  max-width: 74ch;
+}
+
+/* ---- mid-turn narration vs. the answer ---------------------------------
+   Same message stream, two registers. Narration is what the agent said while
+   still working; the answer is what it said once it had finished (promoted
+   server-side at end of turn â€” see AgentManager.drainQueue). Demoting the one
+   is what makes the other unmistakable. */
+
+.message-row.is-progress {
+  align-items: stretch;
+}
+
+/* Stands in for the avatar at exactly the avatar's width, so narration and the
+   answer beneath it share one left edge instead of stepping in and out. */
+.progress-rail {
+  flex-shrink: 0;
+  width: 22px;
+  display: flex;
+  justify-content: center;
+}
+.progress-rail::before {
+  content: "";
+  width: 2px;
+  border-radius: var(--radius-full);
+  background: var(--border);
+}
+
+.message-row.is-progress .body {
+  font-size: var(--text-sm);
+  line-height: var(--lh-snug);
+  color: var(--text-muted);
+}
+
+/* The final answer is the page's reading text: full size, full contrast. It is
+   deliberately the only agent prose at this weight, which is the whole point â€”
+   after a turn of quiet status lines, the answer is what you land on. */
+.message-row.is-answer .body {
+  font-size: var(--text-md);
+  line-height: var(--lh-normal);
+  color: var(--text);
+}
+
+@media (max-width: 600px) {
+  /* At this width the avatar gutter is a meaningful share of the line, and
+     both the disclosure and the narration read fine flush with the rest of
+     the transcript. */
+  .activity-run-row {
+    padding-left: 0;
+  }
+
+  .progress-rail {
+    width: 12px;
+  }
+
+  /* The step count is the first thing to go when there isn't room for both it
+     and the label; the label is what the control is for. */
+  .activity-run-count {
+    display: none;
+  }
+
+  /* The answer keeps its primacy through contrast and weight; the extra type
+     step isn't worth the reflow on a narrow column. */
+  .message-row.is-answer .body {
+    font-size: var(--text-base);
   }
 }

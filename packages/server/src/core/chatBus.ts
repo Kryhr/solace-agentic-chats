@@ -45,6 +45,25 @@ export class ChatBus {
     this.onChange?.();
   }
 
+  /**
+   * Replaces one already-posted message in place and tells every client.
+   *
+   * Only used to promote a turn's last "progress" message to "answer" once the turn has actually
+   * ended (see AgentManager.drainQueue): mid-stream there is no honest way to know which
+   * paragraph is the final one, and guessing would mean sometimes presenting a half-finished
+   * thought as the answer. No-ops if the message is gone (the channel was cleared while the turn
+   * was in flight), so a late promotion can't resurrect an archived message.
+   */
+  updateMessage(id: string, patch: Partial<ChatMessage>): ChatMessage | undefined {
+    const index = this.history.findIndex((m) => m.id === id);
+    if (index === -1) return undefined;
+    const updated = { ...this.history[index], ...patch };
+    this.history[index] = updated;
+    this.emit({ type: "chat:message:updated", payload: updated });
+    this.onChange?.();
+    return updated;
+  }
+
   /** Used by the /clear slash command - drops every message in one channel and returns
    * exactly what was removed, so the caller can archive it instead of losing it outright. */
   clearChannel(channel: ChatChannel): ChatMessage[] {

@@ -2,13 +2,13 @@ import { useEffect, useRef } from "react";
 import type { AgentConfig, AgentStatus, ChatMessage, ProviderModelInfo, ProviderPermissionInfo, TrustLevel } from "@solace/shared";
 import { ProviderIcon, providerLabel, UserAvatar } from "./ProviderIcon";
 import { Composer } from "./Composer";
-import { ToolRun } from "./ToolRun";
+import { ActivityRun } from "./ActivityRun";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 import { useEntranceTracker } from "../lib/useEntranceTracker";
 import { effortOptionsFor, modelOptionsFor } from "../lib/modelOptions";
 import { permissionOptionsFor, TRUST_LABELS } from "../lib/permissionOptions";
 import { formatProviderError } from "../lib/errorFormat";
-import { buildTranscript, displayText, isErrorLine } from "../lib/messageKind";
+import { buildTranscript, displayText, renderKind } from "../lib/messageKind";
 
 function formatTokens(n?: number): string {
   if (n === undefined) return "–";
@@ -202,36 +202,62 @@ export function AgentHubPage({
             )}
           </div>
         )}
-        {transcript.map((item) => {
-          // Tool detail is collapsed so the agent's actual output is what the page shows.
-          if (item.kind === "tool-run") {
+        {transcript.map((item, index) => {
+          const isLast = index === transcript.length - 1;
+          // Tool calls and reasoning collapse into one status line so the agent's actual output
+          // is what the page shows. See ActivityRun for what stays reachable inside it.
+          if (item.kind === "activity") {
             const enter = shouldAnimate(item.id) ? "message-enter" : "";
             return (
-              <div key={item.id} className={`message-row hub-message tool-run-row ${enter}`}>
-                <ToolRun messages={item.messages} />
+              <div key={item.id} className={`message-row hub-message activity-run-row ${enter}`}>
+                <ActivityRun messages={item.messages} failed={item.failed} live={isLast && state === "thinking"} />
               </div>
             );
           }
           const m = item.message;
           const enter = shouldAnimate(m.id) ? "message-enter" : "";
-          if (m.authorId === "system") {
+          const kind = renderKind(m);
+          if (kind === "system") {
             return (
               <div key={m.id} className={`message-row hub-message system-row ${enter}`}>
                 <div className="body system-body">{m.text}</div>
               </div>
             );
           }
-          const isUser = m.authorId === "user";
+          // Narration the agent produced part-way through a turn is demoted, not hidden: smaller
+          // type, no avatar, a quiet rail instead. It stays full text, selectable and in order -
+          // folding it into the disclosure would have buried the agent's own words behind a
+          // click, and this is the one thing on the page that is genuinely the agent speaking.
+          //
+          // The answer is the SAME message, promoted server-side once the turn actually ended
+          // (AgentManager.drainQueue). Nothing here rewrites or summarises it, which is why
+          // "all resolved" can only ever appear as the answer if the agent itself said it.
+          const isProgress = kind === "progress";
           return (
-            <div key={m.id} className={`message-row hub-message ${isUser ? "from-user" : ""} ${enter}`}>
-              {isUser ? <UserAvatar /> : <ProviderIcon provider={agent.provider} size={22} />}
+            <div
+              key={m.id}
+              className={`message-row hub-message ${kind === "user" ? "from-user" : ""} ${
+                isProgress ? "is-progress" : ""
+              } ${kind === "answer" ? "is-answer" : ""} ${enter}`}
+            >
+              {isProgress ? (
+                <span className="progress-rail" aria-hidden="true" />
+              ) : kind === "user" ? (
+                <UserAvatar />
+              ) : (
+                <ProviderIcon provider={agent.provider} size={22} />
+              )}
               <div className="message">
-                <div className={`body ${isErrorLine(m.text) ? "error-line" : ""}`}>{displayText(m.text)}</div>
+                <div className={`body ${kind === "error" ? "error-line" : ""}`}>{displayText(m.text)}</div>
               </div>
             </div>
           );
         })}
-        {state === "thinking" && <ThinkingIndicator label={`${agent.handle} is working…`} />}
+        {/* Suppressed when the tail of the transcript is already a live activity run, which
+            carries its own pulse - otherwise the page says the agent is working in two places. */}
+        {state === "thinking" && transcript[transcript.length - 1]?.kind !== "activity" && (
+          <ThinkingIndicator label={`${agent.handle} is working…`} />
+        )}
       </div>
 
       <Composer

@@ -7,6 +7,7 @@ import type {
   ChatChannel,
   ChatMessage,
   ProviderRateLimit,
+  ToolCallSummary,
   TurnUsage,
 } from "@solace/shared";
 import { getAdapter } from "../adapters";
@@ -18,6 +19,7 @@ import { extractLiveClaims, findUnreachableClaims, unreachableClaimNotice } from
 import { getCredentialSecrets, listSecretValues } from "./credentials";
 import type { PersistedAgentSession } from "./persistence";
 import { classifyIncoming, type IncomingKind } from "./turnIntent";
+import { describeToolCall } from "./toolLabel";
 import { WORKSPACE_ROOT } from "./workspace";
 
 export interface QueuedTurn {
@@ -782,6 +784,11 @@ export class AgentManager {
       text: displayText,
       model: opts.model,
       createdAt: new Date().toISOString(),
+      // Group chat only ever receives an agent's completed answer for a turn (drainQueue posts
+      // every intermediate line to the agent's own hub channel instead), so anything an agent
+      // says here is, by construction, final. Marked rather than left blank so the group chat
+      // uses the same renderer as the hub instead of relying on absence-means-answer.
+      agentKind: authorId === "user" ? undefined : "answer",
     };
     this.bus.postMessage(message);
 
@@ -1181,16 +1188,35 @@ export class AgentManager {
     let lastText = "";
     const isGroupTurn = replyChannel === "group";
     const ownChannel: ChatChannel = { agentId: runtime.config.id };
-    const post = (channel: ChatChannel, text: string) => {
+    // The id of the last "progress" message posted to the agent's own channel this turn. Once
+    // the turn genuinely completes it is promoted to "answer" - see the promotion block at the
+    // end of this method for why that can only be decided here and not while streaming.
+    let lastProgressMessageId: string | undefined;
+    // Stable for the whole turn, so the client can fold one turn's activity into one indicator
+    // instead of inferring turn boundaries from which messages happen to sit next to each other.
+    const turnId = randomUUID();
+    const post = (
+      channel: ChatChannel,
+      text: string,
+      extra: { agentKind?: ChatMessage["agentKind"]; tool?: ToolCallSummary } = {},
+    ): string | undefined => {
       // The agent may have been removed while this turn was in flight (removeAgent aborts
       // the controller, but an event already queued on the microtask/event-loop can still
       // land here in the brief window before the abort actually stops the CLI child) - don't
       // let a message get written into a channel whose agent no longer exists.
-      if (!this.agents.has(runtime.config.id)) return;
+      if (!this.agents.has(runtime.config.id)) return undefined;
       // Scrubbed here rather than at the call sites so every path an agent's own words take
-      // into stored history goes through it - see scrubSecrets.
+      // into stored history goes through it - see scrubSecrets. A tool call's derived label and
+      // its full argument detail are agent-originated text reaching storage by exactly the same
+      // route, so they are scrubbed on the same path rather than trusted for being "metadata":
+      // an API key passed as an argument to a shell command is the obvious way one leaks.
       const scrubbed = scrubSecrets(text);
-      if (scrubbed.redacted) {
+      const scrubbedLabel = extra.tool ? scrubSecrets(extra.tool.label) : undefined;
+      const scrubbedDetail = extra.tool ? scrubSecrets(extra.tool.detail) : undefined;
+      const tool: ToolCallSummary | undefined = extra.tool
+        ? { ...extra.tool, label: scrubbedLabel!.text, detail: scrubbedDetail!.text }
+        : undefined;
+      if (scrubbed.redacted || scrubbedLabel?.redacted || scrubbedDetail?.redacted) {
         this.bus.postMessage({
           id: nanoid(),
           channel,
@@ -1202,8 +1228,9 @@ export class AgentManager {
           createdAt: new Date().toISOString(),
         });
       }
+      const id = nanoid();
       this.bus.postMessage({
-        id: nanoid(),
+        id,
         channel,
         authorId: runtime.config.id,
         authorHandle: runtime.config.handle,
@@ -1211,7 +1238,11 @@ export class AgentManager {
         text: scrubbed.text,
         model: runtime.lastResolvedModel ?? runtime.config.model,
         createdAt: new Date().toISOString(),
+        agentKind: extra.agentKind,
+        tool,
+        turnId,
       });
+      return id;
     };
 
     // getAdapter/getRawKey/adapter.runTurn can all throw (e.g. an unsupported provider+authMode
@@ -1265,9 +1296,23 @@ export class AgentManager {
             // there. A turn addressed directly to the agent's hub already IS that "everything"
             // channel, so it posts straight through with no buffering.
             lastText = event.text;
-            post(isGroupTurn ? ownChannel : replyChannel, event.text);
+            // Posted as "progress", never as "answer". While the stream is still open there is
+            // no way to know whether this paragraph is the agent's conclusion or a line of
+            // narration it is about to continue past, and marking it "answer" on the chance
+            // that the stream ends here would regularly present a half-finished thought as the
+            // final word. The last one is promoted after the turn closes, below.
+            const id = post(isGroupTurn ? ownChannel : replyChannel, event.text, { agentKind: "progress" });
+            if (id) lastProgressMessageId = id;
+          } else if (event.type === "reasoning") {
+            post(ownChannel, event.text, { agentKind: "reasoning" });
           } else if (event.type === "tool-use") {
-            post(ownChannel, `_used ${event.description}_`);
+            // The label comes from the provider's real tool name and real arguments; when the
+            // adapter had no structured input to give (an in-stream notice), the already-built
+            // description is used as the name so the row still says something true rather than
+            // something invented. Text keeps the old `_used …_` wrapper so a client that predates
+            // agentKind - and every already-persisted message - still renders identically.
+            const summary = describeToolCall(event.toolName ?? event.description, event.input);
+            post(ownChannel, `_used ${event.description}_`, { agentKind: "tool", tool: summary });
           } else if (event.type === "usage") {
             runtime.lastUsage = event.usage;
             runtime.totalUsage = addUsage(runtime.totalUsage, event.usage);
@@ -1290,7 +1335,7 @@ export class AgentManager {
           } else if (event.type === "error" && event.message.trim()) {
             hadError = true;
             runtime.lastError = event.message.trim();
-            post(replyChannel, `error: ${event.message.trim()}`);
+            post(replyChannel, `error: ${event.message.trim()}`, { agentKind: "error" });
             runtime.status = "error";
             this.emitStatus(agentId);
           }
@@ -1307,7 +1352,7 @@ export class AgentManager {
         hadError = true;
         const message = err instanceof Error ? err.message : String(err);
         runtime.lastError = message;
-        post(replyChannel, `error: ${message}`);
+        post(replyChannel, `error: ${message}`, { agentKind: "error" });
       }
     }
 
@@ -1328,13 +1373,28 @@ export class AgentManager {
       if (runtime.abortKind === "timeout") {
         hadError = true;
         runtime.lastError = `turn stopped after ${Math.round(turnBudgetMs / 60000)} minutes without finishing`;
-        post(replyChannel, `error: ${runtime.lastError}`);
+        post(replyChannel, `error: ${runtime.lastError}`, { agentKind: "error" });
       } else if (runtime.abortKind === "stop" && this.agents.has(runtime.config.id)) {
-        post(ownChannel, "_stopped before this turn finished_");
+        post(ownChannel, "_stopped before this turn finished_", { agentKind: "progress" });
       }
     }
 
     if (wasInterrupted) this.scheduleResume(runtime, turn, Date.now() - turnStartedAt);
+
+    // Promote this turn's last piece of prose from "progress" to "answer".
+    //
+    // This is the only point at which "that was the final answer" is a fact rather than a bet:
+    // the stream is closed, the process exited, and nothing more is coming. It is deliberately
+    // skipped when the turn failed, timed out, was stopped, or was interrupted mid-sentence -
+    // in all of those cases the agent never reached a conclusion, and promoting its last
+    // half-thought would dress an abandoned turn up as a finished one. Those turns keep every
+    // message they produced, all rendered as the progress they actually were.
+    //
+    // Note this promotes an EXISTING message rather than writing a summary of the turn: the
+    // words shown as the answer are always words the agent itself said.
+    if (!hadError && !cancelled && lastProgressMessageId) {
+      this.bus.updateMessage(lastProgressMessageId, { agentKind: "answer" });
+    }
 
     // Recover from a stale session id exactly once, then never again for this turn. Without the
     // one-shot guard this is an infinite billed retry loop; with it, the worst case is a single

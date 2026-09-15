@@ -315,6 +315,41 @@ export interface ProviderPermissionInfo {
 
 export type ChatChannel = "group" | { agentId: string };
 
+/**
+ * What an agent message actually is.
+ *
+ * Until now the hub inferred this from the shape of the text - a `_used …_` wrapper meant a
+ * tool call, anything else was prose - which meant reasoning output was indistinguishable
+ * from an answer, and any client-side attempt to tell them apart would have been a guess that
+ * eventually hid something real. The source knows; the source says so.
+ *
+ * - "tool"      a single tool/command invocation. Carries `tool` with the provider's own name.
+ * - "reasoning" the model's thinking, when the provider emits it as a distinct item.
+ * - "progress"  prose the agent said mid-turn, before it had finished. Narration, not a result.
+ * - "answer"    the agent's final word for the turn. Set by promoting the last "progress"
+ *               message once the turn has genuinely completed - never guessed mid-stream.
+ * - "error"     a failure reported for this turn. Never collapsed, never demoted.
+ *
+ * Absent on every message persisted before this existed, and on user/system messages. An agent
+ * message with no kind renders as an answer, which is how the old hub already rendered it.
+ */
+export type AgentMessageKind = "answer" | "progress" | "tool" | "reasoning" | "error";
+
+/** One tool invocation, as reported by the provider. Nothing here is invented: `name` is the
+ * provider's own tool name and `detail` is its own arguments - `label` is derived from those two
+ * by a fixed table (see server/core/toolLabel.ts), never by asking a model to describe them. */
+export interface ToolCallSummary {
+  /** The tool name exactly as the provider reported it, e.g. "Read", "command_execution". */
+  name: string;
+  /** Short human label derived mechanically from `name` and the call's real arguments. */
+  label: string;
+  /** The full call - name and arguments - for the disclosure. Secret-scrubbed like all agent text. */
+  detail: string;
+  /** The process exit code, only when the provider actually reported one. Non-zero is surfaced
+   * as a failed step rather than being folded into the quiet "done" pile. */
+  exitCode?: number;
+}
+
 export interface ChatMessage {
   id: string;
   channel: ChatChannel;
@@ -333,6 +368,15 @@ export interface ChatMessage {
    * message the user most needs to notice was the least noticeable thing on screen. Absent on
    * older persisted messages, which read as "notice". */
   systemKind?: "notice" | "verification";
+  /** What this agent message is - see AgentMessageKind. Absent on user/system messages and on
+   * anything persisted before this field existed. */
+  agentKind?: AgentMessageKind;
+  /** Only set when agentKind is "tool". */
+  tool?: ToolCallSummary;
+  /** Which turn produced this message. Lets the client fold a whole turn's activity into one
+   * indicator instead of guessing at turn boundaries from adjacency. Absent on user messages
+   * and on history written before this existed - the client falls back to adjacency there. */
+  turnId?: string;
 }
 
 export interface ProviderStatus {
@@ -357,6 +401,11 @@ export type ServerEvent =
   | { type: "agent:updated"; payload: AgentConfig }
   | { type: "agent:removed"; payload: { agentId: string } }
   | { type: "chat:message"; payload: ChatMessage }
+  /** An already-posted message changed in place. Currently only used to promote a turn's last
+   * "progress" message to "answer" once the turn has actually finished - the only honest moment
+   * at which "this is the final answer" is knowable. Payload is the whole updated message, so a
+   * client that keys history by id just replaces its entry. */
+  | { type: "chat:message:updated"; payload: ChatMessage }
   | { type: "chat:cleared"; payload: { channel: ChatChannel } }
   | { type: "approval:requested"; payload: PendingApproval }
   | { type: "approval:resolved"; payload: { id: string; approved: boolean } }

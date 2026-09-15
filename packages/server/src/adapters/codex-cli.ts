@@ -89,8 +89,12 @@ export const codexCliAdapter: ProviderAdapter = {
       ...(sessionId ? ["resume", sessionId] : []),
       "--json",
       "--skip-git-repo-check",
-      "-C",
-      cwd,
+      // -C/--cd is an option of `codex exec`, NOT of `codex exec resume` - passing it to the
+      // resume subcommand makes codex reject the whole invocation with "unexpected argument
+      // '-C' found", which silently broke every turn for any agent that had a stored session.
+      // The child is already spawned with `cwd` below, so the working directory is correct
+      // either way; this flag is belt-and-braces for the cold-start path only.
+      ...(sessionId ? [] : ["-C", cwd]),
       ...forExec,
       ...(model ? ["-m", model] : []),
       // model_reasoning_effort is a TOML string value, hence the literal embedded quotes -
@@ -166,10 +170,23 @@ export const codexCliAdapter: ProviderAdapter = {
           if (event.type === "item.completed" && event.item) {
             if (event.item.type === "agent_message" && event.item.text) {
               onEvent({ type: "text", text: event.item.text });
+            } else if (event.item.type === "reasoning") {
+              // Reported as its own item type, so it does not have to be guessed at downstream.
+              // Codex spells the body `text` in some builds and `summary` in others; either way
+              // an item with no body at all is dropped rather than shown as an empty bubble.
+              const text = typeof event.item.text === "string" && event.item.text.trim()
+                ? event.item.text
+                : typeof event.item.summary === "string"
+                  ? event.item.summary
+                  : "";
+              if (text.trim()) onEvent({ type: "reasoning", text });
             } else if (event.item.type === "error") {
               onEvent({ type: "tool-use", description: `note: ${event.item.message ?? "codex reported a notice"}` });
             } else {
-              onEvent({ type: "tool-use", description: event.item.type });
+              // The whole item is passed as `input`: a command_execution item carries the real
+              // `command`, `exit_code` and `aggregated_output`, all of which were being thrown
+              // away - every shell call in the hub read as the literal word "command_execution".
+              onEvent({ type: "tool-use", description: event.item.type, toolName: event.item.type, input: event.item });
             }
           } else if (event.type === "turn.failed") {
             reportedError = true;
