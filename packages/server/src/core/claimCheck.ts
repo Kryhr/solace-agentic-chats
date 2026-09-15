@@ -24,6 +24,51 @@ export interface LocalUrlClaim {
   port: number;
 }
 
+/**
+ * Words that assert the thing is actually up right now. Merely naming a URL is not a claim -
+ * "I'll serve it at http://localhost:3010 next" and "I haven't checked whether
+ * http://localhost:3010 is running" are both perfectly honest sentences.
+ */
+const ASSERTS_AVAILABLE =
+  /\b(is |it's |its |now )?(live|running|up|serving|served|available|deployed|started|hosted)\b|\b(you can|go|head|browse|open|view|visit|see it)\b/i;
+
+/**
+ * Negation and hedging. Checked against the same sentence, and it wins over an availability
+ * word: "not running", "haven't verified it's live", "if it's live" must never be read as a
+ * claim. This matters more than catching every real overclaim - an agent that hedges honestly
+ * and gets publicly "corrected" for it is being taught the wrong lesson, and the whole point of
+ * this check is to reward verifying rather than to nag. When in doubt, stay quiet.
+ */
+const HEDGED_OR_NEGATED =
+  /\b(not|n't|never|nothing|nobody|none|no longer|yet|unverified|unconfirmed|haven't|hasn't|isn't|aren't|won't|can't|cannot|unable|failed|fails|refused|down|if|whether|once|after|unless|should be|would be|will be|going to|about to|next|todo|to-do|plan to|intend to|try|assume|assuming|maybe|might|may|could)\b/i;
+
+/**
+ * Sentence-ish segments. Newlines count as boundaries because agents write in bullets and
+ * headings as often as in prose, and a bullet's claim shouldn't borrow the next bullet's hedge.
+ */
+function segments(text: string): string[] {
+  return text
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Only the URLs this text actually asserts are up right now. Deliberately conservative: a URL
+ * in a sentence with no availability word, or with any negation/hedge, is not reported at all.
+ */
+export function extractLiveClaims(text: string): LocalUrlClaim[] {
+  const claimed = new Map<string, LocalUrlClaim>();
+  for (const segment of segments(text)) {
+    if (!ASSERTS_AVAILABLE.test(segment)) continue;
+    if (HEDGED_OR_NEGATED.test(segment)) continue;
+    for (const claim of extractLocalUrlClaims(segment)) {
+      claimed.set(`${claim.host}:${claim.port}`, claim);
+    }
+  }
+  return [...claimed.values()];
+}
+
 export function extractLocalUrlClaims(text: string): LocalUrlClaim[] {
   const seen = new Map<string, LocalUrlClaim>();
   for (const match of text.matchAll(LOCAL_URL)) {

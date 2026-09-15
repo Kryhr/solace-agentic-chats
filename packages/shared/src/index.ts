@@ -125,6 +125,12 @@ export interface ChatMessage {
   createdAt: string;
   /** The model that produced this message, if the author is an agent and a model was set. */
   model?: string;
+  /** What kind of system message this is, when authorId is "system". Everything used to render
+   * identically as faint centered text, which is right for bookkeeping ("task updated") and
+   * wrong for a message that actively contradicts a claim an agent just made - the one system
+   * message the user most needs to notice was the least noticeable thing on screen. Absent on
+   * older persisted messages, which read as "notice". */
+  systemKind?: "notice" | "verification";
 }
 
 export interface ProviderStatus {

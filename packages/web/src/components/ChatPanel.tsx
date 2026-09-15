@@ -211,6 +211,19 @@ export function ChatPanel({
             m.model || (author ? modelCatalog.find((c) => c.provider === author.provider)?.currentDefaultModel : undefined);
           const enter = shouldAnimate(m.id) ? "message-enter" : "";
           if (isSystem) {
+            // A verification notice contradicts something an agent just asserted, so it reads
+            // as a labelled callout rather than the faint centered bookkeeping used for
+            // "task updated" - see ChatMessage.systemKind.
+            if (m.systemKind === "verification") {
+              return (
+                <div key={m.id} className={`message-row system-row system-row-verify ${enter}`}>
+                  <div className="system-verify">
+                    <span className="system-verify-label">Unverified claim</span>
+                    <span className="system-verify-text">{m.text}</span>
+                  </div>
+                </div>
+              );
+            }
             return (
               <div key={m.id} className={`message-row system-row ${enter}`}>
                 <div className="body system-body">{m.text}</div>

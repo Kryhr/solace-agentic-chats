@@ -4,7 +4,7 @@ import { getAdapter } from "../adapters";
 import { ChatBus } from "./chatBus";
 import { parseMentions } from "./mentions";
 import type { ApprovalRegistry } from "./approvalRegistry";
-import { extractLocalUrlClaims, findUnreachableClaims, unreachableClaimNotice } from "./claimCheck";
+import { extractLiveClaims, findUnreachableClaims, unreachableClaimNotice } from "./claimCheck";
 import { getCredentialSecrets } from "./credentials";
 import { WORKSPACE_ROOT } from "./workspace";
 
@@ -642,7 +642,7 @@ export class AgentManager {
    * an observed failed connection.
    */
   private async checkLocalUrlClaims(agentId: string, text: string, channel: ChatChannel) {
-    const claims = extractLocalUrlClaims(text);
+    const claims = extractLiveClaims(text);
     if (claims.length === 0) return;
     const unreachable = await findUnreachableClaims(claims);
     if (unreachable.length === 0) return;
@@ -654,6 +654,7 @@ export class AgentManager {
       authorHandle: "system",
       mentions: [],
       text: unreachableClaimNotice(unreachable, new Date()),
+      systemKind: "verification",
       createdAt: new Date().toISOString(),
     });
   }

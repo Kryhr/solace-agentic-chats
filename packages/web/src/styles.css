@@ -42,6 +42,10 @@
 
   --ok: #4bbf8c;
   --warn: #d3a355;
+  /* Same wash/border pair the danger role already has, so a cautionary surface is built from
+     the palette rather than a one-off rgba at the component. */
+  --warn-wash: rgba(211, 163, 85, 0.09);
+  --warn-border: rgba(211, 163, 85, 0.3);
   --danger: #e0685f;
   --danger-wash: rgba(224, 104, 95, 0.09);
   --danger-border: rgba(224, 104, 95, 0.3);
@@ -1251,6 +1255,48 @@ body {
   font-family: var(--font-mono);
   text-align: center;
   white-space: pre-wrap;
+}
+
+/* A verification notice contradicts a claim an agent just made in this channel, so unlike the
+   faint centered bookkeeping above it has to be readable at a glance. Cautionary, not alarming:
+   the warn wash rather than danger, since nothing has failed - a claim simply didn't check out. */
+.system-row-verify {
+  align-self: stretch;
+  max-width: 100%;
+}
+
+.system-verify {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius-md);
+  background: var(--warn-wash);
+}
+
+.system-verify-label {
+  flex: none;
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--warn);
+}
+
+.system-verify-text {
+  font-size: var(--text-sm);
+  line-height: var(--lh-snug);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+}
+
+/* The label stacks above the text once the row is too narrow for both to share a line without
+   the message collapsing into a sliver. */
+@media (max-width: 560px) {
+  .system-verify {
+    flex-direction: column;
+    gap: var(--space-1);
+  }
 }
 
 /* ---- thinking indicator ------------------------------------------------ */
