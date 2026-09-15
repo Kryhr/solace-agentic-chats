@@ -1,54 +1,77 @@
 /* =========================================================================
    solace-agentic-chats — design system
 
-   Token discipline: every value below comes from one of five scales
-   (space, type, radius, shadow, motion). Nothing in this file uses a
-   one-off pixel value that isn't part of a scale, and no component
+   Token discipline: every value below comes from one of six scales
+   (space, type — which carries size, leading, tracking and weight —
+   radius, shadow, motion, and the layout rail). Nothing in this file uses
+   a one-off pixel value that isn't part of a scale, and no component
    redefines a scale locally.
+
+   Direction: chat-first and quiet. The content is the interface; the
+   chrome around it recedes. That means, concretely: almost no borders
+   (spacing and a half-step of surface do the separating), one warm
+   neutral ramp, one cool accent used sparingly, and a humanist face
+   doing the hierarchy work that boxes and rules used to do.
    ========================================================================= */
 
 :root {
-  /* ---- palette: warm charcoal, unchanged in direction, tightened in steps --- */
-  --gray-975: #151413;
-  --gray-950: #1a1918;
-  --gray-900: #1f1e1c;
-  --gray-850: #252321;
-  --gray-800: #2a2825;
-  --gray-750: #302e2a;
-  --gray-700: #37342f;
-  --gray-600: #45423b;
-  --gray-500: #635d55;
-  --gray-400: #948d82;
-  --gray-300: #bcb5a9;
+  /* ---- palette -----------------------------------------------------------
+     Warm charcoal, lifted off near-black. The old ramp bottomed out at
+     #151413, which is dark enough that every surface above it needed a
+     border to be visible at all. Starting a few steps higher means a
+     half-step of surface reads on its own and the borders can go. */
+  --gray-1000: #100f0e;
+  --gray-975: #171614;
+  --gray-950: #1b1917;
+  --gray-900: #201e1b;
+  --gray-850: #262320;
+  --gray-800: #2d2a26;
+  --gray-750: #34302b;
+  --gray-700: #3d3832;
+  --gray-600: #4b453d;
+  --gray-500: #726b61;
+  --gray-400: #9c9488;
+  --gray-300: #c8c1b6;
 
-  --bg: var(--gray-975);
-  --panel: var(--gray-950);
-  --surface-1: var(--gray-900);
-  --surface-2: var(--gray-850);
-  --surface-3: var(--gray-800);
-  --border: var(--gray-750);
-  --border-strong: var(--gray-600);
-  --hairline: rgba(255, 255, 255, 0.05);
+  --bg: var(--gray-950);
+  --panel: var(--gray-900);
+  --surface-1: var(--gray-850);
+  --surface-2: var(--gray-800);
+  --surface-3: var(--gray-750);
+  /* Both separators are now genuinely low-contrast. --border is for the few
+     places something really is an edge (a floating panel); --hairline is the
+     default, and most former borders became nothing at all. */
+  --border: #302c28;
+  --border-strong: var(--gray-700);
+  --hairline: rgba(255, 255, 255, 0.045);
+  --scrim: rgba(16, 15, 14, 0.62);
 
-  --text: #f2efe9;
+  --text: #efeae2;
   --text-secondary: var(--gray-300);
   --text-muted: var(--gray-400);
   --text-faint: var(--gray-500);
 
-  --accent: #7c93f2;
-  --accent-strong: #9db0ff;
-  --accent-wash: rgba(124, 147, 242, 0.1);
-  --accent-border: rgba(124, 147, 242, 0.32);
+  /* A muted periwinkle. Cool against a warm ground is the one deliberate
+     temperature contrast in the app, and it's the only hue left once green,
+     amber and red are spoken for by status. Lower chroma than the old
+     #7c93f2, which read as a default link blue sitting on top of the warmth
+     rather than with it. */
+  --accent: #8ea3d9;
+  --accent-strong: #aebde9;
+  --accent-wash: rgba(142, 163, 217, 0.12);
+  --accent-border: rgba(142, 163, 217, 0.3);
 
-  --ok: #4bbf8c;
-  --warn: #d3a355;
+  --ok: #7fb98f;
+  --ok-wash: rgba(127, 185, 143, 0.1);
+  --ok-border: rgba(127, 185, 143, 0.28);
+  --warn: #d2a45f;
   /* Same wash/border pair the danger role already has, so a cautionary surface is built from
      the palette rather than a one-off rgba at the component. */
-  --warn-wash: rgba(211, 163, 85, 0.09);
-  --warn-border: rgba(211, 163, 85, 0.3);
-  --danger: #e0685f;
-  --danger-wash: rgba(224, 104, 95, 0.09);
-  --danger-border: rgba(224, 104, 95, 0.3);
+  --warn-wash: rgba(210, 164, 95, 0.1);
+  --warn-border: rgba(210, 164, 95, 0.28);
+  --danger: #dd7a6e;
+  --danger-wash: rgba(221, 122, 110, 0.1);
+  --danger-border: rgba(221, 122, 110, 0.28);
 
   /* ---- space: 4px base, no value off this scale ------------------------- */
   --space-0: 0;
@@ -61,44 +84,66 @@
   --space-7: 28px;
   --space-8: 32px;
   --space-10: 40px;
+  --space-12: 48px;
 
-  /* ---- type: 1.125 modular scale off a 14px reading size ---------------- */
-  --text-2xs: 0.6875rem; /* 11 — labels, chips */
+  /* ---- type --------------------------------------------------------------
+     Source Sans 3 (SIL OFL 1.1). Humanist, not geometric: a calligraphic
+     skeleton, open apertures, angled terminals. It has a smaller x-height
+     than the grotesques it replaces, so the reading size moves 14 → 15 to
+     land at the same optical size, and the whole scale moves with it.
+     Source Code Pro (SIL OFL 1.1) is its sibling mono. */
+  --text-2xs: 0.6875rem; /* 11 — micro labels, chips */
   --text-xs: 0.75rem; /* 12 — meta, hints */
   --text-sm: 0.8125rem; /* 13 — dense UI chrome */
-  --text-base: 0.875rem; /* 14 — reading */
-  --text-md: 0.9375rem; /* 15 */
-  --text-lg: 1.0625rem; /* 17 — page titles */
-  --text-xl: 1.3125rem; /* 21 — hub title */
+  --text-base: 0.9375rem; /* 15 — reading */
+  --text-md: 1rem; /* 16 — page titles */
+  --text-lg: 1.125rem; /* 18 — empty-state titles, modal titles */
+  --text-xl: 1.375rem; /* 22 — reserved; nothing in the app is this loud */
 
   /* line-height scales inversely with size */
-  --lh-tight: 1.2;
-  --lh-snug: 1.38;
-  --lh-normal: 1.55;
+  --lh-tight: 1.25;
+  --lh-snug: 1.45;
+  --lh-normal: 1.65;
 
-  --tracking-tight: -0.012em;
-  --tracking-wide: 0.07em;
+  /* Three weights, and only three. The old 650 + tight tracking on a 21px
+     title is exactly the "loud heading" this pass is removing. */
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
 
-  --font-sans: "Geist", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* A humanist face at UI sizes does not want tightening; this is a whisper,
+     applied only at --text-md and above. */
+  --tracking-tight: -0.004em;
+  --tracking-wide: 0.06em;
 
-  /* Shared cap for the chat column (message rows) and the composer beneath
-     it, so the two always line up exactly. Wide enough to breathe on an
-     ultrawide monitor, still capped so lines don't run on forever. */
-  --chat-col-max: min(1100px, 92%);
+  --font-sans: "Source Sans 3", "Source Sans Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Source Code Pro", ui-monospace, SFMono-Regular, Menlo, monospace;
 
-  /* ---- radius: tighter than before; a dev tool, not a consumer app ------ */
-  --radius-xs: 4px;
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
+  /* ---- layout rail -------------------------------------------------------
+     One measure shared by the page header, the transcript and the composer,
+     and one padding expression that centres it. Previously the header was
+     padded to --space-6, the transcript to --space-8 and the composer to
+     --space-8 plus a 34px fudge, so the three never lined up on any edge.
+     1100px was also far too wide a column for a chat: at 1440px it put
+     roughly 150 characters on a line. */
+  --chat-col-max: min(820px, 100%);
+  --rail-min: var(--space-8);
+  --rail-pad: max(var(--rail-min), (100% - var(--chat-col-max)) / 2);
+  --sidebar-w: 268px;
+
+  /* ---- radius: softened one step; calm, still not a consumer app -------- */
+  --radius-xs: 5px;
+  --radius-sm: 7px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
   --radius-full: 999px;
 
-  /* ---- elevation: four steps, all low-alpha ---------------------------- */
-  --shadow-xs: 0 1px 1px rgba(0, 0, 0, 0.2);
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3), 0 1px 1px rgba(0, 0, 0, 0.2);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.32);
-  --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
+  /* ---- elevation: four steps, all low-alpha, only where something floats */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.18);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.24);
+  --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 20px 48px rgba(0, 0, 0, 0.44), 0 2px 8px rgba(0, 0, 0, 0.24);
   --ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-border);
   --ring-tight: 0 0 0 2px var(--accent-border);
 
@@ -106,10 +151,18 @@
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
   --dur-1: 90ms; /* immediate state feedback: hover, press */
-  --dur-2: 150ms; /* small transitions */
-  --dur-3: 240ms; /* entrances of new surfaces */
+  --dur-2: 160ms; /* small transitions */
+  --dur-3: 260ms; /* entrances of new surfaces */
 
   color-scheme: dark;
+}
+
+/* The rail's floor tightens on a narrow viewport; the expression itself
+   doesn't change, so header/transcript/composer stay locked together. */
+@media (max-width: 860px) {
+  :root {
+    --rail-min: var(--space-4);
+  }
 }
 
 * {
@@ -128,8 +181,8 @@ body {
   color: var(--text);
   font-family: var(--font-sans);
   font-size: var(--text-base);
+  font-weight: var(--weight-normal);
   line-height: var(--lh-normal);
-  font-feature-settings: "cv05" 1, "ss03" 1;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -140,7 +193,7 @@ body {
 }
 
 ::selection {
-  background: rgba(124, 147, 242, 0.25);
+  background: var(--accent-border);
   color: var(--text);
 }
 
@@ -242,10 +295,13 @@ body {
 .select {
   appearance: none;
   -webkit-appearance: none;
-  border: 1px solid var(--border);
+  /* At rest a picker is a quiet chip, not a form field. The edge only arrives
+     on hover/focus, so a header carrying three of them doesn't read as a
+     toolbar of boxes. */
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  background-color: var(--surface-2);
-  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%23948d82' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.75 6 7.75l3-3'/%3E%3C/svg%3E");
+  background-color: var(--surface-1);
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%239c9488' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.75 6 7.75l3-3'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right var(--space-2) center;
   background-size: 12px 12px;
@@ -260,12 +316,12 @@ body {
     color var(--dur-2) var(--ease-in-out);
 }
 .select:hover {
-  border-color: var(--border-strong);
-  background-color: var(--surface-3);
+  border-color: var(--border);
+  background-color: var(--surface-2);
   color: var(--text);
 }
 .select:active {
-  background-color: var(--surface-1);
+  background-color: var(--surface-3);
 }
 .select:disabled {
   opacity: 0.45;
@@ -285,7 +341,7 @@ body {
   gap: var(--space-1);
   border-radius: var(--radius-sm);
   font-size: var(--text-sm);
-  font-weight: 500;
+  font-weight: var(--weight-medium);
   line-height: var(--lh-tight);
   padding: 6px var(--space-3);
   cursor: pointer;
@@ -301,8 +357,8 @@ body {
 .btn-primary {
   border: 1px solid transparent;
   background: var(--accent);
-  color: var(--gray-975);
-  font-weight: 600;
+  color: var(--gray-1000);
+  font-weight: var(--weight-semibold);
 }
 .btn-primary:hover:not(:disabled) {
   background: var(--accent-strong);
@@ -318,12 +374,12 @@ body {
 }
 
 .btn-secondary {
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   background: var(--surface-1);
   color: var(--text-secondary);
 }
 .btn-secondary:hover:not(:disabled) {
-  border-color: var(--border-strong);
+  border-color: var(--border);
   background: var(--surface-2);
   color: var(--text);
 }
@@ -375,7 +431,7 @@ body {
 
 .app {
   display: grid;
-  grid-template-columns: 276px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   height: 100%;
   min-width: 0;
   position: relative;
@@ -391,11 +447,11 @@ body {
   align-items: center;
   gap: var(--space-2);
   background: var(--surface-2);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border);
   box-shadow: var(--shadow-md);
   color: var(--text-secondary);
   font-size: var(--text-xs);
-  font-weight: 500;
+  font-weight: var(--weight-medium);
   padding: 5px var(--space-3);
   border-radius: var(--radius-full);
   animation: enter-rise var(--dur-3) var(--ease-out) both;
@@ -420,13 +476,15 @@ body {
 }
 
 /* =========================================================================
-   Sidebar — rebuilt for density.
-   Fixed header, one scroll region, pinned footer nav.
+   Sidebar
+   Was: a bordered column with a ruled header, ruled section labels and a
+   ruled footer — five horizontal lines before a single agent is listed.
+   Now: one warm surface a half-step off the page, separated from the chat
+   by that step alone, with spacing doing the sectioning.
    ========================================================================= */
 
 .sidebar {
   background: var(--panel);
-  border-right: 1px solid var(--border);
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   min-height: 0;
@@ -437,13 +495,14 @@ body {
   display: flex;
   align-items: baseline;
   gap: var(--space-2);
-  padding: var(--space-4) var(--space-4) var(--space-3);
-  border-bottom: 1px solid var(--border);
+  padding: var(--space-5) var(--space-4) var(--space-4);
 }
 
+/* The wordmark is the one place a little character is welcome; it earns it
+   with weight and a touch of tracking rather than with size. */
 .sidebar-header h1 {
-  font-size: var(--text-md);
-  font-weight: 650;
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-tight);
   line-height: var(--lh-tight);
   margin: 0;
@@ -455,16 +514,16 @@ body {
   color: var(--text-faint);
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
-  font-weight: 500;
+  font-weight: var(--weight-normal);
 }
 
 .sidebar-scroll {
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: var(--space-3) var(--space-2) var(--space-4);
+  padding: var(--space-1) var(--space-3) var(--space-6);
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-7);
 }
 
 .sidebar-group {
@@ -473,35 +532,28 @@ body {
   gap: var(--space-1);
 }
 
+/* Sentence case, not uppercase-with-tracking. An all-caps micro-label is the
+   fastest way to make a panel read as a dev-tool inspector; this is a quiet
+   word introducing a list. */
 .sidebar-section-label {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: var(--space-2);
-  font-size: var(--text-2xs);
-  font-weight: 600;
-  letter-spacing: var(--tracking-wide);
-  text-transform: uppercase;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
   color: var(--text-faint);
   padding: 0 var(--space-2);
-  margin-bottom: var(--space-1);
+  margin-bottom: var(--space-2);
 }
 
 .sidebar-section-label .count {
   font-variant-numeric: tabular-nums;
   color: var(--text-faint);
-  font-weight: 500;
-  letter-spacing: 0;
-}
-
-.sidebar-section-label .label-rule {
-  flex: 1;
-  height: 1px;
-  background: var(--hairline);
+  font-weight: var(--weight-normal);
 }
 
 .sidebar-footer {
-  border-top: 1px solid var(--border);
-  padding: var(--space-2);
+  padding: var(--space-2) var(--space-3) var(--space-3);
 }
 
 /* A nav row, not a button that looks like the "Add agent" affordance. */
@@ -515,8 +567,8 @@ body {
   color: var(--text-muted);
   font-size: var(--text-sm);
   line-height: var(--lh-tight);
-  padding: 7px var(--space-2);
-  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
   cursor: pointer;
   text-align: left;
   transition:
@@ -562,13 +614,12 @@ body {
   border-radius: var(--radius-md);
   background: transparent;
   cursor: pointer;
-  transition:
-    background-color var(--dur-1) var(--ease-in-out),
-    border-color var(--dur-1) var(--ease-in-out);
+  transition: background-color var(--dur-1) var(--ease-in-out);
 }
+/* Hover is a wash, not a wash plus an outline. Twenty agents shouldn't be
+   twenty boxes the moment the pointer crosses the list. */
 .agent-row:hover {
   background: var(--surface-1);
-  border-color: var(--border);
 }
 .agent-row:active {
   background: var(--surface-2);
@@ -611,7 +662,7 @@ body {
 }
 
 .agent-handle {
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   font-size: var(--text-sm);
   line-height: var(--lh-tight);
   color: var(--text);
@@ -672,7 +723,7 @@ body {
   border: 1px solid transparent;
   border-radius: var(--radius-xs);
   background-color: transparent;
-  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%23635d55' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.75 6 7.75l3-3'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%23726b61' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.75 6 7.75l3-3'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 2px center;
   background-size: 11px 11px;
@@ -691,7 +742,7 @@ body {
 .agent-row:hover .trust-select,
 .trust-select:hover,
 .trust-select:focus-visible {
-  border-color: var(--border-strong);
+  border-color: var(--border);
   background-color: var(--surface-2);
   color: var(--text-secondary);
 }
@@ -709,7 +760,7 @@ body {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1px var(--hairline);
 }
 
 .user-avatar {
@@ -722,7 +773,7 @@ body {
   flex-shrink: 0;
   background: var(--surface-3);
   color: var(--text-muted);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1px var(--hairline);
 }
 
 .status-dot {
@@ -759,14 +810,12 @@ body {
   background: transparent;
   color: var(--text-faint);
   border-radius: var(--radius-md);
-  padding: 7px var(--space-2);
+  padding: var(--space-2);
   cursor: pointer;
   font-size: var(--text-sm);
   line-height: var(--lh-tight);
   text-align: left;
-  margin-top: 2px;
   transition:
-    border-color var(--dur-1) var(--ease-in-out),
     color var(--dur-1) var(--ease-in-out),
     background-color var(--dur-1) var(--ease-in-out);
 }
@@ -775,7 +824,6 @@ body {
 }
 .add-agent-btn:hover {
   background: var(--surface-1);
-  border-color: var(--border);
   color: var(--text);
 }
 .add-agent-btn:active {
@@ -805,7 +853,7 @@ body {
   align-items: center;
   column-gap: var(--space-2);
   padding: 6px var(--space-2);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   border: 1px solid transparent;
   transition: background-color var(--dur-1) var(--ease-in-out);
 }
@@ -926,11 +974,9 @@ body {
    peer of it, so it sits one step down in weight rather than repeating the same treatment. */
 .connection-subhead {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: var(--space-2);
   font-size: var(--text-2xs);
-  letter-spacing: var(--tracking-wide);
-  text-transform: uppercase;
   color: var(--text-faint);
   padding: 0 var(--space-2);
   margin-bottom: var(--space-1);
@@ -959,7 +1005,7 @@ body {
    the monospace address and the badge in place of a provider glyph are there so the two kinds
    are never skimmed as the same thing. */
 .credential-row.is-ssh .provider-name {
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(--font-mono);
   font-size: var(--text-xs);
 }
 
@@ -970,7 +1016,7 @@ body {
   font-size: 9px;
   letter-spacing: var(--tracking-wide);
   color: var(--text-faint);
-  border: 1px solid var(--border);
+  background: var(--surface-2);
   border-radius: var(--radius-sm);
   width: 20px;
   height: 20px;
@@ -979,7 +1025,7 @@ body {
 .ssh-key-input {
   width: 100%;
   box-sizing: border-box;
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(--font-mono);
   font-size: var(--text-2xs);
   color: var(--text);
   background: var(--surface-1);
@@ -999,14 +1045,16 @@ body {
   margin: 2px var(--space-2) 0;
 }
 
+/* A form that opened inside the list used to announce itself with a border.
+   The surface step is enough; the border was one more box in a panel that
+   already had too many. */
 .connection-add {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
   margin: var(--space-2);
-  padding: var(--space-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
   background: var(--surface-1);
 }
 
@@ -1017,8 +1065,8 @@ body {
   font: inherit;
   font-size: var(--text-xs);
   color: var(--text);
-  background: var(--surface-1);
-  border: 1px solid var(--border);
+  background: var(--surface-2);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
   padding: 5px 7px;
   transition:
@@ -1031,13 +1079,13 @@ body {
 }
 .connection-search:hover,
 .connection-field input:hover {
-  border-color: var(--border-strong);
+  border-color: var(--border);
 }
 .connection-search:focus,
 .connection-field input:focus {
   outline: none;
   border-color: var(--accent-border);
-  background-color: var(--surface-2);
+  background-color: var(--surface-3);
   box-shadow: var(--ring-tight);
 }
 
@@ -1064,25 +1112,26 @@ body {
   gap: 1px;
   text-align: left;
   padding: 5px 6px;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  background: transparent;
+  background: var(--surface-2);
   color: var(--text-secondary);
   cursor: pointer;
   transition: border-color var(--dur-1) var(--ease-in-out), background-color var(--dur-1) var(--ease-in-out);
 }
 .catalog-tile:hover {
-  background: var(--surface-2, rgba(255, 255, 255, 0.04));
-  border-color: var(--text-faint);
+  background: var(--surface-3);
+  border-color: var(--border);
 }
 .catalog-tile.is-custom {
   border-style: dashed;
+  border-color: var(--border-strong);
 }
 /* Local runtimes sit in the same grid as the hosted providers but are a different kind of
    thing - nothing is billed and no key is needed - so they carry the same green the "local"
    provider icon uses rather than being visually interchangeable with a paid endpoint. */
 .catalog-tile.is-local {
-  border-left: 2px solid rgba(127, 176, 105, 0.55);
+  border-left: 2px solid var(--ok);
 }
 
 .catalog-tile-name {
@@ -1170,28 +1219,34 @@ body {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: var(--space-6) var(--space-8) var(--space-8);
+  /* The rail: same expression as the header and composer, so all three share
+     one left and right edge. `both-edges` reserves the scrollbar gutter on
+     both sides, which keeps the transcript optically centred on the same
+     axis as the composer below it (which has no scrollbar). */
+  scrollbar-gutter: stable both-edges;
+  padding: var(--space-8) var(--rail-pad) var(--space-6);
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-6);
 }
 
 /* Empty states: a title, a reason, and the actual next action. */
 .chat-empty {
   margin: auto;
-  max-width: 46ch;
+  max-width: 44ch;
   text-align: center;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-3);
   animation: enter-fade var(--dur-3) var(--ease-out) both;
 }
 .chat-empty-title {
-  font-size: var(--text-md);
-  font-weight: 600;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-tight);
   color: var(--text-secondary);
   line-height: var(--lh-tight);
+  text-wrap: balance;
 }
 .chat-empty-body {
   font-size: var(--text-sm);
@@ -1202,8 +1257,6 @@ body {
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
   background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-bottom-width: 2px;
   border-radius: var(--radius-xs);
   padding: 1px 5px;
   color: var(--text-muted);
@@ -1415,10 +1468,13 @@ body {
   flex-shrink: 0;
 }
 
+/* No bar, no rule. The composer is the page ground with a field floating on
+   it, so the transcript runs into the field rather than stopping at an edge.
+   The rail padding is the same expression the transcript uses, so the field
+   and the messages above it share a left edge. */
 .composer {
-  border-top: 1px solid var(--border);
-  padding: var(--space-3) var(--space-8) var(--space-4);
-  background: var(--panel);
+  padding: var(--space-3) var(--rail-pad) var(--space-5);
+  background: transparent;
   flex-shrink: 0;
 }
 
@@ -1426,11 +1482,13 @@ body {
   display: flex;
   align-items: flex-end;
   gap: var(--space-2);
-  max-width: calc(var(--chat-col-max) + 34px);
+  min-width: 0;
+  max-width: var(--chat-col-max);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
   background: var(--surface-1);
-  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-4);
+  box-shadow: var(--shadow-xs);
   transition:
     border-color var(--dur-2) var(--ease-in-out),
     box-shadow var(--dur-2) var(--ease-in-out),
@@ -1470,15 +1528,15 @@ body {
 /* A square icon button, sized to the field's own rhythm. */
 .send-btn {
   flex-shrink: 0;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
   border: 1px solid transparent;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-full);
   background: var(--accent);
-  color: var(--gray-975);
+  color: var(--gray-1000);
   cursor: pointer;
   transition:
     background-color var(--dur-1) var(--ease-in-out),
@@ -1492,14 +1550,14 @@ body {
   transform: scale(0.94);
 }
 .send-btn:disabled {
-  background: transparent;
-  border-color: var(--border);
+  background: var(--surface-3);
+  border-color: transparent;
   color: var(--text-faint);
   cursor: not-allowed;
 }
 
 .composer-hint {
-  max-width: calc(var(--chat-col-max) + 34px);
+  max-width: var(--chat-col-max);
   margin-top: 6px;
   font-size: var(--text-2xs);
   line-height: var(--lh-tight);
@@ -1514,13 +1572,15 @@ body {
 
 /* ---- autocomplete menu ------------------------------------------------- */
 
+/* Anchored to the rail, so the menu's left edge lines up with the composer
+   field it is completing. */
 .mention-menu {
   position: absolute;
   bottom: 100%;
-  left: var(--space-8);
+  left: var(--rail-pad);
   margin-bottom: var(--space-1);
-  background: var(--surface-1);
-  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
   padding: var(--space-1);
@@ -1528,7 +1588,7 @@ body {
   flex-direction: column;
   gap: 1px;
   min-width: 220px;
-  max-width: min(420px, calc(100% - var(--space-8) * 2));
+  max-width: min(420px, calc(100% - var(--rail-pad) * 2));
   max-height: 248px;
   overflow-y: auto;
   z-index: 5;
@@ -1552,7 +1612,7 @@ body {
   width: 100%;
 }
 .mention-option:hover {
-  background: var(--surface-2);
+  background: var(--surface-3);
   color: var(--text);
 }
 .mention-option.active {
@@ -1564,7 +1624,7 @@ body {
 .slash-command-name {
   font-family: var(--font-mono);
   color: var(--accent-strong);
-  font-weight: 500;
+  font-weight: var(--weight-medium);
   flex-shrink: 0;
 }
 
@@ -1585,7 +1645,7 @@ body {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(10, 9, 8, 0.6);
+  background: var(--scrim);
   backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
@@ -1595,16 +1655,18 @@ body {
   animation: enter-fade var(--dur-2) var(--ease-out) both;
 }
 
+/* A modal genuinely floats, so this is one of the few places that keeps an
+   edge and a real shadow. */
 .modal {
   background: var(--panel);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border);
   box-shadow: var(--shadow-lg);
   border-radius: var(--radius-lg);
   width: 100%;
-  max-width: 420px;
+  max-width: 440px;
   max-height: 100%;
   overflow-y: auto;
-  padding: var(--space-5);
+  padding: var(--space-6);
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
@@ -1614,15 +1676,16 @@ body {
 .modal h3 {
   margin: 0;
   font-size: var(--text-lg);
-  font-weight: 650;
+  font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-tight);
   line-height: var(--lh-tight);
   color: var(--text);
+  text-wrap: balance;
 }
 
 .modal label {
   font-size: var(--text-xs);
-  font-weight: 500;
+  font-weight: var(--weight-medium);
   line-height: var(--lh-tight);
   color: var(--text-muted);
   display: flex;
@@ -1631,7 +1694,7 @@ body {
 }
 
 .modal input {
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
   padding: 7px var(--space-2);
   font-size: var(--text-sm);
@@ -1646,7 +1709,7 @@ body {
   color: var(--text-faint);
 }
 .modal input:hover {
-  border-color: var(--border-strong);
+  border-color: var(--border);
 }
 .modal input:focus,
 .modal .select:focus {
@@ -1696,13 +1759,19 @@ body {
    Hub page / archives page — shared page header
    ========================================================================= */
 
+/* Page header
+   Was: a --panel bar with a border-bottom, carrying a 21px/650 title. Three
+   separate devices (a surface change, a rule, and a loud heading) all doing
+   the same job of saying "this is the top of the page". Now there is one:
+   whitespace above the title. The bar is gone, the rule is gone, the title
+   is 16px at 600 and the meta under it is 12px muted — and the whole block
+   sits on the same rail as the transcript, which it never used to. */
 .hub-page-header {
   display: flex;
   align-items: center;
   gap: var(--space-4);
-  padding: var(--space-3) var(--space-6);
-  border-bottom: 1px solid var(--border);
-  background: var(--panel);
+  padding: var(--space-6) var(--rail-pad) var(--space-2);
+  background: transparent;
   flex-shrink: 0;
   flex-wrap: wrap;
   row-gap: var(--space-3);
@@ -1726,11 +1795,11 @@ body {
     color var(--dur-1) var(--ease-in-out);
 }
 .back-btn:hover {
-  background: var(--surface-2);
+  background: var(--surface-1);
   color: var(--text);
 }
 .back-btn:active {
-  background: var(--surface-3);
+  background: var(--surface-2);
 }
 
 .hub-page-identity {
@@ -1742,10 +1811,11 @@ body {
 
 .hub-page-identity h2 {
   margin: 0;
-  font-size: var(--text-xl);
-  font-weight: 650;
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-tight);
   line-height: var(--lh-tight);
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1766,43 +1836,47 @@ body {
 
 .hub-page-settings {
   display: flex;
+  align-items: flex-end;
   gap: var(--space-2);
   margin-left: auto;
   flex-wrap: wrap;
 }
 
+/* Sentence case and normal weight, matching the sidebar's section labels.
+   Uppercase-with-tracking on three stacked pickers made the header read as
+   a control panel rather than as the top of a conversation. */
 .hub-page-settings label {
   display: flex;
   flex-direction: column;
   gap: 3px;
   font-size: var(--text-2xs);
-  font-weight: 600;
+  font-weight: var(--weight-normal);
   color: var(--text-faint);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-wide);
   line-height: var(--lh-tight);
 }
 .hub-page-settings .select {
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
-  text-transform: none;
-  letter-spacing: 0;
 }
 
+/* The header is capped to the same rail as the transcript, which is narrower
+   than the hub's five controls need, so this row wraps at every width. Push
+   it right on the wrapped line rather than letting two destructive buttons
+   hug the left edge directly above the first message. */
 .hub-page-actions {
   display: flex;
   gap: var(--space-2);
   align-items: flex-end;
+  margin-left: auto;
 }
 
 .hub-usage-bar {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-2) var(--space-6);
-  border-bottom: 1px solid var(--border);
+  padding: var(--space-1) var(--rail-pad) var(--space-2);
   flex-shrink: 0;
-  background: var(--panel);
+  background: transparent;
 }
 
 .usage-meter {
@@ -1844,7 +1918,7 @@ body {
   display: flex;
   align-items: flex-start;
   gap: var(--space-2);
-  margin: var(--space-3) var(--space-6) 0;
+  margin: var(--space-2) var(--rail-pad) 0;
   padding: var(--space-2) var(--space-3);
   background: var(--danger-wash);
   border: 1px solid var(--danger-border);
@@ -1866,7 +1940,7 @@ body {
    ========================================================================= */
 
 .archive-entry {
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
   background: var(--surface-1);
   overflow: hidden;
@@ -1875,7 +1949,7 @@ body {
   transition: border-color var(--dur-1) var(--ease-in-out);
 }
 .archive-entry:hover {
-  border-color: var(--border-strong);
+  border-color: var(--border);
 }
 
 .archive-entry-header {
@@ -1903,7 +1977,7 @@ body {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   font-size: var(--text-sm);
   line-height: var(--lh-tight);
   min-width: 0;
@@ -1926,7 +2000,7 @@ body {
 }
 
 .archive-entry-body {
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--hairline);
   padding: var(--space-3);
   display: flex;
   flex-direction: column;
@@ -1977,8 +2051,8 @@ body {
   display: flex;
   align-items: flex-start;
   gap: var(--space-2);
-  background: var(--surface-1);
-  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
   border-left: 2px solid var(--warn);
   box-shadow: var(--shadow-lg);
   border-radius: var(--radius-md);
@@ -2000,7 +2074,7 @@ body {
 }
 .approval-title strong {
   color: var(--text);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
 }
 
 .approval-description {
@@ -2028,37 +2102,35 @@ body {
     grid-template-rows: minmax(0, auto) minmax(0, 1fr);
   }
 
+  /* The sidebar keeps a hairline here and only here: stacked above the
+     transcript it is no longer beside a different surface, so the half-step
+     of background has nothing to read against. */
   .sidebar {
-    border-right: none;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--hairline);
     max-height: 42vh;
   }
 
+  /* Inline padding is --rail-pad everywhere, and --rail-min drops to 16px at
+     this breakpoint, so none of these need restating. Only the block padding
+     and rhythm tighten. */
   .chat-history,
   .hub-page-chat {
-    padding: var(--space-4) var(--space-4) var(--space-6);
-    gap: var(--space-4);
+    padding-top: var(--space-5);
+    padding-bottom: var(--space-5);
+    gap: var(--space-5);
+  }
+
+  .hub-page-header {
+    padding-top: var(--space-4);
   }
 
   .composer {
-    padding: var(--space-2) var(--space-4) var(--space-3);
+    padding-bottom: var(--space-4);
   }
 
   .mention-menu {
-    left: var(--space-4);
-    right: var(--space-4);
+    right: var(--rail-pad);
     max-width: none;
-  }
-
-  .hub-page-header,
-  .hub-usage-bar {
-    padding-left: var(--space-4);
-    padding-right: var(--space-4);
-  }
-
-  .hub-error-banner {
-    margin-left: var(--space-4);
-    margin-right: var(--space-4);
   }
 
   .hub-page-settings {
@@ -2082,10 +2154,8 @@ body {
 }
 
 @media (max-width: 520px) {
-  .hub-page-identity h2 {
-    font-size: var(--text-lg);
-  }
-
+  /* The title used to be stepped down here from 21px. It no longer needs to
+     be: --text-md holds at any width. */
   .hub-page-settings label {
     flex: 1;
     min-width: 96px;
@@ -2110,7 +2180,7 @@ body {
   flex-direction: column;
   gap: var(--space-2);
   width: var(--chat-col-max);
-  margin: var(--space-5) auto var(--space-4);
+  margin: var(--space-6) auto var(--space-4);
 }
 
 .skills-search,
@@ -2121,7 +2191,7 @@ body {
   font-size: var(--text-base);
   color: var(--text);
   background: var(--surface-1);
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
 }
 
@@ -2129,7 +2199,7 @@ body {
 .skills-repo-input:focus-visible {
   outline: none;
   border-color: var(--accent-border);
-  box-shadow: 0 0 0 2px var(--accent-wash);
+  box-shadow: var(--ring-tight);
 }
 
 .skills-import-row {
@@ -2150,15 +2220,17 @@ body {
   font-size: var(--text-sm);
   color: var(--text);
   background: var(--surface-2);
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
   cursor: pointer;
-  transition: background-color 120ms ease, border-color 120ms ease;
+  transition:
+    background-color var(--dur-1) var(--ease-in-out),
+    border-color var(--dur-1) var(--ease-in-out);
 }
 
 .skills-import-btn:hover:not(:disabled) {
   background: var(--surface-3);
-  border-color: var(--border-strong);
+  border-color: var(--border);
 }
 
 .skills-import-btn:disabled {
@@ -2184,16 +2256,14 @@ body {
 }
 
 .skill-entry {
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-4);
   background: var(--surface-1);
-  border: 1px solid var(--border);
   border-radius: var(--radius-md);
 }
 
 .skill-entry-name {
-  font-size: var(--text-md);
-  font-weight: 600;
-  letter-spacing: var(--tracking-tight);
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
   color: var(--text);
 }
 
@@ -2220,11 +2290,11 @@ body {
   border: 1px solid var(--accent-border);
   border-radius: var(--radius-full);
   cursor: pointer;
-  transition: background-color 120ms ease;
+  transition: background-color var(--dur-1) var(--ease-in-out);
 }
 
 .skill-install-btn:hover:not(:disabled) {
-  background: rgba(124, 147, 242, 0.18);
+  background: var(--accent-border);
 }
 
 .skill-install-btn:disabled {
@@ -2236,8 +2306,8 @@ body {
   padding: 4px var(--space-3);
   font-size: var(--text-xs);
   color: var(--ok);
-  background: rgba(75, 191, 140, 0.1);
-  border: 1px solid rgba(75, 191, 140, 0.28);
+  background: var(--ok-wash);
+  border: 1px solid var(--ok-border);
   border-radius: var(--radius-full);
 }
 
@@ -2260,12 +2330,13 @@ body {
   bottom: 100%;
   margin-bottom: var(--space-2);
   background: var(--surface-2);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
-  padding: var(--space-3);
+  padding: var(--space-4);
   z-index: 5;
   animation: enter-scale var(--dur-2) var(--ease-out);
+  transform-origin: bottom center;
 }
 .popover-left {
   left: 0;
@@ -2274,14 +2345,17 @@ body {
   right: 0;
 }
 
+/* Quiet at rest: it sits inside the composer field, where a second bordered
+   control next to the send button made the field read as a toolbar. The
+   edge arrives on hover. */
 .popover-trigger {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  color: var(--text-muted);
-  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-faint);
+  border-radius: var(--radius-full);
   cursor: pointer;
   font-family: var(--font-sans);
   transition: color var(--dur-1) var(--ease-in-out),
@@ -2291,19 +2365,18 @@ body {
 }
 .popover-trigger:hover:not(:disabled) {
   color: var(--text);
-  border-color: var(--border-strong);
-  background: var(--gray-700);
+  background: var(--surface-3);
 }
 .popover-trigger:active:not(:disabled) {
   transform: scale(0.96);
 }
 .popover-trigger:focus-visible {
-  outline: 2px solid var(--accent-strong);
-  outline-offset: 2px;
+  outline: none;
+  box-shadow: var(--ring-tight);
 }
 .popover-trigger[aria-expanded="true"] {
-  color: var(--text);
-  border-color: var(--accent-border);
+  color: var(--accent-strong);
+  border-color: transparent;
   background: var(--accent-wash);
 }
 .popover-trigger:disabled {
@@ -2315,9 +2388,9 @@ body {
 
 /* Beats `.composer button`, which is the filled accent Send button. */
 .composer .usage-trigger {
-  padding: var(--space-2) var(--space-3);
+  padding: 6px var(--space-3);
   font-size: var(--text-xs);
-  font-weight: 500;
+  font-weight: var(--weight-medium);
   align-self: flex-end;
 }
 
@@ -2342,12 +2415,12 @@ body {
   justify-content: space-between;
   gap: var(--space-2);
   font-size: var(--text-sm);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
 }
 
 .usage-popover-note {
   font-size: var(--text-2xs);
-  font-weight: 400;
+  font-weight: var(--weight-normal);
   color: var(--text-faint);
 }
 
@@ -2356,7 +2429,7 @@ body {
   flex-direction: column;
   gap: var(--space-2);
   padding-top: var(--space-3);
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--hairline);
 }
 
 .usage-provider-head {
@@ -2367,17 +2440,17 @@ body {
 
 .usage-provider-name {
   font-size: var(--text-sm);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
 }
 
 .usage-plan {
   font-size: var(--text-2xs);
   color: var(--text-muted);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 0 var(--space-1);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--tracking-wide);
 }
 
 .usage-window {
@@ -2400,9 +2473,9 @@ body {
 }
 
 .usage-bar {
-  height: 6px;
-  border-radius: 999px;
-  background: var(--gray-700);
+  height: 5px;
+  border-radius: var(--radius-full);
+  background: var(--surface-3);
   overflow: hidden;
 }
 
@@ -2427,15 +2500,18 @@ body {
   margin: 0;
   font-size: var(--text-xs);
   color: var(--text-muted);
-  line-height: 1.45;
+  line-height: var(--lh-snug);
 }
 
 
 /* ==========================================================================
-   VAULT / REVEAL - appended block (credential vault phase)
-   Kept together at the end of the file, and scoped to .credential-row and the
-   reveal/vault classes only, so a concurrent restyle of the rest of this file
-   merges without touching any of it.
+   VAULT / REVEAL
+   Scoped to .credential-row and the reveal/vault classes. Originally an
+   appended block that merged around a concurrent restyle; the visual-language
+   pass has since folded it in — it draws every value from the scales above,
+   its badges are filled surfaces rather than outlined boxes, and the one
+   remaining border (the revealed-secret panel) is deliberate, because a
+   panel showing a plaintext secret should read as a distinct object.
    ========================================================================== */
 
 /* Only credential rows wrap: a revealed secret is a full-width block that has to
@@ -2453,7 +2529,7 @@ body {
   gap: var(--space-2);
   margin-top: var(--space-2);
   padding: var(--space-2);
-  border: 1px solid var(--warn-border, var(--border-strong));
+  border: 1px solid var(--warn-border);
   border-radius: var(--radius-sm);
   background: var(--surface-1);
   text-align: left;
@@ -2480,12 +2556,12 @@ body {
   width: 220px;
   max-width: 100%;
   box-sizing: border-box;
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(--font-mono);
   font-size: var(--text-2xs);
-  line-height: 1.4;
+  line-height: var(--lh-snug);
   color: var(--text);
   background: var(--surface-2);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border);
   border-radius: var(--radius-xs);
   padding: 5px 7px;
   resize: vertical;
@@ -2494,7 +2570,7 @@ body {
 
 .reveal-note {
   white-space: normal;
-  line-height: 1.4;
+  line-height: var(--lh-snug);
 }
 
 .reveal-actions {
@@ -2507,7 +2583,7 @@ body {
 
 .reveal-actions .provider-hint {
   white-space: normal;
-  line-height: 1.4;
+  line-height: var(--lh-snug);
 }
 
 .reveal-error {
@@ -2526,7 +2602,7 @@ body {
   font-size: 9px;
   letter-spacing: var(--tracking-wide);
   color: var(--text-faint);
-  border: 1px solid var(--border);
+  background: var(--surface-2);
   border-radius: var(--radius-sm);
   width: 20px;
   height: 20px;
@@ -2534,7 +2610,7 @@ body {
 
 .credential-notes {
   white-space: normal;
-  line-height: 1.4;
+  line-height: var(--lh-snug);
   color: var(--text-muted);
 }
 
@@ -2545,11 +2621,14 @@ body {
 }
 
 /* =========================================================================
-   UI refresh pass — appended block.
-   Everything below is new and scoped to classes introduced by this pass, or
-   is a deliberate override of a rule above it (each of those says why).
-   Kept in one block so it merges mechanically against concurrent work in
-   the Connections section.
+   Page-level composition and interactive states.
+   Everything below is either scoped to a class that has no home in the
+   sections above (the group-chat header variant, the tool-run disclosure)
+   or is a deliberate override of a rule above it (each of those says why).
+   Started life as an appended refresh block; the visual-language pass
+   rewrote its intent into the language rather than leaving it a bolt-on —
+   the boxes it added (a dashed empty-state well, a bordered note) are now
+   filled surfaces, and the measure it set is now backed by the rail.
 
    Token discipline as per the file header: every value here resolves to an
    existing var. No new scales and no one-off pixels except optical nudges,
@@ -2557,12 +2636,12 @@ body {
    ========================================================================= */
 
 /* ---- readable measure --------------------------------------------------
-   --chat-col-max is min(1100px, 92%), which is the right width for the row
-   (avatar gutter, timestamps, tool rails) but not for the prose inside it:
-   at 1440px it put ~150 characters on a line, roughly double a comfortable
-   measure. The row keeps its width; the text gets a measure. */
+   The rail now caps the column at 820px, which is already close to a
+   comfortable measure at --text-base. This stays as the belt to that
+   braces: on a very wide viewport where the column is at its cap, prose
+   still tops out around 70 characters rather than filling the row. */
 .message .body {
-  max-width: 74ch;
+  max-width: 70ch;
 }
 /* Mono runs narrower per character, so it gets its own cap rather than
    inheriting a measure tuned for the sans face. */
@@ -2572,10 +2651,17 @@ body {
 }
 
 /* ---- group chat header -------------------------------------------------
-   Shares .hub-page-header so the two views have identical page chrome; only
-   the bits that differ are set here. */
+   The header the user singled out. Shares .hub-page-header so the two views
+   have identical page chrome; only the bits that differ are set here.
+
+   Before: "Group chat" at 21px/650 with tight tracking, sitting on a --panel
+   bar with a border-bottom — the loudest type on the screen, above a
+   transcript set at 14px. After: --text-md/600, its meta at --text-xs muted,
+   on the page ground with no bar and no rule. The heading is now one step
+   above the body it introduces rather than five. */
 .chat-header {
   gap: var(--space-3);
+  align-items: flex-end;
 }
 
 /* No back button on the group view, so the identity block starts the row and
@@ -2583,7 +2669,8 @@ body {
 .chat-header .hub-page-identity {
   flex-direction: column;
   align-items: flex-start;
-  gap: var(--space-1);
+  gap: 2px; /* optical: tighter than --space-1 so the meta reads as belonging
+               to the title rather than as a second line of header */
 }
 
 /* Intentionally empty until the Save chat button lands. It still reserves
@@ -2604,9 +2691,8 @@ body {
    happening (agent not started) rather than for what to type. */
 .chat-empty-note {
   margin-top: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
   background: var(--surface-1);
   font-size: var(--text-xs);
   line-height: var(--lh-snug);
@@ -2614,12 +2700,14 @@ body {
 }
 
 /* Was a bare faint sentence in a gap, which read as a rendering failure
-   rather than as a state. A dashed well says "nothing here yet" on purpose. */
+   rather than as a state; then a dashed well, which was a box in a panel
+   this pass is removing boxes from. A filled surface says the same thing
+   without drawing an outline around nothing. */
 .sidebar-empty {
   margin: var(--space-1) 0 var(--space-2);
   padding: var(--space-3);
-  border: 1px dashed var(--border);
   border-radius: var(--radius-md);
+  background: var(--surface-1);
   color: var(--text-muted);
   text-align: center;
 }
@@ -2720,12 +2808,13 @@ body {
 }
 
 @media (max-width: 600px) {
+  /* The title no longer needs stepping down at this width — 16px is already
+     the calm size — and the header's inline padding comes from --rail-pad,
+     whose floor drops to 16px at the 860px breakpoint. Only the block
+     padding tightens. */
   .chat-header {
-    padding: var(--space-3) var(--space-4);
-  }
-
-  .chat-header .hub-page-identity h2 {
-    font-size: var(--text-lg);
+    padding-top: var(--space-4);
+    padding-bottom: var(--space-1);
   }
 
 
@@ -2735,7 +2824,7 @@ body {
 }
 
 /* =========================================================================
-   APPENDED BLOCK â€” message rendering (activity runs, narration, answers)
+   APPENDED BLOCK — message rendering (activity runs, narration, answers)
    Owner: the message-rendering pass. Everything above this line belongs to
    the visual-language pass; nothing here redefines a token, and every
    var(--x) below is declared in :root at the top of this file.
@@ -2766,7 +2855,7 @@ body {
 }
 
 /* A run containing a non-zero exit must not sit here looking as quiet as one
-   that succeeded. The border is the whole signal â€” no alarm colour on the
+   that succeeded. The border is the whole signal — no alarm colour on the
    ground, because the failure detail is one click away, not lost. */
 .activity-run.is-failed {
   border-color: var(--danger-border);
@@ -2810,7 +2899,7 @@ body {
   }
 }
 
-/* Opacity-only, and it stops entirely for readers who asked for less motion â€”
+/* Opacity-only, and it stops entirely for readers who asked for less motion —
    the label still says what is happening, so holding still loses nothing. */
 @media (prefers-reduced-motion: reduce) {
   .activity-glyph.is-live {
@@ -2819,7 +2908,7 @@ body {
   }
 }
 
-/* The derived label â€” "Reading styles.css", not Read({"file_path":â€¦}). Sans,
+/* The derived label — "Reading styles.css", not Read({"file_path":…}). Sans,
    not mono: it is a sentence about what the agent is doing, not a code echo. */
 .activity-run-label {
   font-size: var(--text-sm);
@@ -2924,7 +3013,7 @@ body {
 }
 
 /* Reasoning is prose the model wrote, so it reads in the sans face at reading
-   size rather than as a code echo â€” it is the one thing in here meant to be
+   size rather than as a code echo — it is the one thing in here meant to be
    read rather than checked. */
 .activity-step-reasoning .activity-step-text {
   font-family: var(--font-sans);
@@ -2937,7 +3026,7 @@ body {
 /* ---- mid-turn narration vs. the answer ---------------------------------
    Same message stream, two registers. Narration is what the agent said while
    still working; the answer is what it said once it had finished (promoted
-   server-side at end of turn â€” see AgentManager.drainQueue). Demoting the one
+   server-side at end of turn — see AgentManager.drainQueue). Demoting the one
    is what makes the other unmistakable. */
 
 .message-row.is-progress {
@@ -2966,7 +3055,7 @@ body {
 }
 
 /* The final answer is the page's reading text: full size, full contrast. It is
-   deliberately the only agent prose at this weight, which is the whole point â€”
+   deliberately the only agent prose at this weight, which is the whole point —
    after a turn of quiet status lines, the answer is what you land on. */
 .message-row.is-answer .body {
   font-size: var(--text-md);

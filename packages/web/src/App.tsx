@@ -206,7 +206,6 @@ export default function App() {
             <div className="sidebar-section-label">
               Agents
               <span className="count">{agents.length}</span>
-              <span className="label-rule" />
             </div>
             {agents.length === 0 ? (
               <div className="sidebar-empty">No agents yet. Add one to start a session.</div>
@@ -236,7 +235,6 @@ export default function App() {
           <section className="sidebar-group">
             <div className="sidebar-section-label">
               Connections
-              <span className="label-rule" />
             </div>
             <div className="connection-list">
               <ProvidersPanel />
