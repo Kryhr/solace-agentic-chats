@@ -126,7 +126,7 @@
      --space-8 plus a 34px fudge, so the three never lined up on any edge.
      1100px was also far too wide a column for a chat: at 1440px it put
      roughly 150 characters on a line. */
-  --chat-col-max: min(820px, 100%);
+  --chat-col-max: min(1180px, 100%);
   --rail-min: var(--space-8);
   --rail-pad: max(var(--rail-min), (100% - var(--chat-col-max)) / 2);
   --sidebar-w: 268px;
@@ -1281,13 +1281,11 @@ body {
 /* The reader's own turn gets a surface; agent turns are plain text on the
    page ground so long answers don't sit inside a box. */
 .message-row.from-user {
-  background: var(--surface-1);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: var(--space-3);
-  margin: 0 calc(var(--space-3) * -1);
-  width: calc(100% + var(--space-6));
-  max-width: calc(var(--chat-col-max) + var(--space-6));
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: var(--space-1) 0;
+  max-width: var(--chat-col-max);
 }
 
 .message .meta {
@@ -3189,4 +3187,151 @@ body {
 }
 .model-source-details p {
   margin: 0 0 var(--space-1);
+}
+
+/* =========================================================================
+   AGENT HUB — header actions and the settings panel
+
+   The settings used to sit inline in the header: three pickers, a paragraph of
+   provenance text and two destructive buttons, all above the first message, so
+   you scrolled past the controls to reach the conversation. They now live in a
+   panel behind one toggle. Stop and Retry deliberately stay in the header -
+   you reach for them while a turn is running, and putting the brake pedal
+   behind a disclosure would be worse than the clutter.
+   ========================================================================= */
+
+.hub-page-live-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.hub-settings-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  line-height: var(--lh-tight);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out);
+}
+/* The icon sat flush against the word with no optical breathing room. It is
+   also the only thing in the row that is a glyph rather than text, so it gets
+   the muted colour a step further back than the label. */
+.hub-settings-toggle svg {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  transition: color var(--dur-1) var(--ease-out), transform var(--dur-3) var(--ease-out);
+}
+.hub-settings-toggle:hover {
+  background: var(--surface-1);
+  color: var(--text-secondary);
+}
+.hub-settings-toggle:hover svg {
+  color: var(--text-muted);
+}
+.hub-settings-toggle:active {
+  background: var(--surface-2);
+}
+.hub-settings-toggle:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-tight);
+}
+.hub-settings-toggle[aria-expanded="true"] {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.hub-settings-toggle[aria-expanded="true"] svg {
+  color: var(--accent);
+  transform: rotate(45deg);
+}
+
+/* A panel, not a floating layer: it pushes the transcript down rather than
+   covering it, so nothing is hidden behind it while you are changing a setting. */
+.hub-settings-panel {
+  margin: 0 var(--rail-pad) var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  animation: enter-scale var(--dur-2) var(--ease-out);
+}
+
+/* Inside the panel the pickers are a real form, laid out on a grid that wraps
+   whole controls instead of the ad hoc right-aligned flex row this was when it
+   lived in the header. */
+.hub-settings-panel .hub-page-settings {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: var(--space-3) var(--space-4);
+  align-items: end;
+  margin-left: 0;
+}
+.hub-settings-panel .hub-page-settings label {
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  min-width: 0;
+}
+.hub-settings-panel .hub-page-settings .select {
+  width: 100%;
+  font-size: var(--text-xs);
+}
+/* The model picker spans the row: its option labels are the longest strings in
+   the panel ("Opus - opus -> claude-opus-5") and truncating them would hide the
+   one thing the control exists to disambiguate. */
+.hub-settings-panel .hub-page-settings > :first-child {
+  grid-column: 1 / -1;
+}
+/* The alias explainer is a sibling of the picker, not a child, so the grid was dropping it
+   into a 200px column next to Effort - a full sentence rendered as a tall narrow ribbon.
+   It explains the control directly above it, so it spans the same row that control does. */
+.hub-settings-panel .hub-page-settings .model-note {
+  grid-column: 1 / -1;
+  margin: calc(var(--space-1) * -1) 0 0;
+  max-width: 78ch;
+}
+
+.hub-settings-panel .hub-page-sources {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--hairline);
+}
+
+/* Destructive actions get their own separated footer rather than sitting level
+   with the pickers, so "Remove agent" is never adjacent to a routine control. */
+.hub-settings-panel .hub-page-actions {
+  margin-left: 0;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--hairline);
+}
+
+@media (max-width: 600px) {
+  .hub-settings-panel {
+    margin-inline: var(--rail-min);
+    padding: var(--space-3);
+  }
+  .hub-settings-panel .hub-page-settings {
+    grid-template-columns: 1fr;
+  }
+  .hub-settings-panel .hub-page-actions {
+    justify-content: stretch;
+    flex-wrap: wrap;
+  }
 }

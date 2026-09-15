@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AgentConfig, AgentStatus, ChatMessage, ProviderModelInfo, ProviderPermissionInfo, TrustLevel } from "@solace/shared";
 import { ProviderIcon, providerLabel, UserAvatar } from "./ProviderIcon";
 import { Composer } from "./Composer";
@@ -53,6 +53,9 @@ export function AgentHubPage({
   const totalOut = status?.totalUsage?.outputTokens ?? 0;
   const totalTokens = totalIn + totalOut;
   const inPct = totalTokens > 0 ? Math.round((totalIn / totalTokens) * 100) : 50;
+  // Collapsed by default: the hub is a conversation, and a wall of pickers plus provenance
+  // text above the first message made you scroll past the settings to read it.
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const trackEntrance = useEntranceTracker();
 
   useEffect(() => {
@@ -93,6 +96,34 @@ export function AgentHubPage({
           </div>
         </div>
 
+        <div className="hub-page-live-actions">
+          {state === "thinking" && (
+            <button className="btn-secondary btn-xs" onClick={onStop} title="Cancel this turn without removing the agent">
+              Stop
+            </button>
+          )}
+          {status?.canRetry && (
+            <button className="btn-secondary btn-xs" onClick={onRetry} title="Re-send the last message that failed">
+              Retry
+            </button>
+          )}
+          <button
+            className="hub-settings-toggle"
+            aria-expanded={settingsOpen}
+            onClick={() => setSettingsOpen((v) => !v)}
+            title="Model, effort, trust and agent actions"
+          >
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6L17 7M7 17l-1.4 1.4" />
+            </svg>
+            Settings
+          </button>
+        </div>
+      </div>
+
+      {settingsOpen && (
+        <div className="hub-settings-panel">
         <div className="hub-page-settings">
           {/* Model picking belongs here as much as at creation: switching an existing agent
               between two Opus variants is the whole point of listing them separately. */}
@@ -130,16 +161,6 @@ export function AgentHubPage({
         </div>
 
         <div className="hub-page-actions">
-          {state === "thinking" && (
-            <button className="btn-secondary btn-xs" onClick={onStop} title="Cancel this turn without removing the agent">
-              Stop
-            </button>
-          )}
-          {status?.canRetry && (
-            <button className="btn-secondary btn-xs" onClick={onRetry} title="Re-send the last message that failed">
-              Retry
-            </button>
-          )}
           <button
             className="btn-secondary btn-xs"
             onClick={() => {
@@ -160,7 +181,8 @@ export function AgentHubPage({
             Remove agent
           </button>
         </div>
-      </div>
+        </div>
+      )}
 
       {totalTokens > 0 && (
         <div className="hub-usage-bar">

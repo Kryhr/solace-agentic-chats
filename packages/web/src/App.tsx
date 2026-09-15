@@ -73,21 +73,29 @@ export default function App() {
     [historyById],
   );
 
+  // Loading a hub's history hung off goToHub, i.e. off the CLICK - so arriving at
+  // #/agent/:id any other way (a refresh while on a hub, a pasted link, a back/forward step)
+  // rendered a populated conversation as the "no messages yet" empty state. Keying it to the
+  // VIEW instead means every route into a hub loads it, however you got there.
+  const loadHubHistory = (agentId: string) => {
+    fetchAgentDirectHistory(agentId).then((list) => {
+      setDirectById((d) => ({ ...d, [agentId]: { ...Object.fromEntries(list.map((m) => [m.id, m])), ...d[agentId] } }));
+    });
+  };
+
   useEffect(() => {
-    const onHashChange = () => {
-      const next = parseHash(location.hash);
-      setView(next);
-      if (next.type === "archives") fetchArchives().then(setArchives);
-    };
+    const onHashChange = () => setView(parseHash(location.hash));
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
 
+  useEffect(() => {
+    if (view.type === "hub") loadHubHistory(view.agentId);
+    if (view.type === "archives") fetchArchives().then(setArchives);
+  }, [view.type, view.type === "hub" ? view.agentId : ""]);
+
   const goToHub = (agentId: string) => {
     location.hash = `#/agent/${agentId}`;
-    fetchAgentDirectHistory(agentId).then((list) => {
-      setDirectById((d) => ({ ...d, [agentId]: { ...Object.fromEntries(list.map((m) => [m.id, m])), ...d[agentId] } }));
-    });
   };
   const goToChat = () => {
     location.hash = "";
