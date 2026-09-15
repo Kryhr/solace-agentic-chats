@@ -15,6 +15,7 @@ import { ArchiveStore } from "./core/archiveStore";
 import { tryHandleCommand } from "./core/commands";
 import { checkGithubAuth } from "./core/github";
 import { deleteCredential, listCredentials, saveCredential } from "./core/credentials";
+import { validateNewAgentConfig } from "./core/validateAgentConfig";
 import type { ProviderId } from "@solace/shared";
 
 const PORT = Number(process.env.PORT ?? 4310);
@@ -68,8 +69,14 @@ async function main() {
   app.get("/api/agents", async () => agents.listAgents());
   app.get("/api/agents/status", async () => agents.listStatuses());
 
-  app.post<{ Body: Omit<AgentConfig, "id"> }>("/api/agents", async (req, reply) => {
-    const config: AgentConfig = { id: nanoid(), ...req.body };
+  app.post<{ Body: Partial<Omit<AgentConfig, "id">> }>("/api/agents", async (req, reply) => {
+    const existingHandles = agents.listAgents().map((a) => a.handle);
+    const validated = validateNewAgentConfig(req.body, existingHandles);
+    if ("error" in validated) {
+      reply.code(400);
+      return { error: validated.error };
+    }
+    const config: AgentConfig = { id: nanoid(), ...validated.config };
     agents.addAgent(config);
     reply.code(201);
     return config;
@@ -78,12 +85,20 @@ async function main() {
   app.patch<{
     Params: { id: string };
     Body: Partial<Pick<AgentConfig, "trustLevel" | "currentTask" | "model" | "effort" | "authMode" | "credentialId">>;
-  }>("/api/agents/:id", async (req) => {
-    agents.updateAgent(req.params.id, req.body);
+  }>("/api/agents/:id", async (req, reply) => {
+    const updated = agents.updateAgent(req.params.id, req.body);
+    if (!updated) {
+      reply.code(404);
+      return { error: "agent not found" };
+    }
     return { ok: true };
   });
 
-  app.delete<{ Params: { id: string } }>("/api/agents/:id", async (req) => {
+  app.delete<{ Params: { id: string } }>("/api/agents/:id", async (req, reply) => {
+    if (!agents.listAgents().some((a) => a.id === req.params.id)) {
+      reply.code(404);
+      return { error: "agent not found" };
+    }
     // Removing an agent doesn't lose its direct-channel history - archive it first, same as /clear.
     const channel = { agentId: req.params.id };
     const removed = bus.clearChannel(channel);
@@ -140,10 +155,22 @@ async function main() {
     }
     // Any agent still pointing at this now-deleted credential would otherwise keep an
     // authMode of "api-key" with a dangling credentialId, and silently fail its next turn
-    // with no visible explanation - fall those agents back to CLI/subscription mode instead.
+    // with no visible explanation - fall those agents back to CLI/subscription mode instead,
+    // and post a system message into that agent's own hub so the change isn't silent (a user
+    // would otherwise only discover this the next time the agent unexpectedly spawns a real
+    // CLI process instead of calling the API).
     for (const agent of agents.listAgents()) {
       if (agent.credentialId === req.params.id) {
         agents.updateAgent(agent.id, { authMode: "cli", credentialId: undefined });
+        bus.postMessage({
+          id: nanoid(),
+          channel: { agentId: agent.id },
+          authorId: "system",
+          authorHandle: "system",
+          mentions: [],
+          text: "This agent's saved API key was deleted - it has been switched back to CLI/subscription sign-in.",
+          createdAt: new Date().toISOString(),
+        });
       }
     }
     return { ok: true };

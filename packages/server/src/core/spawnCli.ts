@@ -1,25 +1,21 @@
-import { spawn, type SpawnOptions } from "node:child_process";
+import crossSpawn from "cross-spawn";
+import type { SpawnOptions } from "node:child_process";
 
 /**
  * Provider CLIs (claude, codex, gemini, qwen) are installed as npm-global .cmd shims on
- * Windows, which Node can only execute via `shell: true`. But Node's shell:true mode just
- * joins the args array with spaces with NO quoting - see the DEP0190 warning - so any
- * argument containing whitespace (a multi-word prompt, most of them) silently gets split
- * into multiple CLI arguments and breaks the target CLI's own arg parser. Quote manually
- * before handing args to spawn so a prompt like "reply with the word OK" survives as one
- * argument instead of exploding into five.
+ * Windows, which plain node:child_process.spawn can only execute via `shell: true` - and
+ * shell:true just joins the args array with spaces with no quoting at all (see the DEP0190
+ * warning), so any argument containing whitespace (a multi-word prompt, most of them)
+ * silently splits into multiple CLI arguments.
+ *
+ * This used to be patched with a hand-rolled `winQuote()` that backslash-escaped embedded
+ * quotes - but cmd.exe does not treat a backslash as an escape character at all, so an
+ * argument containing a `"` (e.g. one agent's chat output being fed as another agent's
+ * prompt) could close cmd.exe's quoting early and expose the rest of the argument to
+ * cmd.exe's own operators (&, |, ^, %VAR%) - a real command-injection surface. cross-spawn
+ * is the standard, widely-audited fix for this exact problem (used by npm itself): it
+ * implements the actual Windows argv-quoting rules cmd.exe expects, rather than guessing.
  */
-function winQuote(arg: string): string {
-  if (arg === "") return '""';
-  if (!/[\s"]/.test(arg)) return arg;
-  return `"${arg.replace(/"/g, '\\"')}"`;
-}
-
-function prepareArgs(args: string[]): string[] {
-  return process.platform === "win32" ? args.map(winQuote) : args;
-}
-
 export function spawnCli(bin: string, args: string[], options: SpawnOptions = {}) {
-  const isWin = process.platform === "win32";
-  return spawn(bin, prepareArgs(args), { ...options, shell: isWin });
+  return crossSpawn(bin, args, options);
 }

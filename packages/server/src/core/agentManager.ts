@@ -80,16 +80,19 @@ export class AgentManager {
     this.onChange?.();
   }
 
+  /** Returns false if `id` doesn't name a live agent, so callers (the PATCH route) can
+   * tell a real update apart from a stale/typo'd id instead of both reporting success. */
   updateAgent(
     id: string,
     patch: Partial<Pick<AgentConfig, "trustLevel" | "currentTask" | "model" | "effort" | "authMode" | "credentialId">>,
-  ) {
+  ): boolean {
     const runtime = this.agents.get(id);
-    if (!runtime) return;
+    if (!runtime) return false;
     Object.assign(runtime.config, patch);
     this.bus.emitEvent({ type: "agent:updated", payload: runtime.config });
     this.emitStatus(id);
     this.onChange?.();
+    return true;
   }
 
   listAgents(): AgentConfig[] {
@@ -199,51 +202,63 @@ export class AgentManager {
         createdAt: new Date().toISOString(),
       });
 
-    const authMode = runtime.config.authMode ?? "cli";
-    const adapter = getAdapter(runtime.config.provider, authMode);
-    const apiKey =
-      authMode === "api-key" && runtime.config.credentialId ? getRawKey(WORKSPACE_ROOT, runtime.config.credentialId) : undefined;
-    const controller = new AbortController();
-    const turnTimeout = setTimeout(() => {
-      controller.abort();
-      // A killed turn shouldn't leave a live approval card in the UI for it.
-      this.approvals?.expireForAgent(agentId);
-    }, MAX_TURN_MS);
-    await adapter.runTurn({
-      cwd: runtime.config.cwd,
-      prompt,
-      trustLevel: runtime.config.trustLevel,
-      agentId: runtime.config.id,
-      agentHandle: runtime.config.handle,
-      model: runtime.config.model,
-      effort: runtime.config.effort,
-      apiKey,
-      signal: controller.signal,
-      onEvent: (event) => {
-        if (event.type === "text" && event.text.trim()) {
-          // Group chat is a coordination channel, not a transcript: it only ever sees an
-          // agent's final answer for the turn, posted once the turn completes below. Every
-          // intermediate message (and, for a group-triggered turn, tool-use notes too) goes
-          // to the agent's own hub channel in real time so the full working is still visible
-          // there. A turn addressed directly to the agent's hub already IS that "everything"
-          // channel, so it posts straight through with no buffering.
-          lastText = event.text;
-          post(isGroupTurn ? ownChannel : replyChannel, event.text);
-        } else if (event.type === "tool-use") {
-          post(ownChannel, `_used ${event.description}_`);
-        } else if (event.type === "usage") {
-          runtime.lastUsage = event.usage;
-          runtime.totalUsage = addUsage(runtime.totalUsage, event.usage);
-        } else if (event.type === "error" && event.message.trim()) {
-          hadError = true;
-          runtime.lastError = event.message.trim();
-          post(replyChannel, `error: ${event.message.trim()}`);
-          runtime.status = "error";
-          this.emitStatus(agentId);
-        }
-      },
-    });
-    clearTimeout(turnTimeout);
+    // getAdapter/getRawKey/adapter.runTurn can all throw (e.g. an unsupported provider+authMode
+    // combination, or an adapter-internal bug) - previously nothing here was guarded, so a
+    // synchronous throw became an unhandled rejection (this whole method is invoked via
+    // `void this.drainQueue(...)`) that left `runtime.busy` stuck `true` forever: the agent
+    // showed "thinking" permanently with no error surfaced and its queue never drained again.
+    try {
+      const authMode = runtime.config.authMode ?? "cli";
+      const adapter = getAdapter(runtime.config.provider, authMode);
+      const apiKey =
+        authMode === "api-key" && runtime.config.credentialId ? getRawKey(WORKSPACE_ROOT, runtime.config.credentialId) : undefined;
+      const controller = new AbortController();
+      const turnTimeout = setTimeout(() => {
+        controller.abort();
+        // A killed turn shouldn't leave a live approval card in the UI for it.
+        this.approvals?.expireForAgent(agentId);
+      }, MAX_TURN_MS);
+      await adapter.runTurn({
+        cwd: runtime.config.cwd,
+        prompt,
+        trustLevel: runtime.config.trustLevel,
+        agentId: runtime.config.id,
+        agentHandle: runtime.config.handle,
+        model: runtime.config.model,
+        effort: runtime.config.effort,
+        apiKey,
+        signal: controller.signal,
+        onEvent: (event) => {
+          if (event.type === "text" && event.text.trim()) {
+            // Group chat is a coordination channel, not a transcript: it only ever sees an
+            // agent's final answer for the turn, posted once the turn completes below. Every
+            // intermediate message (and, for a group-triggered turn, tool-use notes too) goes
+            // to the agent's own hub channel in real time so the full working is still visible
+            // there. A turn addressed directly to the agent's hub already IS that "everything"
+            // channel, so it posts straight through with no buffering.
+            lastText = event.text;
+            post(isGroupTurn ? ownChannel : replyChannel, event.text);
+          } else if (event.type === "tool-use") {
+            post(ownChannel, `_used ${event.description}_`);
+          } else if (event.type === "usage") {
+            runtime.lastUsage = event.usage;
+            runtime.totalUsage = addUsage(runtime.totalUsage, event.usage);
+          } else if (event.type === "error" && event.message.trim()) {
+            hadError = true;
+            runtime.lastError = event.message.trim();
+            post(replyChannel, `error: ${event.message.trim()}`);
+            runtime.status = "error";
+            this.emitStatus(agentId);
+          }
+        },
+      });
+      clearTimeout(turnTimeout);
+    } catch (err) {
+      hadError = true;
+      const message = err instanceof Error ? err.message : String(err);
+      runtime.lastError = message;
+      post(replyChannel, `error: ${message}`);
+    }
 
     if (isGroupTurn && lastText.trim() && !hadError) {
       post("group", lastText.trim());
