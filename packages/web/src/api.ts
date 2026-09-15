@@ -133,16 +133,61 @@ export async function fetchCredentials(): Promise<CredentialMeta[]> {
   return fetch("/api/credentials").then((r) => r.json());
 }
 
-export async function saveCredential(provider: ProviderId, label: string, apiKey: string): Promise<CredentialMeta> {
-  return fetch("/api/credentials", {
+/** baseUrl/connectionName are only meaningful for provider "custom" - an arbitrary
+ * OpenAI-compatible endpoint added under Connections. */
+export async function saveCredential(
+  provider: ProviderId,
+  label: string,
+  apiKey: string,
+  baseUrl?: string,
+  connectionName?: string,
+): Promise<CredentialMeta> {
+  const res = await fetch("/api/credentials", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ provider, label, apiKey }),
-  }).then((r) => r.json());
+    body: JSON.stringify({ provider, label, apiKey, baseUrl, connectionName }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? `Failed to save connection (${res.status})`);
+  return data;
 }
 
 export async function deleteCredential(id: string): Promise<void> {
   await fetch(`/api/credentials/${id}`, { method: "DELETE" });
+}
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+  sourcePath: string;
+  /** Project paths (matching ProjectInfo.path) that already have this skill on disk. */
+  installedIn: string[];
+}
+
+export async function fetchSkills(): Promise<{ projects: ProjectInfo[]; skills: SkillInfo[] }> {
+  return fetch("/api/skills").then((r) => r.json());
+}
+
+export async function installSkill(sourcePath: string, projectPath: string): Promise<{ alreadyInstalled: boolean }> {
+  const res = await fetch("/api/skills/install", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sourcePath, projectPath }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? "Failed to install skill");
+  return data;
+}
+
+export async function importSkillsRepo(repoUrl: string): Promise<SkillInfo[]> {
+  const res = await fetch("/api/skills/import-repo", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repoUrl }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? "Failed to import repo");
+  return data.skills;
 }
 
 export async function sendChatMessage(text: string): Promise<void> {

@@ -46,6 +46,14 @@ export interface CredentialMeta {
   /** A short label to tell saved keys apart, e.g. "personal" - not the key itself. */
   label: string;
   createdAt: string;
+  /** Only meaningful when provider === "custom": the OpenAI-compatible API root this key
+   * belongs to, e.g. "https://api.deepseek.com/v1". Chat completions are POSTed to
+   * `${baseUrl}/chat/completions` - see adapters/custom-api.ts. */
+  baseUrl?: string;
+  /** Only meaningful when provider === "custom": which service this actually is, e.g.
+   * "DeepSeek" or "Groq". Without it every custom connection reads as just "custom" in the
+   * UI, and several of them would be indistinguishable from each other. */
+  connectionName?: string;
 }
 
 /**

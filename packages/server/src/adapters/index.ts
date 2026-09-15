@@ -4,6 +4,7 @@ import { claudeCodeAdapter } from "./claude-code";
 import { codexCliAdapter } from "./codex-cli";
 import { claudeApiAdapter } from "./claude-api";
 import { openaiApiAdapter } from "./openai-api";
+import { customApiAdapter } from "./custom-api";
 import { geminiCliAdapter, qwenCodeAdapter } from "./stubs";
 
 const cliAdapters: Record<Exclude<ProviderId, "custom">, ProviderAdapter> = {
@@ -21,8 +22,11 @@ const apiAdapters: Partial<Record<Exclude<ProviderId, "custom">, ProviderAdapter
 };
 
 export function getAdapter(provider: ProviderId, authMode: "cli" | "api-key" = "cli"): ProviderAdapter {
+  // "custom" is any OpenAI-compatible endpoint the user saved a connection for (DeepSeek,
+  // Groq, ...). There's no CLI to shell out to for those - an API key is the only way in.
   if (provider === "custom") {
-    throw new Error("custom provider adapters are not supported yet");
+    if (authMode !== "api-key") throw new Error("custom endpoints only support API-key auth");
+    return customApiAdapter;
   }
   if (authMode === "api-key") {
     const adapter = apiAdapters[provider];

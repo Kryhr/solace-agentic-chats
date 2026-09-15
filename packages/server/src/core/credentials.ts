@@ -37,16 +37,41 @@ function saveAll(workspaceRoot: string, all: StoredCredential[]) {
 }
 
 function toMeta(c: StoredCredential): CredentialMeta {
-  return { id: c.id, provider: c.provider, label: c.label, createdAt: c.createdAt };
+  return {
+    id: c.id,
+    provider: c.provider,
+    label: c.label,
+    createdAt: c.createdAt,
+    baseUrl: c.baseUrl,
+    connectionName: c.connectionName,
+  };
 }
 
 export function listCredentials(workspaceRoot: string): CredentialMeta[] {
   return loadAll(workspaceRoot).map(toMeta);
 }
 
-export function saveCredential(workspaceRoot: string, provider: ProviderId, label: string, rawKey: string): CredentialMeta {
+export function saveCredential(
+  workspaceRoot: string,
+  provider: ProviderId,
+  label: string,
+  rawKey: string,
+  /** Both only meaningful for provider "custom" - see CredentialMeta in @solace/shared. */
+  baseUrl?: string,
+  connectionName?: string,
+): CredentialMeta {
   const all = loadAll(workspaceRoot);
-  const entry: StoredCredential = { id: nanoid(), provider, label: label || "unlabeled", createdAt: new Date().toISOString(), key: rawKey };
+  const entry: StoredCredential = {
+    id: nanoid(),
+    provider,
+    label: label || "unlabeled",
+    createdAt: new Date().toISOString(),
+    key: rawKey,
+    // Trailing slashes would produce "https://host/v1//chat/completions"; normalise once here
+    // rather than at every call site.
+    baseUrl: baseUrl?.trim().replace(/\/+$/, "") || undefined,
+    connectionName: connectionName?.trim() || undefined,
+  };
   all.push(entry);
   saveAll(workspaceRoot, all);
   return toMeta(entry);
@@ -60,8 +85,12 @@ export function deleteCredential(workspaceRoot: string, id: string): boolean {
   return true;
 }
 
-/** Server-internal only - resolves a credentialId to its raw key right before an API call.
- * Never exposed through any route. */
-export function getRawKey(workspaceRoot: string, id: string): string | undefined {
-  return loadAll(workspaceRoot).find((c) => c.id === id)?.key;
+/** Server-internal only - resolves a credentialId to its raw key + (for a "custom"
+ * connection) base URL right before an API call, in one file read. Every turn for an
+ * API-key agent needs both, and they were previously two separate exported functions each
+ * independently re-reading and re-parsing the whole credentials file - cheap in isolation,
+ * but pure waste on the hot path of every single chat turn. Never exposed through any route. */
+export function getCredentialSecrets(workspaceRoot: string, id: string): { key?: string; baseUrl?: string } {
+  const found = loadAll(workspaceRoot).find((c) => c.id === id);
+  return { key: found?.key, baseUrl: found?.baseUrl };
 }

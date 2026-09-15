@@ -22,6 +22,10 @@ export interface RunTurnOptions {
   /** Only set for authMode "api-key" agents - the raw key, resolved server-side right before
    * the call (see core/credentials.ts). CLI adapters ignore this entirely. */
   apiKey?: string;
+  /** Only set for provider "custom" - the OpenAI-compatible API root saved alongside the
+   * credential (e.g. "https://api.deepseek.com/v1"). Resolved server-side from the credential,
+   * not from the agent config, at the same point apiKey is. Every other adapter ignores it. */
+  baseUrl?: string;
   onEvent: (event: AdapterEvent) => void;
   /** Aborting kills the underlying CLI process - used to enforce a max turn duration. */
   signal?: AbortSignal;

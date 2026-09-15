@@ -4,7 +4,7 @@ import { getAdapter } from "../adapters";
 import { ChatBus } from "./chatBus";
 import { parseMentions } from "./mentions";
 import type { ApprovalRegistry } from "./approvalRegistry";
-import { getRawKey } from "./credentials";
+import { getCredentialSecrets } from "./credentials";
 import { WORKSPACE_ROOT } from "./workspace";
 
 export interface QueuedTurn {
@@ -461,8 +461,16 @@ export class AgentManager {
     try {
       const authMode = runtime.config.authMode ?? "cli";
       const adapter = getAdapter(runtime.config.provider, authMode);
-      const apiKey =
-        authMode === "api-key" && runtime.config.credentialId ? getRawKey(WORKSPACE_ROOT, runtime.config.credentialId) : undefined;
+      // baseUrl is resolved from the same credential as apiKey, in the same file read: the
+      // base URL is a property of the saved credential (which service the key belongs to),
+      // not of the agent config - so an agent can't end up pointing a DeepSeek key at a Groq
+      // endpoint.
+      const secrets =
+        authMode === "api-key" && runtime.config.credentialId
+          ? getCredentialSecrets(WORKSPACE_ROOT, runtime.config.credentialId)
+          : undefined;
+      const apiKey = secrets?.key;
+      const baseUrl = secrets?.baseUrl;
       const controller = new AbortController();
       runtime.activeController = controller;
       const turnTimeout = setTimeout(() => {
@@ -479,6 +487,7 @@ export class AgentManager {
         model: runtime.config.model,
         effort: runtime.config.effort,
         apiKey,
+        baseUrl,
         signal: controller.signal,
         onEvent: (event) => {
           if (event.type === "text" && event.text.trim()) {

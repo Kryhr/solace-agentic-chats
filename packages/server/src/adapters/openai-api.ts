@@ -64,7 +64,11 @@ export const openaiApiAdapter: ProviderAdapter = {
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
         for (const line of lines) {
-          if (!line.startsWith("data: ") || line.includes("[DONE]")) continue;
+          // Exact-match the terminator, not a substring check - a real content delta can
+          // legitimately contain the literal text "[DONE]" (quoted docs, logs, code), and
+          // `.includes` was silently dropping that whole chunk instead of only the sentinel.
+          if (!line.startsWith("data: ")) continue;
+          if (line.trim() === "data: [DONE]") continue;
           try {
             const event = JSON.parse(line.slice(6));
             const delta = event.choices?.[0]?.delta?.content;

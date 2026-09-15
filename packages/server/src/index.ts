@@ -16,6 +16,15 @@ import { tryHandleCommand } from "./core/commands";
 import { checkGithubAuth } from "./core/github";
 import { deleteCredential, listCredentials, saveCredential } from "./core/credentials";
 import { validateAgentPatch, validateNewAgentConfig } from "./core/validateAgentConfig";
+import {
+  importSkillsFromRepo,
+  installSkill,
+  isKnownProjectPath,
+  isKnownSkillSource,
+  listAllSkills,
+  rememberImportedRepo,
+  withInstalledIn,
+} from "./core/skills";
 import type { ProviderId } from "@solace/shared";
 
 const PORT = Number(process.env.PORT ?? 4310);
@@ -176,14 +185,74 @@ async function main() {
 
   app.get("/api/archives", async () => archive.list());
 
+  /**
+   * A skill is "installed" for a project when `<project>/.claude/skills/<name>/` exists, so
+   * the per-project installed flags are computed from disk on every request rather than
+   * tracked in any state file - nothing can drift out of sync with what Claude Code will
+   * actually load.
+   */
+  app.get("/api/skills", async () => {
+    const projects = listProjects();
+    return { projects, skills: withInstalledIn(listAllSkills(), projects) };
+  });
+
+  app.post<{ Body: { sourcePath: string; projectPath: string } }>("/api/skills/install", async (req, reply) => {
+    // sourcePath/projectPath arrive as plain client-supplied strings - installSkill() itself
+    // trusts them completely (it's a filesystem copy), so this is the boundary that has to
+    // reject anything that isn't a real skill this server already listed and a real project
+    // this server already knows about, rather than letting a client point the copy at
+    // (or from) an arbitrary path.
+    if (!isKnownSkillSource(req.body.sourcePath)) {
+      reply.code(400);
+      return { error: "unknown skill" };
+    }
+    if (!isKnownProjectPath(req.body.projectPath)) {
+      reply.code(400);
+      return { error: "unknown project" };
+    }
+    try {
+      return installSkill(req.body.sourcePath, req.body.projectPath);
+    } catch (err) {
+      reply.code(400);
+      return { error: (err as Error).message };
+    }
+  });
+
+  app.post<{ Body: { repoUrl: string } }>("/api/skills/import-repo", async (req, reply) => {
+    try {
+      const skills = await importSkillsFromRepo(req.body.repoUrl);
+      rememberImportedRepo(req.body.repoUrl.trim());
+      return { skills: withInstalledIn(skills, listProjects()) };
+    } catch (err) {
+      reply.code(400);
+      return { error: (err as Error).message };
+    }
+  });
+
   app.get("/api/github/status", async () => checkGithubAuth());
 
   app.get("/api/credentials", async () => listCredentials(WORKSPACE_ROOT));
 
-  app.post<{ Body: { provider: ProviderId; label: string; apiKey: string } }>("/api/credentials", async (req, reply) => {
-    reply.code(201);
-    return saveCredential(WORKSPACE_ROOT, req.body.provider, req.body.label, req.body.apiKey);
-  });
+  app.post<{ Body: { provider: ProviderId; label: string; apiKey: string; baseUrl?: string; connectionName?: string } }>(
+    "/api/credentials",
+    async (req, reply) => {
+      // baseUrl/connectionName only mean anything for provider "custom" (an arbitrary
+      // OpenAI-compatible endpoint); they're harmless but meaningless on the built-in ones.
+      if (req.body.provider === "custom" && !req.body.baseUrl?.trim()) {
+        reply.code(400);
+        return { error: "a custom connection needs a base URL" };
+      }
+      reply.code(201);
+      return saveCredential(
+        WORKSPACE_ROOT,
+        req.body.provider,
+        req.body.label,
+        req.body.apiKey,
+        req.body.baseUrl,
+        req.body.connectionName,
+      );
+    },
+  );
 
   app.delete<{ Params: { id: string } }>("/api/credentials/:id", async (req, reply) => {
     const ok = deleteCredential(WORKSPACE_ROOT, req.params.id);
@@ -199,14 +268,24 @@ async function main() {
     // CLI process instead of calling the API).
     for (const agent of agents.listAgents()) {
       if (agent.credentialId === req.params.id) {
-        agents.updateAgent(agent.id, { authMode: "cli", credentialId: undefined });
+        // "custom" has no CLI to fall back to (getAdapter throws for custom+cli) - forcing
+        // authMode back to "cli" for it would leave the agent permanently broken with no UI
+        // path to fix it (AddAgentModal never offers a sign-in-method choice for "custom").
+        // Leaving authMode as "api-key" with no credentialId instead produces a clear,
+        // actionable "no API key configured for this agent" error on its next turn via the
+        // adapter's own existing check, from a state the user can actually recover from
+        // (save a new connection under Connections, or delete/recreate the agent).
+        const isCustom = agent.provider === "custom";
+        agents.updateAgent(agent.id, isCustom ? { credentialId: undefined } : { authMode: "cli", credentialId: undefined });
         bus.postMessage({
           id: nanoid(),
           channel: { agentId: agent.id },
           authorId: "system",
           authorHandle: "system",
           mentions: [],
-          text: "This agent's saved API key was deleted - it has been switched back to CLI/subscription sign-in.",
+          text: isCustom
+            ? "This agent's saved connection was deleted - add a new one under Connections in the sidebar, or it will error on its next message."
+            : "This agent's saved API key was deleted - it has been switched back to CLI/subscription sign-in.",
           createdAt: new Date().toISOString(),
         });
       }

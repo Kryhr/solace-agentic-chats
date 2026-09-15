@@ -75,8 +75,13 @@
   --tracking-tight: -0.012em;
   --tracking-wide: 0.07em;
 
-  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-sans: "Geist", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Shared cap for the chat column (message rows) and the composer beneath
+     it, so the two always line up exactly. Wide enough to breathe on an
+     ultrawide monitor, still capped so lines don't run on forever. */
+  --chat-col-max: min(1100px, 92%);
 
   /* ---- radius: tighter than before; a dev tool, not a consumer app ------ */
   --radius-xs: 4px;
@@ -891,6 +896,154 @@ body {
   margin-top: 2px;
 }
 
+/* --- Saved API-key connections (custom OpenAI-compatible endpoints) ------------------- */
+
+.saved-connections {
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--space-2);
+}
+
+/* A quieter echo of .sidebar-section-label - this is a subdivision of Connections, not a
+   peer of it, so it sits one step down in weight rather than repeating the same treatment. */
+.connection-subhead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-faint);
+  padding: 0 var(--space-2);
+  margin-bottom: var(--space-1);
+}
+
+.connection-empty {
+  padding: 2px var(--space-2);
+  grid-column: auto;
+}
+
+.credential-row .provider-name {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.credential-sub {
+  font-size: var(--text-2xs);
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.add-connection {
+  align-self: flex-start;
+  margin: 2px var(--space-2) 0;
+}
+
+.connection-add {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+}
+
+.connection-search,
+.connection-field input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: var(--text-xs);
+  color: var(--text);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 5px 7px;
+  transition:
+    border-color var(--dur-2) var(--ease-in-out),
+    background-color var(--dur-2) var(--ease-in-out);
+}
+.connection-search::placeholder,
+.connection-field input::placeholder {
+  color: var(--text-faint);
+}
+.connection-search:hover,
+.connection-field input:hover {
+  border-color: var(--border-strong);
+}
+.connection-search:focus,
+.connection-field input:focus {
+  outline: none;
+  border-color: var(--accent-border);
+  background-color: var(--surface-2);
+  box-shadow: var(--ring-tight);
+}
+
+.connection-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: var(--text-2xs);
+  color: var(--text-faint);
+}
+
+/* Two columns is as wide as the sidebar honestly allows; tiles wrap to one on narrow panes. */
+.catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 4px;
+  max-height: 168px;
+  overflow-y: auto;
+}
+
+.catalog-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  text-align: left;
+  padding: 5px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease-in-out), background-color var(--dur-1) var(--ease-in-out);
+}
+.catalog-tile:hover {
+  background: var(--surface-2, rgba(255, 255, 255, 0.04));
+  border-color: var(--text-faint);
+}
+.catalog-tile.is-custom {
+  border-style: dashed;
+}
+
+.catalog-tile-name {
+  font-size: var(--text-xs);
+  line-height: var(--lh-tight);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.catalog-tile-hint {
+  font-size: var(--text-2xs);
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-add-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
 /* Loading skeleton mirrors the real row's shape, not a spinner. */
 .skeleton-row {
   display: grid;
@@ -997,7 +1150,7 @@ body {
   display: flex;
   gap: var(--space-3);
   width: 100%;
-  max-width: 78ch;
+  max-width: var(--chat-col-max);
   min-width: 0;
 }
 
@@ -1018,7 +1171,7 @@ body {
   padding: var(--space-3);
   margin: 0 calc(var(--space-3) * -1);
   width: calc(100% + var(--space-6));
-  max-width: calc(78ch + var(--space-6));
+  max-width: calc(var(--chat-col-max) + var(--space-6));
 }
 
 .message .meta {
@@ -1168,7 +1321,7 @@ body {
   display: flex;
   align-items: flex-end;
   gap: var(--space-2);
-  max-width: calc(78ch + 34px);
+  max-width: calc(var(--chat-col-max) + 34px);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface-1);
@@ -1241,7 +1394,7 @@ body {
 }
 
 .composer-hint {
-  max-width: calc(78ch + 34px);
+  max-width: calc(var(--chat-col-max) + 34px);
   margin-top: 6px;
   font-size: var(--text-2xs);
   line-height: var(--lh-tight);
@@ -1613,7 +1766,7 @@ body {
   background: var(--surface-1);
   overflow: hidden;
   width: 100%;
-  max-width: 78ch;
+  max-width: var(--chat-col-max);
   transition: border-color var(--dur-1) var(--ease-in-out);
 }
 .archive-entry:hover {
@@ -1840,4 +1993,150 @@ body {
   .composer-hint {
     display: none;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   Skills marketplace (#/skills) - all rules new and scoped to .skills-* /
+   .skill-* so nothing here overlaps the existing page styles above.
+   --------------------------------------------------------------------------- */
+
+.skills-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: var(--chat-col-max);
+  margin: var(--space-5) auto var(--space-4);
+}
+
+.skills-search,
+.skills-repo-input {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  font: inherit;
+  font-size: var(--text-base);
+  color: var(--text);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.skills-search:focus-visible,
+.skills-repo-input:focus-visible {
+  outline: none;
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 2px var(--accent-wash);
+}
+
+.skills-import-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.skills-import-row .skills-repo-input {
+  flex: 1 1 260px;
+  width: auto;
+}
+
+.skills-import-btn {
+  flex: 0 0 auto;
+  padding: var(--space-2) var(--space-4);
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.skills-import-btn:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+}
+
+.skills-import-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.skills-error {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--danger);
+  background: var(--danger-wash);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-sm);
+}
+
+.skills-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: var(--chat-col-max);
+  margin: 0 auto var(--space-8);
+}
+
+.skill-entry {
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.skill-entry-name {
+  font-size: var(--text-md);
+  font-weight: 600;
+  letter-spacing: var(--tracking-tight);
+  color: var(--text);
+}
+
+.skill-entry-desc {
+  margin-top: var(--space-1);
+  font-size: var(--text-sm);
+  line-height: var(--lh-normal);
+  color: var(--text-secondary);
+}
+
+.skill-entry-projects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.skill-install-btn {
+  padding: 4px var(--space-3);
+  font: inherit;
+  font-size: var(--text-xs);
+  color: var(--accent-strong);
+  background: var(--accent-wash);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.skill-install-btn:hover:not(:disabled) {
+  background: rgba(124, 147, 242, 0.18);
+}
+
+.skill-install-btn:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+.skill-installed-tag {
+  padding: 4px var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--ok);
+  background: rgba(75, 191, 140, 0.1);
+  border: 1px solid rgba(75, 191, 140, 0.28);
+  border-radius: var(--radius-full);
+}
+
+.skill-entry-hint {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
 }

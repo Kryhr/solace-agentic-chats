@@ -23,6 +23,10 @@ export interface ProjectInfo {
 export function listProjects(): ProjectInfo[] {
   ensureWorkspaceRoot();
   return readdirSync(WORKSPACE_ROOT)
+    // Solace's own bookkeeping folders live in the workspace root too (e.g.
+    // .solace-skill-repos, the shallow clones backing imported skill repos) - they are not
+    // projects and must not show up as ones anywhere a project list is offered.
+    .filter((name) => !name.startsWith("."))
     .filter((name) => {
       // A project entry can be a directory junction/symlink (e.g. one pointing at a real repo
       // living elsewhere) whose target can go missing - a moved/renamed/unmounted target

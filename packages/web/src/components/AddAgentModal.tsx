@@ -4,12 +4,14 @@ import { createProject, fetchCredentials, fetchProjects, saveCredential, type Pr
 import { effortOptionsFor, modelOptionsFor } from "../lib/modelOptions";
 import { permissionOptionsFor, TRUST_LABELS } from "../lib/permissionOptions";
 
-const PROVIDERS: ProviderId[] = ["claude-code", "codex-cli", "gemini-cli", "qwen-code"];
+const PROVIDERS: ProviderId[] = ["claude-code", "codex-cli", "gemini-cli", "qwen-code", "custom"];
 const NEW_PROJECT_VALUE = "__new__";
 const NEW_KEY_VALUE = "__new__";
-// Mirrors adapters/index.ts's apiAdapters map - only these two providers have a direct-API
-// alternative to the CLI/subscription path today.
-const API_KEY_CAPABLE: ProviderId[] = ["claude-code", "codex-cli"];
+// Mirrors adapters/index.ts's apiAdapters map - only these providers have a direct-API
+// alternative to the CLI/subscription path today. "custom" is API-key-only: there's no CLI
+// to shell out to for an arbitrary OpenAI-compatible endpoint.
+const API_KEY_CAPABLE: ProviderId[] = ["claude-code", "codex-cli", "custom"];
+const API_KEY_ONLY: ProviderId[] = ["custom"];
 
 export function AddAgentModal({
   modelCatalog,
@@ -74,19 +76,41 @@ export function AddAgentModal({
     setModel(modelOptions[0] ?? "");
     setEffort(effortOptions[0] ?? "");
     setTrustLevel(trustOptions.includes("bypassPermissions") ? "bypassPermissions" : (trustOptions[0] ?? "bypassPermissions"));
-    if (!API_KEY_CAPABLE.includes(provider)) setAuthMode("cli");
+    // Custom endpoints are API-key-only; every other provider goes back to its CLI default
+    // rather than silently inheriting "API key" from a provider that was only ever one.
+    setAuthMode(API_KEY_ONLY.includes(provider) ? "api-key" : "cli");
     // credentialId must reset too - a credential belongs to exactly one provider, and both
     // claude-code and codex-cli are API_KEY_CAPABLE, so switching between them previously left
     // a stale credentialId selected (pointing at the WRONG provider's saved key) with no
     // visible sign anything was wrong, since the <select>'s displayed value silently falls
     // back to whatever the browser shows for an out-of-list value while React's state still
     // held the old id - it would have been submitted as-is on Add.
-    setCredentialId(NEW_KEY_VALUE);
+    // Custom endpoints can't be added inline (they need a base URL too, which belongs to the
+    // Connections panel's flow) - so default to the first one already saved there.
+    setCredentialId(provider === "custom" ? (providerCredentials[0]?.id ?? "") : NEW_KEY_VALUE);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider]);
 
+  // fetchCredentials() (mount effect above) is async - if the user switches to "custom"
+  // before it resolves, the effect above runs with providerCredentials still empty and
+  // leaves credentialId at "". When credentials then arrive, the <select> visually shows its
+  // first real option selected (a bare <select value=""> falls back to showing the first
+  // <option> even though nothing matches), but credentialId stays "" - Add then rejects with
+  // "add this endpoint under Connections first" even though one is visibly selected. Re-sync
+  // once real credentials show up, but only while nothing has been chosen yet.
+  useEffect(() => {
+    if (provider === "custom" && !credentialId && providerCredentials.length > 0) {
+      setCredentialId(providerCredentials[0].id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [credentials, provider]);
+
   const isCreatingNew = selected === NEW_PROJECT_VALUE;
   const isCreatingNewKey = credentialId === NEW_KEY_VALUE;
+  /** A custom connection is identified by the service it points at, not by "custom" - several
+   * saved custom keys would otherwise be indistinguishable in this dropdown. */
+  const credentialOptionLabel = (c: CredentialMeta) =>
+    c.provider === "custom" ? (c.connectionName || c.baseUrl || "custom endpoint") : c.label;
 
   const handleAdd = async () => {
     setError(null);
@@ -109,15 +133,33 @@ export function AddAgentModal({
     }
     if (!handle || !cwd) return;
 
+    if (provider === "custom" && !model.trim()) {
+      setError("Enter the model id this endpoint expects - there's no default to fall back to");
+      return;
+    }
+
     let finalCredentialId: string | undefined;
     if (authMode === "api-key") {
+      if (provider === "custom" && !credentialId) {
+        setError("Add this endpoint under Connections in the sidebar first");
+        return;
+      }
       if (isCreatingNewKey) {
         if (!newKeyValue.trim()) {
           setError("Paste an API key first");
           return;
         }
-        const saved = await saveCredential(provider, newKeyLabel.trim() || "unlabeled", newKeyValue.trim());
-        finalCredentialId = saved.id;
+        // saveCredential() throws on a non-OK response (a behavior change from earlier this
+        // session) - this call was never updated to expect that, so a failed save (bad key
+        // format, server error) used to become an unhandled rejection with no feedback and
+        // the modal stuck showing nothing happened.
+        try {
+          const saved = await saveCredential(provider, newKeyLabel.trim() || "unlabeled", newKeyValue.trim());
+          finalCredentialId = saved.id;
+        } catch (err) {
+          setError((err as Error).message || "Failed to save the API key");
+          return;
+        }
       } else {
         finalCredentialId = credentialId;
       }
@@ -154,7 +196,7 @@ export function AddAgentModal({
           </select>
         </label>
 
-        {API_KEY_CAPABLE.includes(provider) && (
+        {API_KEY_CAPABLE.includes(provider) && !API_KEY_ONLY.includes(provider) && (
           <label>
             Sign-in method
             <select className="select" value={authMode} onChange={(e) => setAuthMode(e.target.value as "cli" | "api-key")}>
@@ -169,15 +211,23 @@ export function AddAgentModal({
             <label>
               API key
               <select className="select" value={credentialId} onChange={(e) => setCredentialId(e.target.value)}>
+                {provider === "custom" && providerCredentials.length === 0 && <option value="">No connections saved yet</option>}
                 {providerCredentials.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {c.label}
+                    {credentialOptionLabel(c)}
                   </option>
                 ))}
-                <option value={NEW_KEY_VALUE}>+ Add a new key…</option>
+                {/* A custom endpoint needs a base URL as well as a key, so it's added in the
+                    sidebar's Connections panel rather than inline here. */}
+                {provider !== "custom" && <option value={NEW_KEY_VALUE}>+ Add a new key…</option>}
               </select>
             </label>
-            {isCreatingNewKey && (
+            {provider === "custom" && (
+              <div className="field-note">
+                Custom endpoints are added under <strong>Connections</strong> in the sidebar (name + base URL + key).
+              </div>
+            )}
+            {provider !== "custom" && isCreatingNewKey && (
               <>
                 <label>
                   Key label
@@ -202,6 +252,14 @@ export function AddAgentModal({
           </>
         )}
 
+        {/* No model catalog exists for an arbitrary endpoint - every provider names its models
+            differently - so this is free text rather than a guessed list. */}
+        {provider === "custom" && (
+          <label>
+            Model id
+            <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="deepseek-chat" spellCheck={false} />
+          </label>
+        )}
         {modelOptions.length > 0 && (
           <label>
             Model

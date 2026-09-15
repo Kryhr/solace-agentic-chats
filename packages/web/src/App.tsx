@@ -34,14 +34,16 @@ import { ApprovalPrompt } from "./components/ApprovalPrompt";
 import { ArchivesPage } from "./components/ArchivesPage";
 import { ChatPanel } from "./components/ChatPanel";
 import { GithubPanel } from "./components/GithubPanel";
-import { ProvidersPanel } from "./components/ProvidersPanel";
+import { ProvidersPanel, SavedConnections } from "./components/ProvidersPanel";
+import { SkillsPage } from "./components/SkillsPage";
 
-type View = { type: "chat" } | { type: "hub"; agentId: string } | { type: "archives" };
+type View = { type: "chat" } | { type: "hub"; agentId: string } | { type: "archives" } | { type: "skills" };
 
 function parseHash(hash: string): View {
   const agentMatch = hash.match(/^#\/agent\/(.+)$/);
   if (agentMatch) return { type: "hub", agentId: agentMatch[1] };
   if (hash === "#/archives") return { type: "archives" };
+  if (hash === "#/skills") return { type: "skills" };
   return { type: "chat" };
 }
 
@@ -89,6 +91,9 @@ export default function App() {
   const goToArchives = () => {
     location.hash = "#/archives";
     fetchArchives().then(setArchives);
+  };
+  const goToSkills = () => {
+    location.hash = "#/skills";
   };
 
   useEffect(() => {
@@ -225,6 +230,9 @@ export default function App() {
             <div className="connection-list">
               <ProvidersPanel />
               <GithubPanel />
+              {/* Saved API keys sit last: the rows above are "is this machine signed in",
+                  these are keys the user pasted and can add/remove here. */}
+              <SavedConnections />
             </div>
           </section>
         </div>
@@ -240,11 +248,23 @@ export default function App() {
             </svg>
             Saved chats
           </button>
+          <button
+            className={`nav-row ${view.type === "skills" ? "is-active" : ""}`}
+            onClick={goToSkills}
+            aria-current={view.type === "skills" ? "page" : undefined}
+          >
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M8 1.75 9.9 5.6l4.35.6-3.15 3.05.74 4.25L8 11.5l-3.84 2 .74-4.25L1.75 6.2l4.35-.6z" />
+            </svg>
+            Skills
+          </button>
         </div>
       </aside>
 
       {view.type === "archives" ? (
         <ArchivesPage archives={archives} agentsById={agentsById} onBack={goToChat} />
+      ) : view.type === "skills" ? (
+        <SkillsPage onBack={goToChat} />
       ) : hubAgent ? (
         <AgentHubPage
           agent={hubAgent}
