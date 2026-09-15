@@ -70,7 +70,11 @@ export function AgentHubPage({
     if (!draft.trim()) return;
     onSendDirect(draft.trim());
     setDraft("");
-    requestAnimationFrame(resizeComposer);
+    stickToBottom.current = true;
+    requestAnimationFrame(() => {
+      resizeComposer();
+      if (historyRef.current) historyRef.current.scrollTop = historyRef.current.scrollHeight;
+    });
   };
 
   const isToolUse = (text: string) => text.startsWith("_used ") && text.endsWith("_");

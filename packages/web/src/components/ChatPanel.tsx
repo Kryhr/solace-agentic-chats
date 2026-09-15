@@ -124,7 +124,14 @@ export function ChatPanel({
     onSend(draft.trim());
     setDraft("");
     setCursor(0);
-    requestAnimationFrame(resizeComposer);
+    // Sending a message is a deliberate "I'm back in this conversation" signal, even if the
+    // reader had scrolled up to review earlier history - snap back to the bottom so the
+    // message they just sent (and the reply that follows) is visible without a manual scroll.
+    stickToBottom.current = true;
+    requestAnimationFrame(() => {
+      resizeComposer();
+      if (historyRef.current) historyRef.current.scrollTop = historyRef.current.scrollHeight;
+    });
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

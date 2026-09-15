@@ -50,7 +50,13 @@ export function getModelCatalog(): ProviderModelInfo[] {
   const catalog: Record<Exclude<ProviderId, "custom">, ProviderModelInfo> = {
     "claude-code": {
       provider: "claude-code",
-      modelExamples: ["sonnet", "opus", "fable", "claude-haiku-4-5-20251001"],
+      // "fable" deliberately left out: which model aliases actually resolve to something
+      // depends on the signed-in account's plan/access, which isn't something this app can
+      // query - listing an alias the current plan can't use would be presenting a guess as
+      // fact. Keep the suggestions to the aliases every plan can use; a user who does have
+      // access to something else can still type it directly, this is example text next to a
+      // free-text field, not a restrictive dropdown.
+      modelExamples: ["sonnet", "opus", "claude-haiku-4-5-20251001"],
       effortLevels: ["low", "medium", "high", "xhigh", "max"],
       currentDefaultModel: claudeDefault,
     },
