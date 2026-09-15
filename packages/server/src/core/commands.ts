@@ -18,10 +18,12 @@ export interface CommandContext {
 const HELP_TEXT = [
   "/task @handle <description> - set that agent's current task",
   "/status - summarize every agent's state, model, and task",
+  "/agents - who's here: provider, model, trust level and working directory",
   "/github status - check gh auth on this machine",
   "/github init <repo-name> - (from an agent's own hub) ask it to init + push a GitHub repo",
   "/deploy list - show the SSH deploy targets saved under Connections",
   "/deploy <target> [what to do] - (from an agent's own hub) hand it a target's connection details",
+  "/save - save a copy of this chat to Saved chats, without clearing it",
   "/clear - archive this channel's history (nothing is deleted - see Saved chats)",
   "/model <value> - (from an agent's own hub) switch its model",
   "/effort <value> - (from an agent's own hub) switch its thinking effort",
@@ -94,6 +96,13 @@ function deployPrompt(target: SshCredentialMeta, instruction: string): string {
   return lines.join("\n");
 }
 
+/** The name this channel is filed under in Saved chats, resolved once at archive time. */
+function channelLabel(ctx: CommandContext): string {
+  if (ctx.channel === "group") return "Group chat";
+  const agentId = ctx.channel.agentId;
+  return `${ctx.agents.listAgents().find((a) => a.id === agentId)?.handle ?? "an agent"}'s hub`;
+}
+
 /** Only meaningful inside one agent's own hub channel - group chat has no single "current agent". */
 function requireAgentChannel(channel: ChatChannel): string | undefined {
   return channel === "group" ? undefined : channel.agentId;
@@ -159,6 +168,19 @@ export async function tryHandleCommand(text: string, ctx: CommandContext): Promi
       return true;
     }
 
+    case "agents": {
+      const agents = ctx.agents.listAgents();
+      if (agents.length === 0) {
+        post(ctx.bus, ctx.channel, "no agents configured yet");
+        return true;
+      }
+      const lines = agents.map(
+        (a) => `${a.handle} - ${a.provider}${a.model ? ` (${a.model})` : ""} · ${a.trustLevel} · ${a.cwd}`,
+      );
+      post(ctx.bus, ctx.channel, lines.join("\n"));
+      return true;
+    }
+
     case "status": {
       const agents = ctx.agents.listAgents();
       const statuses = new Map(ctx.agents.listStatuses().map((s) => [s.agentId, s]));
@@ -176,13 +198,25 @@ export async function tryHandleCommand(text: string, ctx: CommandContext): Promi
       return true;
     }
 
+    case "save": {
+      // The same archive /clear produces, minus the destruction. Archiving was only ever
+      // reachable as a side effect of clearing, so "keep a copy of this" and "wipe this" were
+      // the same button - the copy is the part people actually want.
+      const messages = ctx.bus.getHistoryFor(ctx.channel);
+      if (messages.length === 0) {
+        post(ctx.bus, ctx.channel, "nothing to save yet - this chat is empty");
+        return true;
+      }
+      ctx.archive.add(ctx.channel, messages, channelLabel(ctx));
+      ctx.bus.emitEvent({ type: "archive:saved", payload: { channel: ctx.channel } });
+      post(ctx.bus, ctx.channel, `Saved a copy of this chat (${messages.length} messages) to Saved chats. Nothing was cleared.`);
+      return true;
+    }
+
     case "clear": {
+      // Label resolved BEFORE clearing, while the agent is still findable.
+      const label = channelLabel(ctx);
       const removed = ctx.bus.clearChannel(ctx.channel);
-      const channel = ctx.channel;
-      const label =
-        channel === "group"
-          ? "Group chat"
-          : `${ctx.agents.listAgents().find((a) => a.id === channel.agentId)?.handle ?? "an agent"}'s hub`;
       ctx.archive.add(ctx.channel, removed, label);
       return true;
     }

@@ -291,4 +291,7 @@ export type ServerEvent =
   | { type: "chat:cleared"; payload: { channel: ChatChannel } }
   | { type: "approval:requested"; payload: PendingApproval }
   | { type: "approval:resolved"; payload: { id: string; approved: boolean } }
-  | { type: "usage:rate-limit"; payload: ProviderRateLimit };
+  | { type: "usage:rate-limit"; payload: ProviderRateLimit }
+  /** A chat was copied into Saved chats without being cleared, so the archives list has
+   * changed even though no channel was emptied. */
+  | { type: "archive:saved"; payload: { channel: ChatChannel } };

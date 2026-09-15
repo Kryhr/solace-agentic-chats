@@ -896,9 +896,16 @@ export class AgentManager {
     // success nobody had verified. Neither is fixable by code alone, but a direct, concrete
     // reminder in the one place every group turn passes through is the cheapest real lever
     // available.
+    // The first version of this block described solace-agentic-chats at length on every single
+    // turn, and the name bled straight into the work: asked to build a candle company's site,
+    // an agent named the brand "Solus". The chat app is the room, not the job. So this now says
+    // the minimum needed to operate in the room, names the actual working directory as the
+    // project, and states outright that the tool's own name has nothing to do with it.
     const identity =
-      `[group context: you are "${self.handle}" in the group chat for solace-agentic-chats, an open-source, ` +
-      `local multi-agent hub (like an open-source Claude Desktop) - this chat is the actual product, not a demo. ` +
+      `[group context: you are "${self.handle}", one of several AI coding agents in a shared group chat. ` +
+      `You are working on the project in your working directory (${self.cwd}) - that project is the job. ` +
+      `This chat is only the tool you and the other agents are talking through; its name, branding and purpose ` +
+      `are NOT part of what you are building, so never borrow them for names, copy, or design decisions. ` +
       `Don't claim something is running, deployed, or "live" unless you've actually verified it yourself just now ` +
       `(e.g. curled the URL, ran the command) - say what you did and haven't yet checked, rather than assuming.`;
     const roster =
