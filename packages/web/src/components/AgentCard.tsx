@@ -1,28 +1,26 @@
-import type { AgentConfig, AgentStatus, ProviderModelInfo, TrustLevel } from "@solace/shared";
+import type { AgentConfig, AgentStatus, ProviderModelInfo, ProviderPermissionInfo, TrustLevel } from "@solace/shared";
 import { ProviderIcon, providerColor } from "./ProviderIcon";
-
-const TRUST_LABELS: Record<TrustLevel, string> = {
-  "confirm-all": "Read-only",
-  "confirm-risky": "Can edit files",
-  "auto-approve": "Full auto",
-};
+import { permissionOptionsFor, TRUST_LABELS } from "../lib/permissionOptions";
 
 export function AgentCard({
   agent,
   status,
   modelInfo,
+  permissionInfo,
   onTrustChange,
   onOpen,
 }: {
   agent: AgentConfig;
   status?: AgentStatus;
   modelInfo?: ProviderModelInfo;
+  permissionInfo?: ProviderPermissionInfo;
   onTrustChange: (level: TrustLevel) => void;
   onOpen: () => void;
 }) {
   const state = status?.state ?? "offline";
   const task = agent.currentTask ?? status?.currentTask;
   const modelLabel = agent.model || modelInfo?.currentDefaultModel;
+  const modes = permissionOptionsFor(permissionInfo);
 
   return (
     <div
@@ -56,7 +54,7 @@ export function AgentCard({
         onClick={(e) => e.stopPropagation()}
         onChange={(e) => onTrustChange(e.target.value as TrustLevel)}
       >
-        {(Object.keys(TRUST_LABELS) as TrustLevel[]).map((level) => (
+        {modes.map((level) => (
           <option key={level} value={level}>
             {TRUST_LABELS[level]}
           </option>

@@ -4,6 +4,7 @@ import type {
   ChatMessage,
   ProviderId,
   ProviderModelInfo,
+  ProviderPermissionInfo,
   ProviderStatus,
   ServerEvent,
 } from "@solace/shared";
@@ -61,6 +62,10 @@ export async function fetchProviderStatuses(): Promise<ProviderStatus[]> {
 
 export async function fetchProviderModels(): Promise<ProviderModelInfo[]> {
   return fetch("/api/providers/models").then((r) => r.json());
+}
+
+export async function fetchPermissionModes(): Promise<ProviderPermissionInfo[]> {
+  return fetch("/api/providers/permission-modes").then((r) => r.json());
 }
 
 export async function fetchAgentDirectHistory(agentId: string): Promise<ChatMessage[]> {

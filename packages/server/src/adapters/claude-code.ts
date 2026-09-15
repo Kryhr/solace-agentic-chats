@@ -4,27 +4,14 @@ import { spawnCli } from "../core/spawnCli";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 
 /**
- * Trust level -> Claude Code CLI flags for this turn.
- *
- * v1 semantics (deliberately simple, see ARCHITECTURE.md#trust-levels):
- *   confirm-all    -> read-only tools only, nothing can be changed without a human doing it
- *   confirm-risky  -> read + edit/write files, but no shell/network access
- *   auto-approve   -> full --dangerously-skip-permissions, agent runs unattended
- *
- * True per-action human approval (an "approve this one tool call" popup in the UI) needs
- * Claude Code's --permission-prompt-tool / hooks wiring and is tracked as a roadmap item,
- * not implemented in this skeleton.
+ * Trust level -> Claude Code's own --permission-mode flag. Our TrustLevel enum now IS Claude
+ * Code's real enum (verified via `claude --help`), so this is a direct 1:1 pass-through
+ * rather than an approximation. "manual" additionally needs the live approval-bridge flags
+ * (--permission-prompt-tool / --mcp-config / --strict-mcp-config) - see buildManualModeFlags
+ * below, wired in by runTurn when trustLevel is "manual".
  */
 function flagsForTrustLevel(trustLevel: TrustLevel): string[] {
-  switch (trustLevel) {
-    case "auto-approve":
-      return ["--dangerously-skip-permissions"];
-    case "confirm-risky":
-      return ["--allowedTools", "Read,Grep,Glob,Edit,Write"];
-    case "confirm-all":
-    default:
-      return ["--allowedTools", "Read,Grep,Glob"];
-  }
+  return ["--permission-mode", trustLevel];
 }
 
 export const claudeCodeAdapter: ProviderAdapter = {

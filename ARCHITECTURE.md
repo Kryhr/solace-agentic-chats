@@ -74,19 +74,32 @@ different machines/profiles/subscriptions).
 
 ## Trust levels
 
-v0.1 approximates "how much can this agent do without asking" using each CLI's allow-listed
-tools, because true per-action ("approve this one `Edit` call") human-in-the-loop approval
-requires wiring a CLI's permission-prompt hook back to our UI over a request/response
-channel, which isn't built yet.
+`TrustLevel` is Claude Code's own real `--permission-mode` enum (verified via `claude
+--help`: `acceptEdits`, `auto`, `bypassPermissions`, `manual`, `dontAsk`, `plan` - we expose
+all but `dontAsk`), not a hand-rolled approximation. `core/permissionCatalog.ts` exposes
+which modes each provider's adapter actually supports (`GET /api/providers/permission-modes`)
+so the UI only ever offers real, working options per provider.
 
-| Trust level      | Claude Code flags today                          | Meaning |
-|-------------------|--------------------------------------------------|---------|
-| `confirm-all`     | `--allowedTools Read,Grep,Glob`                   | Can look around, can't change anything |
-| `confirm-risky`   | `--allowedTools Read,Grep,Glob,Edit,Write`        | Can edit files, no shell/network |
-| `auto-approve`    | `--dangerously-skip-permissions`                  | Fully unattended |
+| Trust level         | Claude Code flag(s)                                                  | Codex CLI flag(s)                                                 |
+|----------------------|-----------------------------------------------------------------------|---------------------------------------------------------------------|
+| `plan`               | `--permission-mode plan`                                              | not offered - no native equivalent |
+| `manual`             | `--permission-mode manual` + live approval bridge (see below)         | `--ask-for-approval on-request --sandbox workspace-write` (best-effort - no live popup, Codex has no external approval-decision hook) |
+| `acceptEdits`        | `--permission-mode acceptEdits`                                       | `--sandbox workspace-write` |
+| `bypassPermissions`  | `--permission-mode bypassPermissions`                                  | `--dangerously-bypass-approvals-and-sandbox` |
+| `auto`               | `--permission-mode auto`                                               | `--approve-for-me` |
 
-Roadmap item: replace this with real per-call approval, surfaced in the UI as a
-`PendingApproval` (already modeled in `packages/shared`, not wired up to any adapter yet).
+**Live approval loop (Claude Code `manual` mode only)**: a per-turn stdio MCP server
+(`server/approval/approvalMcpServer.ts`, via `@modelcontextprotocol/sdk`) is spawned
+alongside the `claude` subprocess, wired in via `--permission-prompt-tool
+mcp__approval-bridge__permission --mcp-config <inline JSON> --strict-mcp-config
+--permission-prompts host`. Its one tool call blocks Claude's turn until a human resolves the
+`PendingApproval` it creates (`POST /api/approvals/:id/resolve`), broadcast over the existing
+WebSocket as `approval:requested`/`approval:resolved`. Confirmed via
+code.claude.com/docs/en/agent-sdk/permissions and `claude --help`; the exact tool-call JSON
+schema is an acknowledged documentation gap (anthropics/claude-code#1175) verified
+empirically against a logging MCP server before the real handler was written. Codex CLI has
+no equivalent external-hook mechanism (confirmed against learn.chatgpt.com/docs/
+agent-approvals-security) - its `manual` mode is a best-effort approximation only.
 
 ## Why Fastify + plain WebSocket instead of a heavier framework
 

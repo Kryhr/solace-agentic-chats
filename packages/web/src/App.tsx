@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import type { AgentConfig, AgentStatus, ChatMessage, ProviderModelInfo, TrustLevel } from "@solace/shared";
+import type { AgentConfig, AgentStatus, ChatMessage, ProviderModelInfo, ProviderPermissionInfo, TrustLevel } from "@solace/shared";
 import {
   connectSocket,
   createAgent,
   fetchAgentDirectHistory,
   fetchAgents,
   fetchHistory,
+  fetchPermissionModes,
   fetchProviderModels,
   sendAgentDirectMessage,
   sendChatMessage,
@@ -33,6 +34,7 @@ export default function App() {
   const [historyById, setHistoryById] = useState<Record<string, ChatMessage>>({});
   const [directById, setDirectById] = useState<Record<string, Record<string, ChatMessage>>>({});
   const [modelCatalog, setModelCatalog] = useState<ProviderModelInfo[]>([]);
+  const [permissionCatalog, setPermissionCatalog] = useState<ProviderPermissionInfo[]>([]);
   const [showAddAgent, setShowAddAgent] = useState(false);
   const [connected, setConnected] = useState(true);
   const [view, setView] = useState<View>(() => parseHash(location.hash));
@@ -63,6 +65,7 @@ export default function App() {
     fetchAgents().then((list) => setAgentsById(Object.fromEntries(list.map((a) => [a.id, a]))));
     fetchHistory().then((list) => setHistoryById(Object.fromEntries(list.map((m) => [m.id, m]))));
     fetchProviderModels().then(setModelCatalog);
+    fetchPermissionModes().then(setPermissionCatalog);
 
     const disconnect = connectSocket(
       (event) => {
@@ -123,6 +126,7 @@ export default function App() {
             agent={agent}
             status={statuses[agent.id]}
             modelInfo={modelCatalog.find((m) => m.provider === agent.provider)}
+            permissionInfo={permissionCatalog.find((p) => p.provider === agent.provider)}
             onTrustChange={(level) => handleTrustChange(agent.id, level)}
             onOpen={() => goToHub(agent.id)}
           />
@@ -139,6 +143,7 @@ export default function App() {
           agent={hubAgent}
           status={statuses[hubAgent.id]}
           modelInfo={modelCatalog.find((m) => m.provider === hubAgent.provider)}
+          permissionInfo={permissionCatalog.find((p) => p.provider === hubAgent.provider)}
           directHistory={hubDirectHistory}
           onBack={goToChat}
           onSave={(patch) => {
@@ -160,6 +165,7 @@ export default function App() {
       {showAddAgent && (
         <AddAgentModal
           modelCatalog={modelCatalog}
+          permissionCatalog={permissionCatalog}
           onClose={() => setShowAddAgent(false)}
           onCreate={async (config) => {
             const created = await createAgent(config);

@@ -1,23 +1,26 @@
 import { useEffect, useState } from "react";
-import type { AgentConfig, ProviderId, ProviderModelInfo, TrustLevel } from "@solace/shared";
+import type { AgentConfig, ProviderId, ProviderModelInfo, ProviderPermissionInfo, TrustLevel } from "@solace/shared";
 import { createProject, fetchProjects, type ProjectInfo } from "../api";
 import { effortOptionsFor, modelOptionsFor } from "../lib/modelOptions";
+import { permissionOptionsFor, TRUST_LABELS } from "../lib/permissionOptions";
 
 const PROVIDERS: ProviderId[] = ["claude-code", "codex-cli", "gemini-cli", "qwen-code"];
 const NEW_PROJECT_VALUE = "__new__";
 
 export function AddAgentModal({
   modelCatalog,
+  permissionCatalog,
   onClose,
   onCreate,
 }: {
   modelCatalog: ProviderModelInfo[];
+  permissionCatalog: ProviderPermissionInfo[];
   onClose: () => void;
   onCreate: (config: Omit<AgentConfig, "id">) => void;
 }) {
   const [handle, setHandle] = useState("");
   const [provider, setProvider] = useState<ProviderId>("claude-code");
-  const [trustLevel, setTrustLevel] = useState<TrustLevel>("confirm-risky");
+  const [trustLevel, setTrustLevel] = useState<TrustLevel>("bypassPermissions");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
 
@@ -31,6 +34,8 @@ export function AddAgentModal({
   const info = modelCatalog.find((m) => m.provider === provider);
   const modelOptions = modelOptionsFor(info);
   const effortOptions = effortOptionsFor(info);
+  const permissionInfo = permissionCatalog.find((p) => p.provider === provider);
+  const trustOptions = permissionOptionsFor(permissionInfo);
 
   useEffect(() => {
     fetchProjects().then(({ root, projects }) => {
@@ -41,10 +46,11 @@ export function AddAgentModal({
     });
   }, []);
 
-  // Whenever the provider changes, snap model/effort to that provider's own real options.
+  // Whenever the provider changes, snap model/effort/trust to that provider's own real options.
   useEffect(() => {
     setModel(modelOptions[0] ?? "");
     setEffort(effortOptions[0] ?? "");
+    setTrustLevel(trustOptions.includes("bypassPermissions") ? "bypassPermissions" : (trustOptions[0] ?? "bypassPermissions"));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider]);
 
@@ -151,9 +157,11 @@ export function AddAgentModal({
         <label>
           Trust level
           <select value={trustLevel} onChange={(e) => setTrustLevel(e.target.value as TrustLevel)}>
-            <option value="confirm-all">Read-only</option>
-            <option value="confirm-risky">Can edit files</option>
-            <option value="auto-approve">Full auto</option>
+            {trustOptions.map((level) => (
+              <option key={level} value={level}>
+                {TRUST_LABELS[level]}
+              </option>
+            ))}
           </select>
         </label>
         <div className="actions">

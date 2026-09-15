@@ -8,6 +8,7 @@ import { AgentManager } from "./core/agentManager";
 import { WORKSPACE_ROOT, createProject, ensureWorkspaceRoot, listProjects } from "./core/workspace";
 import { checkAllProviders, testProvider } from "./core/providerStatus";
 import { getModelCatalog } from "./core/modelCatalog";
+import { getPermissionCatalog } from "./core/permissionCatalog";
 import { debounce, loadState, saveState } from "./core/persistence";
 import type { ProviderId } from "@solace/shared";
 
@@ -75,6 +76,7 @@ async function main() {
 
   app.get("/api/providers/status", async () => checkAllProviders());
   app.get("/api/providers/models", async () => getModelCatalog());
+  app.get("/api/providers/permission-modes", async () => getPermissionCatalog());
 
   app.post<{ Params: { provider: ProviderId } }>("/api/providers/:provider/test", async (req) => {
     return testProvider(req.params.provider, WORKSPACE_ROOT);

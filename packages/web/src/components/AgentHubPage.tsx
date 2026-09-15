@@ -1,15 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import type { AgentConfig, AgentStatus, ChatMessage, ProviderModelInfo, TrustLevel } from "@solace/shared";
+import type { AgentConfig, AgentStatus, ChatMessage, ProviderModelInfo, ProviderPermissionInfo, TrustLevel } from "@solace/shared";
 import { ProviderIcon, providerLabel } from "./ProviderIcon";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 import { effortOptionsFor, modelOptionsFor } from "../lib/modelOptions";
+import { permissionOptionsFor, TRUST_LABELS } from "../lib/permissionOptions";
 import { formatProviderError } from "../lib/errorFormat";
-
-const TRUST_LABELS: Record<TrustLevel, string> = {
-  "confirm-all": "Read-only",
-  "confirm-risky": "Can edit files",
-  "auto-approve": "Full auto",
-};
 
 function formatTokens(n?: number): string {
   if (n === undefined) return "–";
@@ -20,6 +15,7 @@ export function AgentHubPage({
   agent,
   status,
   modelInfo,
+  permissionInfo,
   directHistory,
   onBack,
   onSave,
@@ -28,6 +24,7 @@ export function AgentHubPage({
   agent: AgentConfig;
   status?: AgentStatus;
   modelInfo?: ProviderModelInfo;
+  permissionInfo?: ProviderPermissionInfo;
   directHistory: ChatMessage[];
   onBack: () => void;
   onSave: (patch: Partial<Pick<AgentConfig, "trustLevel" | "model" | "effort">>) => void;
@@ -40,6 +37,7 @@ export function AgentHubPage({
   const state = status?.state ?? "offline";
   const modelOptions = modelOptionsFor(modelInfo);
   const effortOptions = effortOptionsFor(modelInfo);
+  const trustOptions = permissionOptionsFor(permissionInfo);
   const error = status?.lastError ? formatProviderError(status.lastError) : null;
   const totalIn = status?.totalUsage?.inputTokens ?? 0;
   const totalOut = status?.totalUsage?.outputTokens ?? 0;
@@ -121,7 +119,7 @@ export function AgentHubPage({
           <label>
             Trust
             <select value={agent.trustLevel} onChange={(e) => onSave({ trustLevel: e.target.value as TrustLevel })}>
-              {(Object.keys(TRUST_LABELS) as TrustLevel[]).map((level) => (
+              {trustOptions.map((level) => (
                 <option key={level} value={level}>
                   {TRUST_LABELS[level]}
                 </option>

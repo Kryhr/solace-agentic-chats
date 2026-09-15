@@ -19,13 +19,28 @@ function statePath(workspaceRoot: string): string {
  * conversation. This is a deliberately dumb JSON snapshot on disk, not a database - fine for
  * a local single-user tool, revisit if this ever needs to survive concurrent writers.
  */
+// v0.1 used a hand-rolled three-tier TrustLevel; the real per-provider permission modes
+// (see @solace/shared's TrustLevel doc comment) replaced it with the same names Claude
+// Code's own --permission-mode flag uses. Map old persisted values so existing agents keep
+// working with a valid enum member instead of silently breaking after this upgrade.
+const OLD_TRUST_LEVEL_MIGRATION: Record<string, string> = {
+  "confirm-all": "manual",
+  "confirm-risky": "acceptEdits",
+  "auto-approve": "bypassPermissions",
+};
+
+function migrateAgent(agent: AgentConfig): AgentConfig {
+  const mapped = OLD_TRUST_LEVEL_MIGRATION[agent.trustLevel as unknown as string];
+  return mapped ? { ...agent, trustLevel: mapped as AgentConfig["trustLevel"] } : agent;
+}
+
 export function loadState(workspaceRoot: string): PersistedState {
   const path = statePath(workspaceRoot);
   if (!existsSync(path)) return EMPTY_STATE;
   try {
     const parsed = JSON.parse(readFileSync(path, "utf-8"));
     return {
-      agents: Array.isArray(parsed.agents) ? parsed.agents : [],
+      agents: Array.isArray(parsed.agents) ? parsed.agents.map(migrateAgent) : [],
       history: Array.isArray(parsed.history) ? parsed.history : [],
     };
   } catch {

@@ -4,31 +4,50 @@ import { spawnCli } from "../core/spawnCli";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 
 /**
- * Trust level -> Codex CLI `codex exec` sandbox flags, same three-tier approximation as
- * the Claude Code adapter (see ARCHITECTURE.md#trust-levels).
+ * Trust level -> Codex CLI flags. Codex has no single mode flag equivalent to Claude Code's
+ * --permission-mode, so this approximates our five shared TrustLevel values onto Codex's own
+ * --sandbox / --ask-for-approval / --approve-for-me / --dangerously-bypass-approvals-and-sandbox
+ * (see ARCHITECTURE.md#trust-levels). No native "plan" mode exists for Codex - the permission
+ * catalog (core/permissionCatalog.ts) doesn't offer it for this provider, so that case here is
+ * unreachable in practice, but falls back to the safest option rather than throwing.
+ *
+ * IMPORTANT: --ask-for-approval is a top-level flag, NOT accepted by `codex exec` itself
+ * (confirmed via `codex exec --help`, which doesn't list it) - it must come BEFORE the `exec`
+ * subcommand: `codex --ask-for-approval <policy> exec ...`. Verified empirically on this
+ * machine.
  */
-function sandboxFlagsForTrustLevel(trustLevel: TrustLevel): string[] {
+function flagsForTrustLevel(trustLevel: TrustLevel): { beforeExec: string[]; forExec: string[] } {
   switch (trustLevel) {
-    case "auto-approve":
-      return ["--dangerously-bypass-approvals-and-sandbox"];
-    case "confirm-risky":
-      return ["--sandbox", "workspace-write"];
-    case "confirm-all":
+    case "bypassPermissions":
+      return { beforeExec: [], forExec: ["--dangerously-bypass-approvals-and-sandbox"] };
+    case "auto":
+      return { beforeExec: [], forExec: ["--approve-for-me"] };
+    case "acceptEdits":
+      return { beforeExec: [], forExec: ["--sandbox", "workspace-write"] };
+    case "manual":
+      // Best-effort only: Codex has no external approval-decision hook analogous to Claude
+      // Code's --permission-prompt-tool (confirmed against learn.chatgpt.com/docs/
+      // agent-approvals-security), so this can't be a live UI popup - the CLI's own
+      // internal approval routing decides.
+      return { beforeExec: ["--ask-for-approval", "on-request"], forExec: ["--sandbox", "workspace-write"] };
+    case "plan":
     default:
-      return ["--sandbox", "read-only"];
+      return { beforeExec: [], forExec: ["--sandbox", "read-only"] };
   }
 }
 
 export const codexCliAdapter: ProviderAdapter = {
   id: "codex-cli",
   async runTurn({ cwd, prompt, trustLevel, model, effort, onEvent, signal }: RunTurnOptions): Promise<void> {
+    const { beforeExec, forExec } = flagsForTrustLevel(trustLevel);
     const args = [
+      ...beforeExec,
       "exec",
       "--json",
       "--skip-git-repo-check",
       "-C",
       cwd,
-      ...sandboxFlagsForTrustLevel(trustLevel),
+      ...forExec,
       ...(model ? ["-m", model] : []),
       // model_reasoning_effort is a TOML string value, hence the literal embedded quotes -
       // see the -c examples in `codex exec --help`.

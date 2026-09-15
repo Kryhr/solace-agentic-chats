@@ -5,10 +5,14 @@ export type ProviderId = "claude-code" | "codex-cli" | "gemini-cli" | "qwen-code
 
 /**
  * How much an agent is allowed to do without a human clicking "approve" first.
- * Maps directly onto each CLI's own permission flags (e.g. Claude Code's
- * --allowedTools / --dangerously-skip-permissions).
+ * These are Claude Code's own real `--permission-mode` values (verified via `claude --help`:
+ * choices are "acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan" - we
+ * expose all but "dontAsk", which nothing in this app currently uses). Codex CLI has no
+ * single equivalent flag; adapters/codex-cli.ts maps these onto its own --sandbox /
+ * --ask-for-approval / --approve-for-me / --dangerously-bypass-approvals-and-sandbox flags,
+ * approximating where a 1:1 mapping doesn't exist (no native "plan" mode for Codex).
  */
-export type TrustLevel = "confirm-all" | "confirm-risky" | "auto-approve";
+export type TrustLevel = "plan" | "manual" | "acceptEdits" | "bypassPermissions" | "auto";
 
 export type AgentRunState = "idle" | "thinking" | "waiting-approval" | "error" | "offline";
 
@@ -68,6 +72,13 @@ export interface ProviderModelInfo {
   currentDefaultEffort?: string;
 }
 
+/** Which permission modes a provider's adapter actually supports - honest per-provider list,
+ * same pattern as ProviderModelInfo. Empty means the adapter isn't implemented yet. */
+export interface ProviderPermissionInfo {
+  provider: ProviderId;
+  availableModes: TrustLevel[];
+}
+
 export type ChatChannel = "group" | { agentId: string };
 
 export interface ChatMessage {
@@ -106,5 +117,6 @@ export type ServerEvent =
   | { type: "agent:updated"; payload: AgentConfig }
   | { type: "agent:removed"; payload: { agentId: string } }
   | { type: "chat:message"; payload: ChatMessage }
+  | { type: "chat:cleared"; payload: { channel: ChatChannel } }
   | { type: "approval:requested"; payload: PendingApproval }
   | { type: "approval:resolved"; payload: { id: string; approved: boolean } };

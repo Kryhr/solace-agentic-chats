@@ -70,7 +70,9 @@ export async function testProvider(provider: ProviderId, cwd: string): Promise<{
       .runTurn({
         cwd,
         prompt: "Reply with exactly the single word: OK",
-        trustLevel: "confirm-all",
+        // bypassPermissions guarantees this trivial connectivity check never blocks on an
+        // approval prompt (which "manual" would, with no one there to answer it).
+        trustLevel: "bypassPermissions",
         onEvent: (event) => {
           if (settled) return;
           if (event.type === "text" && event.text.trim()) {
