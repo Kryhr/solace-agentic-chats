@@ -219,8 +219,15 @@ export const qwenCodeAdapter: ProviderAdapter = {
             for (const block of content) {
               if (block.type === "text" && block.text) {
                 onEvent({ type: "text", text: block.text });
+              } else if (block.type === "thinking" && block.thinking) {
+                onEvent({ type: "reasoning", text: block.thinking });
               } else if (block.type === "tool_use") {
-                onEvent({ type: "tool-use", description: `${block.name}(${JSON.stringify(block.input)})` });
+                onEvent({
+                  type: "tool-use",
+                  description: `${block.name}(${JSON.stringify(block.input)})`,
+                  toolName: block.name,
+                  input: block.input,
+                });
               }
             }
           } else if (event.type === "result") {

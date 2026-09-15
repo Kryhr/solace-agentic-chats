@@ -2,7 +2,20 @@ import type { ProviderId, ProviderRateLimit, TrustLevel, TurnUsage } from "@sola
 
 export type AdapterEvent =
   | { type: "text"; text: string }
-  | { type: "tool-use"; description: string }
+  /** The model's own thinking, where the provider emits it as a distinct item. Deliberately NOT
+   * a "text" event: reasoning used to arrive as plain unmarked text, indistinguishable from an
+   * answer, so the hub had no way to present it as anything other than another paragraph of the
+   * agent talking. Nothing downstream may infer this from the shape of the words. */
+  | { type: "reasoning"; text: string }
+  /**
+   * One tool/command invocation.
+   *
+   * `toolName` and `input` are the provider's OWN name and arguments, passed through unflattened
+   * so core/toolLabel.ts can derive a human label from the actual argument values. `description`
+   * remains the pre-flattened string for any path that just wants one - adapters that genuinely
+   * have no structured input (a plain in-stream notice) send only that.
+   */
+  | { type: "tool-use"; description: string; toolName?: string; input?: unknown }
   | { type: "usage"; usage: TurnUsage }
   /** Account-level rate-limit numbers the CLI volunteered mid-turn. Only emitted when the
    * provider actually reported a usable figure - never synthesised at the start/end of a turn. */

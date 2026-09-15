@@ -120,7 +120,11 @@ export default function App() {
           // the server's approval state has moved on and drop anything it no longer knows.
           setPendingApprovals(Object.fromEntries(event.approvals.map((a) => [a.id, a])));
           setRateLimits(Object.fromEntries((event.rateLimits ?? []).map((r) => [r.provider, r])));
-        } else if (event.type === "chat:message") {
+        } else if (event.type === "chat:message" || event.type === "chat:message:updated") {
+          // Both branches are the same write. History is keyed by id, so replacing an existing
+          // entry is exactly what an update means, and a promotion (progress -> answer) can't
+          // reorder the transcript or re-trigger the entrance animation: useEntranceTracker
+          // memoises its decision per id, so a message already on screen stays as it is.
           if (event.payload.channel === "group") {
             setHistoryById((h) => ({ ...h, [event.payload.id]: event.payload }));
           } else {

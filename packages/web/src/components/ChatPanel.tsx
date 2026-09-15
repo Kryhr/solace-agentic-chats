@@ -4,7 +4,7 @@ import { ProviderIcon, UserAvatar } from "./ProviderIcon";
 import { Composer } from "./Composer";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 import { useEntranceTracker } from "../lib/useEntranceTracker";
-import { displayText, isErrorLine, isToolUse } from "../lib/messageKind";
+import { displayText, renderKind } from "../lib/messageKind";
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -103,11 +103,17 @@ export function ChatPanel({
           </div>
         )}
         {history.map((m) => {
-          const isUser = m.authorId === "user";
-          const isSystem = m.authorId === "system";
+          // Group chat only ever receives completed answers (AgentManager posts every
+          // intermediate line to the agent's own hub channel instead), so in practice this is
+          // "answer" for every agent row. It goes through the same classifier as the hub anyway,
+          // so history written before that rule - which does contain tool lines - still renders
+          // as what it is, and the two views can never disagree about what a message is again.
+          const kind = renderKind(m);
+          const isUser = kind === "user";
+          const isSystem = kind === "system";
           const author = agentById.get(m.authorId);
-          const toolUse = isToolUse(m.text);
-          const errorLine = isErrorLine(m.text);
+          const toolUse = kind === "tool" || kind === "reasoning";
+          const errorLine = kind === "error";
           const text = displayText(m.text);
           const showModel = !isUser && !isSystem && !toolUse && !errorLine;
           const modelLabel =

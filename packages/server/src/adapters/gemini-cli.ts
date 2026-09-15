@@ -234,6 +234,8 @@ export const geminiCliAdapter: ProviderAdapter = {
               onEvent({
                 type: "tool-use",
                 description: `${event.tool_name}(${JSON.stringify(event.parameters ?? {})})`,
+                toolName: typeof event.tool_name === "string" ? event.tool_name : undefined,
+                input: event.parameters ?? {},
               });
               break;
             }

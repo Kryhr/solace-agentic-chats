@@ -151,8 +151,18 @@ export const claudeCodeAdapter: ProviderAdapter = {
             for (const block of content) {
               if (block.type === "text" && block.text) {
                 onEvent({ type: "text", text: block.text });
+              } else if (block.type === "thinking" && block.thinking) {
+                // Extended-thinking blocks used to fall through this loop entirely (only "text"
+                // and "tool_use" were handled), so an agent's reasoning was simply dropped -
+                // which is exactly the "it doesn't show their whole thinking" complaint.
+                onEvent({ type: "reasoning", text: block.thinking });
               } else if (block.type === "tool_use") {
-                onEvent({ type: "tool-use", description: `${block.name}(${JSON.stringify(block.input)})` });
+                onEvent({
+                  type: "tool-use",
+                  description: `${block.name}(${JSON.stringify(block.input)})`,
+                  toolName: block.name,
+                  input: block.input,
+                });
               }
             }
           } else if (event.type === "result" && event.usage) {
