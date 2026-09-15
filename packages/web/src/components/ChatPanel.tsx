@@ -305,7 +305,7 @@ export function ChatPanel({
           </div>
           <div className="composer-hint">
             <span>
-              <code>@</code> mention an agent
+              No <code>@</code> → everyone replies · <code>@handle</code> → just them
             </span>
             <span>
               <code>/</code> commands

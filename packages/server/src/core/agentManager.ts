@@ -10,6 +10,10 @@ import { WORKSPACE_ROOT } from "./workspace";
 interface QueuedTurn {
   prompt: string;
   replyChannel: ChatChannel;
+  /** How many agent-to-agent @mention hops led to this turn (0 for a human-triggered turn).
+   * Two agents can legitimately keep mentioning each other back and forth; this caps that
+   * chain instead of letting it run forever - see MAX_MENTION_CHAIN_DEPTH. */
+  mentionChainDepth: number;
 }
 
 interface AgentRuntime {
@@ -34,6 +38,11 @@ interface AgentRuntime {
  * forever with no feedback. */
 const MAX_TURN_MS = 15 * 60 * 1000;
 
+/** How many agent-to-agent @mention hops are allowed before a chain is cut off. Two agents
+ * mentioning each other back and forth is legitimate collaboration, not a bug - but with no
+ * cap at all, it has no natural stopping point either. */
+const MAX_MENTION_CHAIN_DEPTH = 6;
+
 function addUsage(total: TurnUsage, delta: TurnUsage): TurnUsage {
   return {
     inputTokens: (total.inputTokens ?? 0) + (delta.inputTokens ?? 0),
@@ -50,11 +59,14 @@ function addUsage(total: TurnUsage, delta: TurnUsage): TurnUsage {
  * and in each agent's own direct channel (see ARCHITECTURE.md#group-chat-routing and
  * #agent-hub-direct-chat).
  *
- * Routing rule for the group channel:
- *   - a message with @mentions only triggers a turn for the mentioned agent(s);
- *     everyone else keeps working uninterrupted.
- *   - a message with no @mentions is still recorded in the shared history (every
- *     agent sees it as context on its *next* turn) but does not interrupt anyone.
+ * Routing rule for the group channel (see routeGroupMessage):
+ *   - A human message with @mentions only triggers a turn for the mentioned agent(s).
+ *   - A human message with no @mentions triggers every agent - each gets its own turn and
+ *     decides for itself whether it's relevant to them.
+ *   - An agent's own reply only triggers another agent when it explicitly @mentions them -
+ *     never on no-mention, so two agents replying-with-no-mention can't cascade into everyone
+ *     replying to everyone forever. A capped mention-chain depth guards the explicit-mention
+ *     case too, since two agents can otherwise keep mentioning each other indefinitely.
  * A direct message to one agent's own channel always triggers a turn for just that agent,
  * with no @mention parsing needed, and its reply goes back to that same direct channel.
  */
@@ -153,8 +165,31 @@ export class AgentManager {
     this.bus.emitEvent({ type: "agent:status", payload: this.statusFor(runtime) });
   }
 
-  /** Human operator (or another agent) posts a message into the shared group chat. */
+  /** Human operator posts a message into the shared group chat. No @mention reaches every
+   * other agent (each gets its own turn); an @mention reaches only the mentioned agent(s). */
   submitMessage(authorId: string, authorHandle: string, text: string) {
+    this.routeGroupMessage(authorId, authorHandle, text, { broadcastIfUnmentioned: true, mentionChainDepth: 0 });
+  }
+
+  /**
+   * Shared by human-authored messages (submitMessage) and an agent's own final answer at the
+   * end of a group-triggered turn (drainQueue). Posting the message and deciding who (if
+   * anyone) it triggers a turn for used to be two different, inconsistent code paths - the
+   * agent-authored one bypassed mention parsing entirely (hardcoded `mentions: []`), so an
+   * agent's own "@codex, thoughts?" never actually reached Codex, only ever displayed as
+   * inert text. This is the one place that logic lives now.
+   *
+   * `broadcastIfUnmentioned` is false for agent-authored messages on purpose: if an agent's
+   * own unmentioned reply also fanned out to everyone, agents replying-with-no-mention would
+   * cascade into everyone replying to everyone forever. Only an explicit @mention can trigger
+   * another agent from an agent-authored message.
+   */
+  private routeGroupMessage(
+    authorId: string,
+    authorHandle: string,
+    text: string,
+    opts: { broadcastIfUnmentioned: boolean; mentionChainDepth: number; model?: string },
+  ) {
     const knownHandles = [...this.agents.values()].map((a) => a.config.handle);
     const mentions = parseMentions(text, knownHandles);
 
@@ -165,16 +200,38 @@ export class AgentManager {
       authorHandle,
       mentions,
       text,
+      model: opts.model,
       createdAt: new Date().toISOString(),
     };
     this.bus.postMessage(message);
+
+    if (mentions.length === 0 && !opts.broadcastIfUnmentioned) return; // agent-authored, unmentioned: visible only
+
+    if (opts.mentionChainDepth > MAX_MENTION_CHAIN_DEPTH) {
+      if (opts.mentionChainDepth === MAX_MENTION_CHAIN_DEPTH + 1) {
+        this.bus.postMessage({
+          id: nanoid(),
+          channel: "group",
+          authorId: "system",
+          authorHandle: "system",
+          mentions: [],
+          text: `Stopped an agent-to-agent @mention chain after ${MAX_MENTION_CHAIN_DEPTH} hops to avoid a runaway loop - reply directly to continue.`,
+          createdAt: new Date().toISOString(),
+        });
+      }
+      return;
+    }
 
     for (const runtime of this.agents.values()) {
       if (runtime.config.id === authorId) continue; // an agent doesn't reply to itself
       const targeted = mentions.length === 0 || mentions.includes(runtime.config.handle);
       if (mentions.length > 0 && !targeted) continue; // explicit @mentions: only those agents get a turn
-      if (mentions.length === 0) continue; // no mentions: visible in history, nobody is interrupted
-      this.enqueueTurn(runtime.config.id, this.buildPrompt(authorHandle, text), "group");
+      this.enqueueTurn(
+        runtime.config.id,
+        this.buildGroupPrompt(authorHandle, text, runtime.config.id),
+        "group",
+        opts.mentionChainDepth + 1,
+      );
     }
   }
 
@@ -196,14 +253,33 @@ export class AgentManager {
     this.enqueueTurn(agentId, text, channel);
   }
 
-  private buildPrompt(fromHandle: string, text: string): string {
-    return `[group chat message from ${fromHandle}]: ${text}`;
+  /**
+   * A group-triggered turn used to get just the raw message text, nothing else - two agents
+   * pointed at the same project had no built-in sense that the other existed, let alone what
+   * it was doing, which is exactly how two agents ended up independently building competing
+   * versions of the same page. This prepends real, currently-known data (the same roster
+   * `/status` already reports) rather than assuming an agent will infer it from context alone.
+   */
+  private buildGroupPrompt(fromHandle: string, text: string, forAgentId: string): string {
+    const self = this.agents.get(forAgentId)?.config;
+    const others = [...this.agents.values()].map((a) => a.config).filter((a) => a.id !== forAgentId);
+    if (!self || others.length === 0) {
+      return `[group chat message from ${fromHandle}]: ${text}`;
+    }
+    const roster = others
+      .map((a) => `"${a.handle}" (${a.provider})${a.currentTask ? ` - currently: ${a.currentTask}` : ""}`)
+      .join("; ");
+    const context =
+      `[group context: you are "${self.handle}" in this group chat. Other agents here: ${roster}. ` +
+      `Mention an agent by handle (e.g. "@${others[0].handle} ...") to bring them into this specific thread - ` +
+      `otherwise your reply only reaches whoever already mentioned you.]\n\n`;
+    return `${context}[group chat message from ${fromHandle}]: ${text}`;
   }
 
-  private enqueueTurn(agentId: string, prompt: string, replyChannel: ChatChannel) {
+  private enqueueTurn(agentId: string, prompt: string, replyChannel: ChatChannel, mentionChainDepth = 0) {
     const runtime = this.agents.get(agentId);
     if (!runtime) return;
-    runtime.queue.push({ prompt, replyChannel });
+    runtime.queue.push({ prompt, replyChannel, mentionChainDepth });
     void this.drainQueue(agentId);
   }
 
@@ -212,7 +288,7 @@ export class AgentManager {
     if (!runtime || runtime.busy) return;
     const turn = runtime.queue.shift();
     if (turn === undefined) return;
-    const { prompt, replyChannel } = turn;
+    const { prompt, replyChannel, mentionChainDepth } = turn;
 
     runtime.busy = true;
     runtime.status = "thinking";
@@ -300,7 +376,17 @@ export class AgentManager {
     }
 
     if (isGroupTurn && lastText.trim() && !hadError) {
-      post("group", lastText.trim());
+      // Route the agent's own final answer through the same mention-parsing/triggering logic
+      // as a human message - see routeGroupMessage's doc comment for why this matters. Guard
+      // against the agent having been removed while this turn was running, same reasoning as
+      // the post() closure above.
+      if (this.agents.has(runtime.config.id)) {
+        this.routeGroupMessage(runtime.config.id, runtime.config.handle, lastText.trim(), {
+          broadcastIfUnmentioned: false,
+          mentionChainDepth: mentionChainDepth + 1,
+          model: runtime.config.model,
+        });
+      }
     }
 
     runtime.activeController = undefined;
