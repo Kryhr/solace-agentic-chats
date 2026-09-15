@@ -10,8 +10,10 @@ import type { ProviderId, ProviderModelInfo } from "@solace/shared";
  *     `--effort <level>` with a fixed, documented set of levels.
  *   - Codex CLI: `-m/--model <MODEL>` and `-c model_reasoning_effort="<level>"` (undocumented
  *     in --help but confirmed via OpenAI's own config reference).
- *   - Gemini CLI / Qwen Code: `-m/--model` exists but these adapters aren't implemented yet
- *     (see adapters/stubs.ts), so no effort levels are claimed for them.
+ *   - Gemini CLI / Qwen Code: `-m/--model`, and NO reasoning-effort flag on either - neither
+ *     CLI's agent command has one (Qwen has an `--effort` on its separate `qwen review`
+ *     subcommand only), so effortLevels stays empty rather than borrowing another provider's
+ *     levels. The UI hides the effort control entirely when this list is empty.
  *
  * modelExamples is deliberately NOT an exhaustive catalog - available models depend on the
  * user's plan/account and change over time, so the UI treats this as example text next to a
@@ -43,6 +45,23 @@ function detectCodexDefault(): { model?: string; effort?: string } {
   }
 }
 
+/**
+ * Gemini CLI and Qwen Code both store the user's chosen default under `model.name` in their own
+ * settings.json (`~/.gemini/` and `~/.qwen/` respectively) - Qwen is a Gemini CLI fork and kept
+ * the key. Same live-read-from-disk rule as the two above: this is whatever is actually
+ * configured on this machine right now, and undefined when nothing is, never a stand-in value.
+ */
+function detectSettingsJsonModel(dir: string): string | undefined {
+  try {
+    const path = join(homedir(), dir, "settings.json");
+    if (!existsSync(path)) return undefined;
+    const parsed = JSON.parse(readFileSync(path, "utf-8"));
+    return typeof parsed?.model?.name === "string" ? parsed.model.name : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function getModelCatalog(): ProviderModelInfo[] {
   const claudeDefault = detectClaudeDefault();
   const codexDefault = detectCodexDefault();
@@ -69,13 +88,21 @@ export function getModelCatalog(): ProviderModelInfo[] {
     },
     "gemini-cli": {
       provider: "gemini-cli",
-      modelExamples: [],
+      // Read out of the installed CLI's own DEFAULT_GEMINI_*_MODEL constants (v0.59.0) rather
+      // than from memory of what Google has shipped - these are ids that build actually knows.
+      modelExamples: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-3.1-flash-lite"],
       effortLevels: [],
+      currentDefaultModel: detectSettingsJsonModel(".gemini"),
     },
     "qwen-code": {
       provider: "qwen-code",
-      modelExamples: [],
+      // Likewise from the installed Qwen Code build (v0.22.3). "coder-model" is its own
+      // DEFAULT_QWEN_MODEL - an alias the OAuth plan resolves for you - and the other two are
+      // concrete ids it knows; which of them a given account can actually reach depends on that
+      // account, so as with the other providers this is example text next to a free-text field.
+      modelExamples: ["coder-model", "qwen3-coder-plus", "qwen3-max"],
       effortLevels: [],
+      currentDefaultModel: detectSettingsJsonModel(".qwen"),
     },
   };
 

@@ -22,7 +22,9 @@ packages/server
   adapters/        one file per provider CLI, all implementing ProviderAdapter
     types.ts       the contract every adapter must satisfy
     claude-code.ts  real: spawns `claude -p ... --output-format stream-json`
-    stubs.ts        codex-cli / gemini-cli / qwen-code — not implemented yet
+    codex-cli.ts    real: spawns `codex exec --json`
+    gemini-cli.ts   real: spawns `gemini -p "" --output-format stream-json`
+    qwen-code.ts    real: spawns `qwen -p "" --output-format stream-json`
   core/
     chatBus.ts      the shared group-chat history + pub/sub, single source of truth
     agentManager.ts owns agent configs/status, parses @mentions, routes turns, queues
