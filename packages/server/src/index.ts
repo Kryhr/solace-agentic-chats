@@ -11,6 +11,8 @@ import { getModelCatalog } from "./core/modelCatalog";
 import { getPermissionCatalog } from "./core/permissionCatalog";
 import { debounce, loadState, saveState } from "./core/persistence";
 import { ApprovalRegistry } from "./core/approvalRegistry";
+import { tryHandleCommand } from "./core/commands";
+import { checkGithubAuth } from "./core/github";
 import type { ProviderId } from "@solace/shared";
 
 const PORT = Number(process.env.PORT ?? 4310);
@@ -46,7 +48,11 @@ async function main() {
 
   // Every connected browser tab gets a live feed of chat + status events.
   app.get("/ws", { websocket: true }, (socket) => {
-    socket.send(JSON.stringify({ type: "hello", history: bus.getHistory(), agents: agents.listAgents(), statuses: agents.listStatuses() }));
+    // Group channel only - a client fetches an agent's direct history on demand when it opens
+    // that agent's hub (fetchAgentDirectHistory), same as the initial REST fetch below.
+    socket.send(
+      JSON.stringify({ type: "hello", history: bus.getHistoryFor("group"), agents: agents.listAgents(), statuses: agents.listStatuses() }),
+    );
     const unsubscribe = bus.subscribe((event: ServerEvent) => {
       socket.send(JSON.stringify(event));
     });
@@ -84,10 +90,12 @@ async function main() {
     return testProvider(req.params.provider, WORKSPACE_ROOT);
   });
 
-  app.get("/api/chat/history", async () => bus.getHistory());
+  // Group channel only - direct per-agent history is served by /api/agents/:id/chat below.
+  app.get("/api/chat/history", async () => bus.getHistoryFor("group"));
 
   app.post<{ Body: { text: string } }>("/api/chat", async (req) => {
-    agents.submitMessage("user", "you", req.body.text);
+    const handled = await tryHandleCommand(req.body.text, { channel: "group", agents, bus });
+    if (!handled) agents.submitMessage("user", "you", req.body.text);
     return { ok: true };
   });
 
@@ -97,9 +105,13 @@ async function main() {
   });
 
   app.post<{ Params: { id: string }; Body: { text: string } }>("/api/agents/:id/chat", async (req) => {
-    agents.submitDirectMessage(req.params.id, req.body.text);
+    const channel = { agentId: req.params.id };
+    const handled = await tryHandleCommand(req.body.text, { channel, agents, bus });
+    if (!handled) agents.submitDirectMessage(req.params.id, req.body.text);
     return { ok: true };
   });
+
+  app.get("/api/github/status", async () => checkGithubAuth());
 
   // Internal only - called by the per-turn approval bridge script (approval/bridgeScript.mjs),
   // never by the browser. Blocks (from the bridge script's perspective) until a human resolves

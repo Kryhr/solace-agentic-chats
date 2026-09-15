@@ -26,6 +26,7 @@ import { AddAgentModal } from "./components/AddAgentModal";
 import { AgentHubPage } from "./components/AgentHubPage";
 import { ApprovalPrompt } from "./components/ApprovalPrompt";
 import { ChatPanel } from "./components/ChatPanel";
+import { GithubPanel } from "./components/GithubPanel";
 import { ProvidersPanel } from "./components/ProvidersPanel";
 
 type View = { type: "chat" } | { type: "hub"; agentId: string };
@@ -109,6 +110,13 @@ export default function App() {
             delete next[event.payload.id];
             return next;
           });
+        } else if (event.type === "chat:cleared") {
+          if (event.payload.channel === "group") {
+            setHistoryById({});
+          } else {
+            const agentId = event.payload.channel.agentId;
+            setDirectById((d) => ({ ...d, [agentId]: {} }));
+          }
         }
       },
       (isConnected) => setConnected(isConnected),
@@ -167,6 +175,8 @@ export default function App() {
         </button>
         <div className="sidebar-section-label">Providers</div>
         <ProvidersPanel />
+        <div className="sidebar-section-label">GitHub</div>
+        <GithubPanel />
       </aside>
 
       {hubAgent ? (

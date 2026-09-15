@@ -151,6 +151,13 @@ export function AgentHubPage({
           <div className="chat-empty">Nothing here yet. Message {agent.handle} directly below.</div>
         )}
         {directHistory.map((m) => {
+          if (m.authorId === "system") {
+            return (
+              <div key={m.id} className="message-row hub-message fade-in system-row">
+                <div className="body system-body">{m.text}</div>
+              </div>
+            );
+          }
           const toolUse = isToolUse(m.text);
           const text = toolUse ? m.text.slice(6, -1) : m.text;
           return (
@@ -170,7 +177,7 @@ export function AgentHubPage({
           ref={inputRef}
           rows={1}
           value={draft}
-          placeholder={`Message ${agent.handle} directly…`}
+          placeholder={`Message ${agent.handle} directly, or /help for commands…`}
           onChange={(e) => {
             setDraft(e.target.value);
             resizeComposer();

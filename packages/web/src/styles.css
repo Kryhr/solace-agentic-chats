@@ -352,6 +352,13 @@ body {
   gap: var(--space-2);
 }
 
+.github-glyph {
+  display: flex;
+  align-items: center;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
 .provider-name {
   font-size: var(--text-sm);
   font-weight: 500;
@@ -591,6 +598,32 @@ body {
 .mention-option:hover,
 .mention-option.active {
   background: var(--accent-wash);
+}
+
+.slash-command-name {
+  font-family: var(--font-mono);
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.slash-command-hint {
+  color: var(--text-faint);
+  font-size: var(--text-2xs);
+}
+
+.system-row {
+  align-self: center;
+  max-width: 480px;
+}
+
+.system-body {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  text-align: center;
+  white-space: pre-wrap;
+  padding: 4px var(--space-3);
+  background: transparent;
 }
 
 .composer {

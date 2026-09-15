@@ -17,6 +17,24 @@ function findMentionQuery(text: string, cursor: number): { start: number; query:
   return { start: at, query: between };
 }
 
+const SLASH_COMMANDS = [
+  { name: "task", hint: "@handle <description>" },
+  { name: "status", hint: "" },
+  { name: "github", hint: "status | init <repo-name>" },
+  { name: "clear", hint: "" },
+  { name: "model", hint: "<value> (from an agent's hub)" },
+  { name: "effort", hint: "<value> (from an agent's hub)" },
+  { name: "help", hint: "" },
+];
+
+/** Only offered while typing the very first token of the message and it starts with "/". */
+function findSlashQuery(text: string, cursor: number): string | null {
+  if (!text.startsWith("/")) return null;
+  const upToCursor = text.slice(0, cursor);
+  if (/\s/.test(upToCursor)) return null;
+  return upToCursor.slice(1);
+}
+
 const MAX_COMPOSER_HEIGHT = 160;
 
 export function ChatPanel({
@@ -41,9 +59,13 @@ export function ChatPanel({
 
   const agentById = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
   const mention = findMentionQuery(draft, cursor);
-  const suggestions = mention
+  const mentionSuggestions = mention
     ? agents.filter((a) => a.handle.toLowerCase().startsWith(mention.query.toLowerCase()))
     : [];
+  const slashQuery = mention ? null : findSlashQuery(draft, cursor);
+  const slashSuggestions =
+    slashQuery !== null ? SLASH_COMMANDS.filter((c) => c.name.startsWith(slashQuery.toLowerCase())) : [];
+  const hasSuggestions = mentionSuggestions.length > 0 || slashSuggestions.length > 0;
 
   const thinkingAgents = agents.filter((a) => statuses[a.id]?.state === "thinking");
 
@@ -69,7 +91,7 @@ export function ChatPanel({
     el.style.height = `${Math.min(el.scrollHeight, MAX_COMPOSER_HEIGHT)}px`;
   };
 
-  const acceptSuggestion = (handle: string) => {
+  const acceptMention = (handle: string) => {
     if (!mention) return;
     const before = draft.slice(0, mention.start);
     const after = draft.slice(cursor);
@@ -85,6 +107,18 @@ export function ChatPanel({
     setHighlighted(0);
   };
 
+  const acceptSlashCommand = (name: string) => {
+    const next = `/${name} `;
+    setDraft(next);
+    requestAnimationFrame(() => {
+      inputRef.current?.setSelectionRange(next.length, next.length);
+      inputRef.current?.focus();
+      resizeComposer();
+    });
+    setCursor(next.length);
+    setHighlighted(0);
+  };
+
   const submit = () => {
     if (!draft.trim()) return;
     onSend(draft.trim());
@@ -94,24 +128,26 @@ export function ChatPanel({
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (suggestions.length > 0) {
+    if (hasSuggestions) {
+      const count = mentionSuggestions.length || slashSuggestions.length;
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setHighlighted((h) => (h + 1) % suggestions.length);
+        setHighlighted((h) => (h + 1) % count);
         return;
       }
       if (e.key === "ArrowUp") {
         e.preventDefault();
-        setHighlighted((h) => (h - 1 + suggestions.length) % suggestions.length);
+        setHighlighted((h) => (h - 1 + count) % count);
         return;
       }
       if (e.key === "Enter" || e.key === "Tab") {
         e.preventDefault();
-        acceptSuggestion(suggestions[highlighted].handle);
+        if (mentionSuggestions.length > 0) acceptMention(mentionSuggestions[highlighted].handle);
+        else acceptSlashCommand(slashSuggestions[highlighted].name);
         return;
       }
       if (e.key === "Escape") {
-        setCursor(-1); // force mention lookup to miss until the user moves the caret again
+        setCursor(-1); // force both lookups to miss until the user moves the caret again
         return;
       }
     }
@@ -134,11 +170,19 @@ export function ChatPanel({
         )}
         {history.map((m) => {
           const isUser = m.authorId === "user";
+          const isSystem = m.authorId === "system";
           const author = agentById.get(m.authorId);
           const text = isToolUse(m.text) ? m.text.slice(6, -1) : m.text;
-          const showModel = !isUser && !isToolUse(m.text) && !isErrorLine(m.text);
+          const showModel = !isUser && !isSystem && !isToolUse(m.text) && !isErrorLine(m.text);
           const modelLabel =
             m.model || (author ? modelCatalog.find((c) => c.provider === author.provider)?.currentDefaultModel : undefined);
+          if (isSystem) {
+            return (
+              <div key={m.id} className="message-row fade-in system-row">
+                <div className="body system-body">{m.text}</div>
+              </div>
+            );
+          }
           return (
             <div key={m.id} className={`message-row fade-in ${isUser ? "from-user" : ""}`}>
               {!isUser && (author ? <ProviderIcon provider={author.provider} /> : <span className="user-avatar">?</span>)}
@@ -168,19 +212,36 @@ export function ChatPanel({
         ))}
       </div>
       <div className="composer-wrap">
-        {mention && suggestions.length > 0 && (
+        {mentionSuggestions.length > 0 && (
           <div className="mention-menu">
-            {suggestions.map((a, i) => (
+            {mentionSuggestions.map((a, i) => (
               <button
                 key={a.id}
                 className={`mention-option ${i === highlighted ? "active" : ""}`}
                 onMouseDown={(e) => {
                   e.preventDefault();
-                  acceptSuggestion(a.handle);
+                  acceptMention(a.handle);
                 }}
               >
                 <ProviderIcon provider={a.provider} size={18} />
                 <span>{a.handle}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {slashSuggestions.length > 0 && (
+          <div className="mention-menu">
+            {slashSuggestions.map((c, i) => (
+              <button
+                key={c.name}
+                className={`mention-option ${i === highlighted ? "active" : ""}`}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  acceptSlashCommand(c.name);
+                }}
+              >
+                <span className="slash-command-name">/{c.name}</span>
+                {c.hint && <span className="slash-command-hint">{c.hint}</span>}
               </button>
             ))}
           </div>
@@ -190,7 +251,7 @@ export function ChatPanel({
             ref={inputRef}
             rows={1}
             value={draft}
-            placeholder="Message the group chat. Use @handle to target a specific agent."
+            placeholder="Message the group chat. Use @handle to target a specific agent, or /help for commands."
             onChange={(e) => {
               setDraft(e.target.value);
               setCursor(e.target.selectionStart ?? e.target.value.length);

@@ -45,6 +45,13 @@ export class ChatBus {
     this.onChange?.();
   }
 
+  /** Used by the /clear slash command - drops every message in one channel only. */
+  clearChannel(channel: ChatChannel) {
+    this.history = this.history.filter((m) => !sameChannel(m.channel, channel));
+    this.emit({ type: "chat:cleared", payload: { channel } });
+    this.onChange?.();
+  }
+
   emitEvent(event: ServerEvent) {
     this.emit(event);
   }
