@@ -177,6 +177,21 @@ export class AgentManager {
     this.emitStatus(agentId);
 
     let hadError = false;
+    let lastText = "";
+    const isGroupTurn = replyChannel === "group";
+    const ownChannel: ChatChannel = { agentId: runtime.config.id };
+    const post = (channel: ChatChannel, text: string) =>
+      this.bus.postMessage({
+        id: nanoid(),
+        channel,
+        authorId: runtime.config.id,
+        authorHandle: runtime.config.handle,
+        mentions: [],
+        text,
+        model: runtime.config.model,
+        createdAt: new Date().toISOString(),
+      });
+
     const adapter = getAdapter(runtime.config.provider);
     const controller = new AbortController();
     const turnTimeout = setTimeout(() => controller.abort(), MAX_TURN_MS);
@@ -189,47 +204,33 @@ export class AgentManager {
       signal: controller.signal,
       onEvent: (event) => {
         if (event.type === "text" && event.text.trim()) {
-          this.bus.postMessage({
-            id: nanoid(),
-            channel: replyChannel,
-            authorId: runtime.config.id,
-            authorHandle: runtime.config.handle,
-            mentions: [],
-            text: event.text,
-            model: runtime.config.model,
-            createdAt: new Date().toISOString(),
-          });
+          // Group chat is a coordination channel, not a transcript: it only ever sees an
+          // agent's final answer for the turn, posted once the turn completes below. Every
+          // intermediate message (and, for a group-triggered turn, tool-use notes too) goes
+          // to the agent's own hub channel in real time so the full working is still visible
+          // there. A turn addressed directly to the agent's hub already IS that "everything"
+          // channel, so it posts straight through with no buffering.
+          lastText = event.text;
+          post(isGroupTurn ? ownChannel : replyChannel, event.text);
         } else if (event.type === "tool-use") {
-          this.bus.postMessage({
-            id: nanoid(),
-            channel: replyChannel,
-            authorId: runtime.config.id,
-            authorHandle: runtime.config.handle,
-            mentions: [],
-            text: `_used ${event.description}_`,
-            createdAt: new Date().toISOString(),
-          });
+          post(ownChannel, `_used ${event.description}_`);
         } else if (event.type === "usage") {
           runtime.lastUsage = event.usage;
           runtime.totalUsage = addUsage(runtime.totalUsage, event.usage);
         } else if (event.type === "error" && event.message.trim()) {
           hadError = true;
           runtime.lastError = event.message.trim();
-          this.bus.postMessage({
-            id: nanoid(),
-            channel: replyChannel,
-            authorId: runtime.config.id,
-            authorHandle: runtime.config.handle,
-            mentions: [],
-            text: `error: ${event.message.trim()}`,
-            createdAt: new Date().toISOString(),
-          });
+          post(replyChannel, `error: ${event.message.trim()}`);
           runtime.status = "error";
           this.emitStatus(agentId);
         }
       },
     });
     clearTimeout(turnTimeout);
+
+    if (isGroupTurn && lastText.trim() && !hadError) {
+      post("group", lastText.trim());
+    }
 
     runtime.busy = false;
     runtime.status = hadError ? "error" : "idle";

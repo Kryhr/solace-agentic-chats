@@ -64,3 +64,7 @@ export function ProviderIcon({ provider, size = 22 }: { provider: ProviderId; si
 export function providerLabel(provider: ProviderId): string {
   return PROVIDER_STYLE[provider as Exclude<ProviderId, "custom">]?.label ?? provider;
 }
+
+export function providerColor(provider: ProviderId): string {
+  return PROVIDER_STYLE[provider as Exclude<ProviderId, "custom">]?.color ?? "#82868f";
+}

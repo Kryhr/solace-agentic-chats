@@ -1,6 +1,7 @@
-import { useMemo, useRef, useState } from "react";
-import type { AgentConfig, ChatMessage, ProviderModelInfo } from "@solace/shared";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { AgentConfig, AgentStatus, ChatMessage, ProviderModelInfo } from "@solace/shared";
 import { ProviderIcon } from "./ProviderIcon";
+import { ThinkingIndicator } from "./ThinkingIndicator";
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -16,27 +17,57 @@ function findMentionQuery(text: string, cursor: number): { start: number; query:
   return { start: at, query: between };
 }
 
+const MAX_COMPOSER_HEIGHT = 160;
+
 export function ChatPanel({
   history,
   agents,
+  statuses,
   modelCatalog,
   onSend,
 }: {
   history: ChatMessage[];
   agents: AgentConfig[];
+  statuses: Record<string, AgentStatus>;
   modelCatalog: ProviderModelInfo[];
   onSend: (text: string) => void;
 }) {
   const [draft, setDraft] = useState("");
   const [cursor, setCursor] = useState(0);
   const [highlighted, setHighlighted] = useState(0);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const historyRef = useRef<HTMLDivElement>(null);
+  const stickToBottom = useRef(true);
 
   const agentById = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
   const mention = findMentionQuery(draft, cursor);
   const suggestions = mention
     ? agents.filter((a) => a.handle.toLowerCase().startsWith(mention.query.toLowerCase()))
     : [];
+
+  const thinkingAgents = agents.filter((a) => statuses[a.id]?.state === "thinking");
+
+  // Auto-scroll to the newest message, but only when the reader was already near the
+  // bottom - so it doesn't yank them away mid-scroll while reviewing earlier history.
+  useEffect(() => {
+    const el = historyRef.current;
+    if (el && stickToBottom.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [history.length, thinkingAgents.length]);
+
+  const onHistoryScroll = () => {
+    const el = historyRef.current;
+    if (!el) return;
+    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  };
+
+  const resizeComposer = () => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, MAX_COMPOSER_HEIGHT)}px`;
+  };
 
   const acceptSuggestion = (handle: string) => {
     if (!mention) return;
@@ -48,6 +79,7 @@ export function ChatPanel({
     requestAnimationFrame(() => {
       inputRef.current?.setSelectionRange(nextCursor, nextCursor);
       inputRef.current?.focus();
+      resizeComposer();
     });
     setCursor(nextCursor);
     setHighlighted(0);
@@ -58,9 +90,10 @@ export function ChatPanel({
     onSend(draft.trim());
     setDraft("");
     setCursor(0);
+    requestAnimationFrame(resizeComposer);
   };
 
-  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (suggestions.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -82,7 +115,10 @@ export function ChatPanel({
         return;
       }
     }
-    if (e.key === "Enter") submit();
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      submit();
+    }
   };
 
   const isErrorLine = (text: string) => text.startsWith("error: ");
@@ -90,7 +126,7 @@ export function ChatPanel({
 
   return (
     <div className="chat">
-      <div className="chat-history">
+      <div className="chat-history" ref={historyRef} onScroll={onHistoryScroll}>
         {history.length === 0 && (
           <div className="chat-empty">
             No messages yet. Add an agent in the sidebar, then say hello or @mention it directly.
@@ -104,7 +140,7 @@ export function ChatPanel({
           const modelLabel =
             m.model || (author ? modelCatalog.find((c) => c.provider === author.provider)?.currentDefaultModel : undefined);
           return (
-            <div key={m.id} className={`message-row ${isUser ? "from-user" : ""}`}>
+            <div key={m.id} className={`message-row fade-in ${isUser ? "from-user" : ""}`}>
               {!isUser && (author ? <ProviderIcon provider={author.provider} /> : <span className="user-avatar">?</span>)}
               <div className="message">
                 <div className="meta">
@@ -127,6 +163,9 @@ export function ChatPanel({
             </div>
           );
         })}
+        {thinkingAgents.map((a) => (
+          <ThinkingIndicator key={a.id} label={`${a.handle} is working…`} />
+        ))}
       </div>
       <div className="composer-wrap">
         {mention && suggestions.length > 0 && (
@@ -147,14 +186,16 @@ export function ChatPanel({
           </div>
         )}
         <div className="composer">
-          <input
+          <textarea
             ref={inputRef}
+            rows={1}
             value={draft}
             placeholder="Message the group chat. Use @handle to target a specific agent."
             onChange={(e) => {
               setDraft(e.target.value);
               setCursor(e.target.selectionStart ?? e.target.value.length);
               setHighlighted(0);
+              resizeComposer();
             }}
             onKeyUp={(e) => setCursor(e.currentTarget.selectionStart ?? 0)}
             onClick={(e) => setCursor(e.currentTarget.selectionStart ?? 0)}

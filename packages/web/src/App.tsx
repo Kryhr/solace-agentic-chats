@@ -13,9 +13,16 @@ import {
 } from "./api";
 import { AgentCard } from "./components/AgentCard";
 import { AddAgentModal } from "./components/AddAgentModal";
-import { AgentHubModal } from "./components/AgentHubModal";
+import { AgentHubPage } from "./components/AgentHubPage";
 import { ChatPanel } from "./components/ChatPanel";
 import { ProvidersPanel } from "./components/ProvidersPanel";
+
+type View = { type: "chat" } | { type: "hub"; agentId: string };
+
+function parseHash(hash: string): View {
+  const match = hash.match(/^#\/agent\/(.+)$/);
+  return match ? { type: "hub", agentId: match[1] } : { type: "chat" };
+}
 
 export default function App() {
   // Keyed by id (not an array) so any event that's delivered more than once - e.g. two
@@ -27,14 +34,30 @@ export default function App() {
   const [directById, setDirectById] = useState<Record<string, Record<string, ChatMessage>>>({});
   const [modelCatalog, setModelCatalog] = useState<ProviderModelInfo[]>([]);
   const [showAddAgent, setShowAddAgent] = useState(false);
-  const [hubAgentId, setHubAgentId] = useState<string | null>(null);
   const [connected, setConnected] = useState(true);
+  const [view, setView] = useState<View>(() => parseHash(location.hash));
 
   const agents = useMemo(() => Object.values(agentsById), [agentsById]);
   const history = useMemo(
     () => Object.values(historyById).sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
     [historyById],
   );
+
+  useEffect(() => {
+    const onHashChange = () => setView(parseHash(location.hash));
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  const goToHub = (agentId: string) => {
+    location.hash = `#/agent/${agentId}`;
+    fetchAgentDirectHistory(agentId).then((list) => {
+      setDirectById((d) => ({ ...d, [agentId]: { ...Object.fromEntries(list.map((m) => [m.id, m])), ...d[agentId] } }));
+    });
+  };
+  const goToChat = () => {
+    location.hash = "";
+  };
 
   useEffect(() => {
     fetchAgents().then((list) => setAgentsById(Object.fromEntries(list.map((a) => [a.id, a]))));
@@ -76,17 +99,13 @@ export default function App() {
     void updateAgent(agentId, { trustLevel });
   };
 
-  const openHub = (agentId: string) => {
-    setHubAgentId(agentId);
-    fetchAgentDirectHistory(agentId).then((list) => {
-      setDirectById((d) => ({ ...d, [agentId]: { ...Object.fromEntries(list.map((m) => [m.id, m])), ...d[agentId] } }));
-    });
-  };
-
-  const hubAgent = hubAgentId ? agentsById[hubAgentId] : null;
+  const hubAgent = view.type === "hub" ? agentsById[view.agentId] : null;
   const hubDirectHistory = useMemo(
-    () => (hubAgentId && directById[hubAgentId] ? Object.values(directById[hubAgentId]).sort((a, b) => a.createdAt.localeCompare(b.createdAt)) : []),
-    [hubAgentId, directById],
+    () =>
+      hubAgent && directById[hubAgent.id]
+        ? Object.values(directById[hubAgent.id]).sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+        : [],
+    [hubAgent, directById],
   );
 
   return (
@@ -105,7 +124,7 @@ export default function App() {
             status={statuses[agent.id]}
             modelInfo={modelCatalog.find((m) => m.provider === agent.provider)}
             onTrustChange={(level) => handleTrustChange(agent.id, level)}
-            onOpen={() => openHub(agent.id)}
+            onOpen={() => goToHub(agent.id)}
           />
         ))}
         <button className="add-agent-btn" onClick={() => setShowAddAgent(true)}>
@@ -114,29 +133,39 @@ export default function App() {
         <div className="sidebar-section-label">Providers</div>
         <ProvidersPanel />
       </aside>
-      <ChatPanel history={history} agents={agents} modelCatalog={modelCatalog} onSend={(text) => void sendChatMessage(text)} />
+
+      {hubAgent ? (
+        <AgentHubPage
+          agent={hubAgent}
+          status={statuses[hubAgent.id]}
+          modelInfo={modelCatalog.find((m) => m.provider === hubAgent.provider)}
+          directHistory={hubDirectHistory}
+          onBack={goToChat}
+          onSave={(patch) => {
+            setAgentsById((a) => (a[hubAgent.id] ? { ...a, [hubAgent.id]: { ...a[hubAgent.id], ...patch } } : a));
+            void updateAgent(hubAgent.id, patch);
+          }}
+          onSendDirect={(text) => void sendAgentDirectMessage(hubAgent.id, text)}
+        />
+      ) : (
+        <ChatPanel
+          history={history}
+          agents={agents}
+          statuses={statuses}
+          modelCatalog={modelCatalog}
+          onSend={(text) => void sendChatMessage(text)}
+        />
+      )}
+
       {showAddAgent && (
         <AddAgentModal
+          modelCatalog={modelCatalog}
           onClose={() => setShowAddAgent(false)}
           onCreate={async (config) => {
             const created = await createAgent(config);
             setAgentsById((a) => ({ ...a, [created.id]: created }));
             setShowAddAgent(false);
           }}
-        />
-      )}
-      {hubAgent && (
-        <AgentHubModal
-          agent={hubAgent}
-          status={statuses[hubAgent.id]}
-          modelInfo={modelCatalog.find((m) => m.provider === hubAgent.provider)}
-          directHistory={hubDirectHistory}
-          onClose={() => setHubAgentId(null)}
-          onSave={(patch) => {
-            setAgentsById((a) => (a[hubAgent.id] ? { ...a, [hubAgent.id]: { ...a[hubAgent.id], ...patch } } : a));
-            void updateAgent(hubAgent.id, patch);
-          }}
-          onSendDirect={(text) => void sendAgentDirectMessage(hubAgent.id, text)}
         />
       )}
     </div>

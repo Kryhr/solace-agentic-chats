@@ -1,5 +1,5 @@
 import type { AgentConfig, AgentStatus, ProviderModelInfo, TrustLevel } from "@solace/shared";
-import { ProviderIcon } from "./ProviderIcon";
+import { ProviderIcon, providerColor } from "./ProviderIcon";
 
 const TRUST_LABELS: Record<TrustLevel, string> = {
   "confirm-all": "Read-only",
@@ -22,10 +22,17 @@ export function AgentCard({
 }) {
   const state = status?.state ?? "offline";
   const task = agent.currentTask ?? status?.currentTask;
-  const modelLabel = agent.model || modelInfo?.currentDefaultModel || "provider default";
+  const modelLabel = agent.model || modelInfo?.currentDefaultModel;
 
   return (
-    <div className="agent-card" onClick={onOpen} role="button" tabIndex={0} onKeyDown={(e) => e.key === "Enter" && onOpen()}>
+    <div
+      className="agent-card"
+      style={{ ["--accent-card-color" as string]: providerColor(agent.provider) }}
+      onClick={onOpen}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => e.key === "Enter" && onOpen()}
+    >
       <div className="row">
         <div className="agent-identity">
           <ProviderIcon provider={agent.provider} />
@@ -33,9 +40,11 @@ export function AgentCard({
             {agent.handle}
           </span>
         </div>
-        <span className="agent-model-tag" title={modelLabel}>
-          {modelLabel}
-        </span>
+        {modelLabel && (
+          <span className="agent-model-tag" title={modelLabel}>
+            {modelLabel}
+          </span>
+        )}
       </div>
       <div className="row" style={{ gap: 6 }}>
         <span className={`status-dot status-${state}`} title={state} />

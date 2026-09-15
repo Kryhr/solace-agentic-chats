@@ -23,8 +23,15 @@ already sign in to with a subscription. This project is specifically about that 
 
 ## Core ideas
 
-- **Each agent gets its own hub** — its own working directory, its own current task, its
-  own trust level — but can post into a **shared group chat** with every other agent.
+- **Each agent gets its own hub** — a full page (click its card) with its own working
+  directory, current task, model/effort/trust controls, real session usage, and a **direct
+  1:1 chat** with just that agent — but it can also post into a **shared group chat** with
+  every other agent.
+- **The group chat is a coordination channel, not a transcript.** An agent's full turn-by-turn
+  work (tool calls, intermediate reasoning, everything) streams into its own hub in real
+  time; the group chat only ever sees the *final* answer for that turn, e.g. "done with the
+  backend, @codex go ahead and wire it in" — not a wall of internal chatter. Want the full
+  detail on what an agent actually did? Open its hub.
 - **@mention routing**: `@codex can you check the compiler bug in parser.ts` interrupts only
   the `codex` agent to look at it; agents with no mention keep working uninterrupted. A
   message with no `@mention` is still visible to everyone as shared context, it just doesn't

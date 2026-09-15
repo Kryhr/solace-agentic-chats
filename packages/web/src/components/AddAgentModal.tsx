@@ -1,20 +1,25 @@
 import { useEffect, useState } from "react";
-import type { AgentConfig, ProviderId, TrustLevel } from "@solace/shared";
+import type { AgentConfig, ProviderId, ProviderModelInfo, TrustLevel } from "@solace/shared";
 import { createProject, fetchProjects, type ProjectInfo } from "../api";
+import { effortOptionsFor, modelOptionsFor } from "../lib/modelOptions";
 
 const PROVIDERS: ProviderId[] = ["claude-code", "codex-cli", "gemini-cli", "qwen-code"];
 const NEW_PROJECT_VALUE = "__new__";
 
 export function AddAgentModal({
+  modelCatalog,
   onClose,
   onCreate,
 }: {
+  modelCatalog: ProviderModelInfo[];
   onClose: () => void;
   onCreate: (config: Omit<AgentConfig, "id">) => void;
 }) {
   const [handle, setHandle] = useState("");
   const [provider, setProvider] = useState<ProviderId>("claude-code");
   const [trustLevel, setTrustLevel] = useState<TrustLevel>("confirm-risky");
+  const [model, setModel] = useState("");
+  const [effort, setEffort] = useState("");
 
   const [workspaceRoot, setWorkspaceRoot] = useState("");
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
@@ -22,6 +27,10 @@ export function AddAgentModal({
   const [newProjectName, setNewProjectName] = useState("");
   const [creatingProject, setCreatingProject] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const info = modelCatalog.find((m) => m.provider === provider);
+  const modelOptions = modelOptionsFor(info);
+  const effortOptions = effortOptionsFor(info);
 
   useEffect(() => {
     fetchProjects().then(({ root, projects }) => {
@@ -31,6 +40,13 @@ export function AddAgentModal({
       else setSelected(NEW_PROJECT_VALUE);
     });
   }, []);
+
+  // Whenever the provider changes, snap model/effort to that provider's own real options.
+  useEffect(() => {
+    setModel(modelOptions[0] ?? "");
+    setEffort(effortOptions[0] ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider]);
 
   const isCreatingNew = selected === NEW_PROJECT_VALUE;
 
@@ -54,7 +70,14 @@ export function AddAgentModal({
       setCreatingProject(false);
     }
     if (!handle || !cwd) return;
-    onCreate({ handle, provider, cwd, trustLevel });
+    onCreate({
+      handle,
+      provider,
+      cwd,
+      trustLevel,
+      model: model || undefined,
+      effort: effort || undefined,
+    });
   };
 
   return (
@@ -75,6 +98,30 @@ export function AddAgentModal({
             ))}
           </select>
         </label>
+        {modelOptions.length > 0 && (
+          <label>
+            Model
+            <select value={model} onChange={(e) => setModel(e.target.value)}>
+              {modelOptions.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {effortOptions.length > 0 && (
+          <label>
+            Thinking effort
+            <select value={effort} onChange={(e) => setEffort(e.target.value)}>
+              {effortOptions.map((level) => (
+                <option key={level} value={level}>
+                  {level}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label>
           Project
           <select value={selected} onChange={(e) => setSelected(e.target.value)}>
