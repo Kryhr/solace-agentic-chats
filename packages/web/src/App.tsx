@@ -3,6 +3,7 @@ import {
   isChatChannel,
   type AgentConfig,
   type AgentStatus,
+  type AppSettings,
   type ChatMessage,
   type ChatMeta,
   type PendingApproval,
@@ -45,6 +46,7 @@ import { ArchivesPage } from "./components/ArchivesPage";
 import { ChatPanel } from "./components/ChatPanel";
 import { ChatRail } from "./components/ChatRail";
 import { ConnectionsPanel } from "./components/ConnectionsPanel";
+import { SettingsPage } from "./components/SettingsPage";
 import { SkillsPage } from "./components/SkillsPage";
 import { agentsInScope, chatsInScope } from "./lib/projectScope";
 
@@ -53,7 +55,8 @@ type View =
   | { type: "chat"; chatId: string | null }
   | { type: "hub"; agentId: string }
   | { type: "archives" }
-  | { type: "skills" };
+  | { type: "skills" }
+  | { type: "settings" };
 
 function parseHash(hash: string): View {
   const agentMatch = hash.match(/^#\/agent\/(.+)$/);
@@ -62,6 +65,7 @@ function parseHash(hash: string): View {
   if (chatMatch) return { type: "chat", chatId: chatMatch[1] };
   if (hash === "#/archives") return { type: "archives" };
   if (hash === "#/skills") return { type: "skills" };
+  if (hash === "#/settings") return { type: "settings" };
   return { type: "chat", chatId: null };
 }
 
@@ -94,6 +98,10 @@ export default function App() {
   const [connected, setConnected] = useState(true);
   const [pendingApprovals, setPendingApprovals] = useState<Record<string, PendingApproval>>({});
   const [archives, setArchives] = useState<ChatArchive[]>([]);
+  /** App settings live on the server. null means "not fetched yet", which is deliberately not
+   * the same as the defaults - a page that rendered defaults while loading would briefly show
+   * every toggle off regardless of what the server actually holds. */
+  const [settings, setSettings] = useState<AppSettings | null>(null);
   const [view, setView] = useState<View>(() => parseHash(location.hash));
 
   const agents = useMemo(() => Object.values(agentsById), [agentsById]);
@@ -198,6 +206,9 @@ export default function App() {
   const goToSkills = () => {
     location.hash = "#/skills";
   };
+  const goToSettings = () => {
+    location.hash = "#/settings";
+  };
 
   useEffect(() => {
     fetchAgents().then((list) => setAgentsById(Object.fromEntries(list.map((a) => [a.id, a]))));
@@ -228,6 +239,7 @@ export default function App() {
           // the server's approval state has moved on and drop anything it no longer knows.
           setPendingApprovals(Object.fromEntries(event.approvals.map((a) => [a.id, a])));
           setRateLimits(Object.fromEntries((event.rateLimits ?? []).map((r) => [r.provider, r])));
+          if (event.settings) setSettings(event.settings);
         } else if (event.type === "chat:message" || event.type === "chat:message:updated") {
           // Both branches are the same write. History is keyed by id, so replacing an existing
           // entry is exactly what an update means, and a promotion (progress -> answer) can't
@@ -246,6 +258,8 @@ export default function App() {
         } else if (event.type === "chats:updated") {
           setChats(event.payload.chats);
           setProjects(event.payload.projects);
+        } else if (event.type === "settings:updated") {
+          setSettings(event.payload);
         } else if (event.type === "usage:rate-limit") {
           setRateLimits((r) => ({ ...r, [event.payload.provider]: event.payload }));
         } else if (event.type === "agent:status") {
@@ -450,6 +464,17 @@ export default function App() {
             </svg>
             Skills
           </button>
+          <button
+            className={`nav-row ${view.type === "settings" ? "is-active" : ""}`}
+            onClick={goToSettings}
+            aria-current={view.type === "settings" ? "page" : undefined}
+          >
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="8" cy="8" r="2.25" />
+              <path d="M8 1.75v1.6M8 12.65v1.6M1.75 8h1.6M12.65 8h1.6M3.58 3.58l1.13 1.13M11.29 11.29l1.13 1.13M12.42 3.58l-1.13 1.13M4.71 11.29l-1.13 1.13" />
+            </svg>
+            Settings
+          </button>
         </div>
       </aside>
 
@@ -457,6 +482,8 @@ export default function App() {
         <ArchivesPage archives={archives} agentsById={agentsById} onBack={() => goToChat()} />
       ) : view.type === "skills" ? (
         <SkillsPage onBack={() => goToChat()} />
+      ) : view.type === "settings" ? (
+        <SettingsPage settings={settings} onSettingsChange={setSettings} onBack={() => goToChat()} />
       ) : hubAgent ? (
         <AgentHubPage
           agent={hubAgent}

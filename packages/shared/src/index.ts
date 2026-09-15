@@ -18,6 +18,17 @@ export type { ConnectorKind, ConnectorKindId } from "./connectors";
 export const CONNECTOR_KINDS = KINDS;
 export const connectorKind = kindById;
 
+// Same re-binding rule again - see the two comments above.
+import {
+  DEFAULT_APP_SETTINGS as DEFAULTS,
+  SETTING_DEFINITIONS as DEFS,
+  sanitizeAppSettings as sanitizeSettings,
+} from "./settings";
+export type { AppSettings, SettingDefinition } from "./settings";
+export const DEFAULT_APP_SETTINGS = DEFAULTS;
+export const SETTING_DEFINITIONS = DEFS;
+export const sanitizeAppSettings = sanitizeSettings;
+
 export type ProviderId =
   | "claude-code"
   | "codex-cli"
@@ -613,4 +624,8 @@ export type ServerEvent =
   /** The whole chat + project roster, re-sent as one payload on every change rather than as
    * added/renamed/removed deltas. There are tens of these, not thousands, and a single
    * authoritative list is the one shape a second browser tab cannot apply out of order. */
-  | { type: "chats:updated"; payload: { chats: ChatMeta[]; projects: ProjectMeta[] } };
+  | { type: "chats:updated"; payload: { chats: ChatMeta[]; projects: ProjectMeta[] } }
+  /** App settings changed. Sent as the whole object for the same reason as chats:updated - it
+   * is a handful of fields, and one authoritative payload is the only shape a second tab
+   * cannot apply out of order. */
+  | { type: "settings:updated"; payload: import("./settings").AppSettings };

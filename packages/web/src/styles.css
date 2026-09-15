@@ -3919,3 +3919,151 @@ body {
 .provider-status.dot-only {
   gap: 0;
 }
+
+/* ---------- settings page ----------
+   Same quiet shape as Skills: one centred column on the chat rail, each row a card on
+   --surface-1. Every custom property used here is defined on :root - an undefined one renders
+   transparent, which has cost real debugging time on this project. */
+
+.settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: var(--chat-col-max);
+  max-width: 100%;
+  margin: var(--space-6) auto var(--space-8);
+}
+
+.settings-scope-note {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xs);
+  line-height: var(--lh-normal);
+  color: var(--text-faint);
+}
+
+.settings-error {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--danger);
+  background: var(--danger-wash);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-sm);
+}
+
+.setting-entry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  background: var(--surface-1);
+  border-radius: var(--radius-md);
+}
+
+/* min-width:0 so a long description wraps instead of forcing the row wider than the column,
+   which is what produces horizontal page scroll at narrow widths. */
+.setting-entry-text {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.setting-entry-label {
+  display: block;
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.setting-entry-desc {
+  margin-top: var(--space-1);
+  font-size: var(--text-sm);
+  line-height: var(--lh-normal);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.setting-switch {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0;
+  font: inherit;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+}
+
+.setting-switch-track {
+  position: relative;
+  display: block;
+  width: 34px;
+  height: 20px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  transition:
+    background-color var(--dur-1) var(--ease-in-out),
+    border-color var(--dur-1) var(--ease-in-out);
+}
+
+.setting-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  background: var(--text-muted);
+  border-radius: var(--radius-full);
+  transition:
+    transform var(--dur-1) var(--ease-out),
+    background-color var(--dur-1) var(--ease-in-out);
+}
+
+.setting-switch[aria-checked="true"] .setting-switch-track {
+  background: var(--accent-wash);
+  border-color: var(--accent-border);
+}
+
+.setting-switch[aria-checked="true"] .setting-switch-thumb {
+  background: var(--accent-strong);
+  transform: translateX(14px);
+}
+
+.setting-switch[aria-checked="true"] .setting-switch-state {
+  color: var(--accent-strong);
+}
+
+.setting-switch:hover:not(:disabled) .setting-switch-track {
+  border-color: var(--border-strong);
+}
+
+.setting-switch:focus-visible {
+  outline: none;
+}
+
+.setting-switch:focus-visible .setting-switch-track {
+  border-color: var(--accent-border);
+  box-shadow: var(--ring);
+}
+
+.setting-switch:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+.setting-switch-state {
+  min-width: 2em;
+  text-align: left;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .setting-switch-track,
+  .setting-switch-thumb {
+    transition: none;
+  }
+}

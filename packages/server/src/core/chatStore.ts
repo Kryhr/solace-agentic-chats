@@ -11,11 +11,27 @@ import { createProject, listProjects } from "./workspace";
  * another, and the "/site2" prefix trap is real - without the separator, project "site" would
  * claim every agent working in "site2".
  */
+function normalizeDir(p: string): string {
+  return resolve(p).toLowerCase().replace(/[\\/]+$/, "") + sep;
+}
+
 export function agentInProject(cwd: string, projectPath: string): boolean {
-  const norm = (p: string) => resolve(p).toLowerCase().replace(/[\\/]+$/, "") + sep;
-  const a = norm(cwd);
-  const b = norm(projectPath);
+  const a = normalizeDir(cwd);
+  const b = normalizeDir(projectPath);
   return a === b || a.startsWith(b);
+}
+
+/**
+ * Do two agents run their CLIs in the same directory? The same normalisation agentInProject
+ * uses (resolved, case-folded, trailing separator), but equality rather than containment - an
+ * agent working in a SUBDIRECTORY of another's cwd is not a substitute for it.
+ *
+ * This is the one gate on handing one agent's work to another (see AgentManager's handover):
+ * an agent's cwd is where its CLI genuinely runs, so passing "fix the build" to an agent
+ * pointed somewhere else produces confident work on the wrong codebase.
+ */
+export function sameWorkingDirectory(a: string, b: string): boolean {
+  return normalizeDir(a) === normalizeDir(b);
 }
 
 /**

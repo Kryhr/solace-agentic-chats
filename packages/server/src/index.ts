@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocketPlugin from "@fastify/websocket";
 import { nanoid } from "nanoid";
-import type { AgentConfig, ServerEvent } from "@solace/shared";
+import { SETTING_DEFINITIONS, sanitizeAppSettings, type AgentConfig, type AppSettings, type ServerEvent } from "@solace/shared";
 import { ChatBus } from "./core/chatBus";
 import { ChatStore } from "./core/chatStore";
 import { AgentManager } from "./core/agentManager";
@@ -14,6 +14,7 @@ import { getPermissionCatalog } from "./core/permissionCatalog";
 import { debounce, loadState, saveState } from "./core/persistence";
 import { ApprovalRegistry } from "./core/approvalRegistry";
 import { ArchiveStore } from "./core/archiveStore";
+import { SettingsStore } from "./core/settingsStore";
 import { tryHandleCommand } from "./core/commands";
 import { checkGithubAuth, checkGithubConnection } from "./core/github";
 import {
@@ -60,6 +61,7 @@ async function main() {
   const approvals = new ApprovalRegistry();
   const archive = new ArchiveStore(persisted.archives);
   const chats = new ChatStore(persisted.chats, persisted.projects);
+  const settings = new SettingsStore(persisted.settings);
   const agents = new AgentManager(
     bus,
     chats,
@@ -68,6 +70,7 @@ async function main() {
     persisted.queues,
     persisted.sessions,
     persisted.rateLimits,
+    settings,
   );
 
   const persist = debounce(
@@ -81,11 +84,18 @@ async function main() {
         rateLimits: agents.listRateLimits(),
         chats: chats.listChats(),
         projects: chats.listProjects(),
+        settings: settings.get(),
       }),
     300,
   );
   bus.onChange = persist;
   agents.onChange = persist;
+  settings.onChange = (next) => {
+    persist();
+    // Every tab shows the same Settings page, and these change how the server behaves for
+    // everyone - a tab holding a stale toggle would misdescribe what is actually happening.
+    bus.emitEvent({ type: "settings:updated", payload: next });
+  };
   chats.onChange = () => {
     persist();
     // Every tab shows the same sidebar, so a chat created or renamed in one has to appear in
@@ -204,6 +214,7 @@ async function main() {
         statuses: agents.listStatuses(),
         rateLimits: agents.listRateLimits(),
         approvals: approvals.listPending(),
+        settings: settings.get(),
       }),
     );
     const unsubscribe = bus.subscribe((event: ServerEvent) => {
@@ -299,6 +310,20 @@ async function main() {
     const handled = await tryHandleCommand(req.body.text, { channel, agents, bus, chats, archive });
     if (!handled) agents.submitDirectMessage(req.params.id, req.body.text);
     return { ok: true };
+  });
+
+  /**
+   * App settings, and the schema the Settings page renders from. Served together so a client
+   * can never show a control for a setting the server does not have, or miss one it does -
+   * SETTING_DEFINITIONS in @solace/shared is the single definition of both.
+   */
+  app.get("/api/settings", async () => ({ settings: settings.get(), definitions: SETTING_DEFINITIONS }));
+
+  app.patch<{ Body: Partial<AppSettings> }>("/api/settings", async (req) => {
+    // Sanitized twice on purpose: once here so an unknown key in the body is visibly dropped
+    // rather than merged, and again inside the store, which is the only thing that decides what
+    // a legal settings object is.
+    return settings.update(sanitizeAppSettings({ ...settings.get(), ...(req.body ?? {}) }));
   });
 
   app.get("/api/archives", async () => archive.list());

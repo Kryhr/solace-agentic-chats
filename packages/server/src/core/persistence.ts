@@ -1,7 +1,17 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sanitizePersistedRateLimits } from "./rateLimits";
-import { LEGACY_CHAT_ID, type AgentConfig, type ChatMessage, type ChatMeta, type ProjectMeta, type ProviderRateLimit } from "@solace/shared";
+import {
+  DEFAULT_APP_SETTINGS,
+  LEGACY_CHAT_ID,
+  sanitizeAppSettings,
+  type AgentConfig,
+  type AppSettings,
+  type ChatMessage,
+  type ChatMeta,
+  type ProjectMeta,
+  type ProviderRateLimit,
+} from "@solace/shared";
 import type { ChatArchive } from "./archiveStore";
 import type { PersistedAgentQueue } from "./agentManager";
 
@@ -38,6 +48,11 @@ export interface PersistedState {
   /** Projects the user has adopted. Absent on older state files, and legitimately empty: a
    * project link is optional, and chats/agents work perfectly well unfiled. */
   projects: ProjectMeta[];
+  /** App-level settings. These change how the SERVER behaves, so they live here rather than in
+   * a browser's localStorage: they must survive a restart and apply whichever tab is open, or
+   * none. Absent on any state file written before Settings existed, which reads as the
+   * documented defaults - see sanitizeAppSettings. */
+  settings: AppSettings;
 }
 
 const EMPTY_STATE: PersistedState = {
@@ -49,6 +64,7 @@ const EMPTY_STATE: PersistedState = {
   rateLimits: [],
   chats: [],
   projects: [],
+  settings: { ...DEFAULT_APP_SETTINGS },
 };
 
 function statePath(workspaceRoot: string): string {
@@ -168,6 +184,8 @@ export function loadState(workspaceRoot: string): PersistedState {
       sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
       // State files written before the usage meter existed simply have no rateLimits key.
       rateLimits: sanitizePersistedRateLimits(parsed.rateLimits),
+      // Likewise for settings: no key means "never configured", which is the defaults.
+      settings: sanitizeAppSettings(parsed.settings),
     };
   } catch {
     // An unreadable state file already means everything is gone; at least hand back a usable
