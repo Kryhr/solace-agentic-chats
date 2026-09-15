@@ -15,7 +15,7 @@ import { parseMentions } from "./mentions";
 import { RateLimitStore } from "./rateLimits";
 import type { ApprovalRegistry } from "./approvalRegistry";
 import { extractLiveClaims, findUnreachableClaims, unreachableClaimNotice } from "./claimCheck";
-import { getCredentialSecrets } from "./credentials";
+import { getCredentialSecrets, listSecretValues } from "./credentials";
 import type { PersistedAgentSession } from "./persistence";
 import { classifyIncoming, type IncomingKind } from "./turnIntent";
 import { WORKSPACE_ROOT } from "./workspace";
@@ -369,6 +369,29 @@ function restoredTurnOptions(turn: QueuedTurn): EnqueueOptions {
     id: turn.id,
     receivedAt: turn.receivedAt,
   };
+}
+
+/**
+ * Scrub any stored vault secret out of text an agent is about to publish.
+ *
+ * The vault deliberately hands real credentials to agents so they can sign into things, which
+ * means a secret legitimately reaches a model - and nothing then stops the model repeating it
+ * back in a message. The bridge never does that and the tool description forbids it, but an
+ * instruction to a model is not a control. Chat history is persisted to .solace-state.json in
+ * plaintext and replayed in Saved chats, so a secret echoed once is a secret kept forever.
+ *
+ * Returns the scrubbed text and whether anything was found, so the caller can tell the user
+ * rather than silently altering what an agent said.
+ */
+function scrubSecrets(text: string): { text: string; redacted: boolean } {
+  let out = text;
+  let redacted = false;
+  for (const secret of listSecretValues(WORKSPACE_ROOT)) {
+    if (!out.includes(secret)) continue;
+    out = out.split(secret).join("[redacted - a saved vault secret]");
+    redacted = true;
+  }
+  return { text: out, redacted };
 }
 
 function addUsage(total: TurnUsage, delta: TurnUsage): TurnUsage {
@@ -734,6 +757,20 @@ export class AgentManager {
     const mentions = parseMentions(text, knownHandles);
     // The end-of-thread marker is routing metadata, not something the human should have to
     // read - strip it from what gets displayed, but keep the raw text for the check below.
+    const scrubbedIncoming = scrubSecrets(text);
+    if (scrubbedIncoming.redacted) {
+      this.bus.postMessage({
+        id: nanoid(),
+        channel: "group",
+        authorId: "system",
+        authorHandle: "system",
+        mentions: [],
+        systemKind: "verification",
+        text: "A saved vault secret appeared in a message bound for this chat and was removed before it could be stored. Treat that credential as exposed to the model, and rotate it if that matters.",
+        createdAt: new Date().toISOString(),
+      });
+    }
+    text = scrubbedIncoming.text;
     const displayText = text.replace(END_THREAD_MARKER, "").trim() || text.trim();
 
     const message: ChatMessage = {
@@ -1150,13 +1187,28 @@ export class AgentManager {
       // land here in the brief window before the abort actually stops the CLI child) - don't
       // let a message get written into a channel whose agent no longer exists.
       if (!this.agents.has(runtime.config.id)) return;
+      // Scrubbed here rather than at the call sites so every path an agent's own words take
+      // into stored history goes through it - see scrubSecrets.
+      const scrubbed = scrubSecrets(text);
+      if (scrubbed.redacted) {
+        this.bus.postMessage({
+          id: nanoid(),
+          channel,
+          authorId: "system",
+          authorHandle: "system",
+          mentions: [],
+          systemKind: "verification",
+          text: "A saved vault secret appeared in this agent's output and was removed before it could be written to the chat history. Treat that credential as exposed to the model, and rotate it if that matters.",
+          createdAt: new Date().toISOString(),
+        });
+      }
       this.bus.postMessage({
         id: nanoid(),
         channel,
         authorId: runtime.config.id,
         authorHandle: runtime.config.handle,
         mentions: [],
-        text,
+        text: scrubbed.text,
         model: runtime.lastResolvedModel ?? runtime.config.model,
         createdAt: new Date().toISOString(),
       });

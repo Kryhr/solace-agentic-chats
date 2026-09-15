@@ -4,7 +4,7 @@ import type { AgentManager } from "./agentManager";
 import type { ChatBus } from "./chatBus";
 import type { ArchiveStore } from "./archiveStore";
 import { checkGithubAuth } from "./github";
-import { listSshCredentials } from "./credentials";
+import { listCredentials, listSshCredentials } from "./credentials";
 import { WORKSPACE_ROOT } from "./workspace";
 import type { SshCredentialMeta } from "@solace/shared";
 
@@ -23,6 +23,7 @@ const HELP_TEXT = [
   "/github init <repo-name> - (from an agent's own hub) ask it to init + push a GitHub repo",
   "/deploy list - show the SSH deploy targets saved under Connections",
   "/deploy <target> [what to do] - (from an agent's own hub) hand it a target's connection details",
+  "/vault - list what's saved in the vault by name (values are never shown in chat)",
   "/save - save a copy of this chat to Saved chats, without clearing it",
   "/clear - archive this channel's history (nothing is deleted - see Saved chats)",
   "/model <value> - (from an agent's own hub) switch its model",
@@ -282,6 +283,31 @@ export async function tryHandleCommand(text: string, ctx: CommandContext): Promi
         return true;
       }
       ctx.agents.submitDirectMessage(agentId, deployPrompt(target, instructionParts.join(" ").trim()));
+      return true;
+    }
+
+    /**
+     * Lists what is IN the vault - labels and kinds, never values. It exists because an agent
+     * addresses a saved entry by its label, so both sides need to agree on the name: the user
+     * has to be able to see what they called something without opening the sidebar, and can
+     * then tell an agent which entry to use. There is deliberately no "/vault show" here -
+     * reading a secret is a per-entry action in the UI, not something typed into a chat log
+     * that is persisted to disk and mirrored to every other agent in the group.
+     */
+    case "vault": {
+      const all = listCredentials(WORKSPACE_ROOT);
+      post(
+        ctx.bus,
+        ctx.channel,
+        all.length === 0
+          ? "The vault is empty - add API keys, deploy targets, logins or secrets under Connections in the sidebar."
+          : [
+              "Saved in the vault (names only - values are never shown here):",
+              ...all.map((c) => `  ${c.label} · ${c.kind}${c.notes ? ` · ${c.notes}` : ""}`),
+              "",
+              "An agent can use one by name during a turn; you'll see a message in its hub when it does.",
+            ].join("\n"),
+      );
       return true;
     }
 

@@ -15,12 +15,19 @@ import { ArchiveStore } from "./core/archiveStore";
 import { tryHandleCommand } from "./core/commands";
 import { checkGithubAuth } from "./core/github";
 import {
+  canReadVaultAtTrustLevel,
   deleteCredential,
+  findCredentialByLabel,
   getCredentialSecrets,
   getCredentialsFileProtection,
   listCredentials,
+  revealCredential,
   saveCredential,
+  saveLoginCredential,
+  saveSecretCredential,
   saveSshCredential,
+  type LoginCredentialInput,
+  type SecretCredentialInput,
   type SshCredentialInput,
 } from "./core/credentials";
 import { discoverModels, ModelDiscoveryError } from "./core/modelDiscovery";
@@ -293,23 +300,31 @@ async function main() {
 
   app.post<{
     Body: {
-      kind?: "api-key" | "ssh";
+      kind?: "api-key" | "ssh" | "login" | "secret";
       provider: ProviderId;
       label: string;
       apiKey: string;
       baseUrl?: string;
       connectionName?: string;
-    } & SshCredentialInput;
+      notes?: string;
+    } & SshCredentialInput &
+      LoginCredentialInput &
+      SecretCredentialInput;
   }>("/api/credentials", async (req, reply) => {
-    if (req.body.kind === "ssh") {
+    // Every non-api-key kind throws a plain-language message built from named fields only -
+    // the request body, which carries the actual secret, is never echoed back or logged.
+    if (req.body.kind === "ssh" || req.body.kind === "login" || req.body.kind === "secret") {
       try {
-        const saved = saveSshCredential(WORKSPACE_ROOT, req.body);
+        const saved =
+          req.body.kind === "ssh"
+            ? saveSshCredential(WORKSPACE_ROOT, req.body)
+            : req.body.kind === "login"
+              ? saveLoginCredential(WORKSPACE_ROOT, req.body)
+              : saveSecretCredential(WORKSPACE_ROOT, req.body);
         reply.code(201);
         return saved;
       } catch (err) {
         reply.code(400);
-        // saveSshCredential's messages are built from named fields only - the request body,
-        // which may carry pasted key material, is never echoed back here or logged.
         return { error: (err as Error).message };
       }
     }
@@ -336,7 +351,31 @@ async function main() {
       req.body.apiKey,
       req.body.baseUrl,
       req.body.connectionName,
+      req.body.notes,
     );
+  });
+
+  /**
+   * The one route that returns a real stored secret, for one entry, addressed by id.
+   *
+   * POST rather than GET on purpose. A GET would be reachable by a link, a prefetch, a
+   * browser history entry and any background poll that walks the credential list - which is
+   * precisely the "reveal happened without the user deciding to" case this is designed
+   * against. It is also never folded into GET /api/credentials: listing and revealing stay
+   * two different requests so that no amount of UI refactoring can make a list produce
+   * secrets.
+   *
+   * The response body is not logged: Fastify's request logger records method and URL only,
+   * and the URL here carries an opaque id. Nothing below interpolates a value into a log
+   * line, an error message or a chat message.
+   */
+  app.post<{ Params: { id: string } }>("/api/credentials/:id/reveal", async (req, reply) => {
+    const revealed = revealCredential(WORKSPACE_ROOT, req.params.id);
+    if (!revealed) {
+      reply.code(404);
+      return { error: "not found" };
+    }
+    return revealed;
   });
 
   /** Whether the plaintext credentials file is actually protected on this machine, so the UI
@@ -441,6 +480,91 @@ async function main() {
       // request from a real turn that we're refusing on purpose, so it isn't a 403.
       reply.code(result.reason === "no-turn" ? 403 : 400);
       return { ok: false, error: result.error };
+    },
+  );
+
+  /**
+   * How a running turn gets ONE vault entry's secret, addressed by the label the user gave
+   * it. Same loopback + turn-token pair as every other /internal route, plus two rules that
+   * only apply here:
+   *
+   *  - there is no "list every secret" form. The agent must name the entry it wants, so the
+   *    system message below can name it too. `listCredentials` metadata is what tells the
+   *    agent which labels exist, and that carries no secret.
+   *  - a "plan" agent is refused. Plan mode is the level the user picks when they want the
+   *    agent to think and not act; handing it live credentials is the opposite of that, and
+   *    an agent that cannot run a command has nothing legitimate to sign into anyway.
+   *
+   * Every success posts a visible system message into that agent's own hub BEFORE the secret
+   * is returned. The ordering matters: if the post throws, the secret is not handed over, so
+   * there is no path where an agent holds a credential the user was never told about.
+   */
+  app.post<{ Body: { agentId: string; turnToken?: string; label?: string } }>(
+    "/internal/solace/secret",
+    async (req, reply) => {
+      if (!agents.verifyTurnToken(req.body.agentId, req.body.turnToken)) {
+        reply.code(403);
+        return { ok: false, error: "no matching in-flight turn" };
+      }
+      const agent = agents.listAgents().find((a) => a.id === req.body.agentId);
+      if (!agent) {
+        reply.code(403);
+        return { ok: false, error: "no matching in-flight turn" };
+      }
+      if (!canReadVaultAtTrustLevel(agent.trustLevel)) {
+        reply.code(403);
+        return {
+          ok: false,
+          error:
+            "this agent is in plan mode, which cannot read saved credentials. Say what you would need and the user can raise your trust level or do it themselves.",
+        };
+      }
+
+      const wanted = typeof req.body.label === "string" ? req.body.label.trim() : "";
+      if (!wanted) {
+        reply.code(400);
+        return { ok: false, error: "name the saved entry you need, by its label" };
+      }
+
+      const match = findCredentialByLabel(WORKSPACE_ROOT, wanted);
+      if (!match) {
+        const labels = listCredentials(WORKSPACE_ROOT).map((c) => c.label);
+        reply.code(404);
+        // Labels are metadata, not secrets, and listing them is what stops an agent guessing
+        // at names in a loop. No value of any kind is in this response.
+        return {
+          ok: false,
+          error: labels.length
+            ? `no saved entry called "${wanted}". Saved entries: ${labels.join(", ")}`
+            : `no saved entry called "${wanted}" - nothing is saved in the vault yet`,
+        };
+      }
+
+      const revealed = revealCredential(WORKSPACE_ROOT, match.id);
+      if (!revealed || revealed.fields.length === 0) {
+        reply.code(404);
+        return { ok: false, error: `"${match.label}" has no stored secret value` };
+      }
+
+      bus.postMessage({
+        id: nanoid(),
+        channel: { agentId: agent.id },
+        authorId: "system",
+        authorHandle: "system",
+        mentions: [],
+        // Names the entry and the time, never the value. The user finding this out afterwards
+        // from a log they had to go looking for would be the same as not telling them.
+        text: `${agent.handle} read the saved credential "${revealed.label}" (${revealed.kind}) from your vault just now, to use during this turn.`,
+        createdAt: new Date().toISOString(),
+      });
+
+      return {
+        ok: true,
+        label: revealed.label,
+        kind: revealed.kind,
+        fields: revealed.fields.map((f) => ({ name: f.name, value: f.value })),
+        inbound: agents.takeInboundNotice(req.body.agentId, req.body.turnToken),
+      };
     },
   );
 

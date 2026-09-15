@@ -6,9 +6,14 @@ import { nanoid } from "nanoid";
 import type {
   ApiKeyCredentialMeta,
   CredentialMeta,
+  CredentialReveal,
+  LoginCredentialMeta,
   ProviderId,
+  RevealedField,
+  SecretCredentialMeta,
   SshCredentialMeta,
   SshTargetMeta,
+  TrustLevel,
 } from "@solace/shared";
 
 type StoredApiKeyCredential = ApiKeyCredentialMeta & {
@@ -24,11 +29,38 @@ type StoredSshCredential = SshCredentialMeta & {
    * file. Pointing at a file is the default because the file already has the permissions
    * the user chose for it; a copy in here inherits only what saveAll() can manage. */
   privateKey?: string;
-  /** Passphrase for the referenced/stored key, if the user supplied one. */
+  /**
+   * Passphrase for the referenced/stored key, if the user supplied one.
+   *
+   * Storing this next to `ssh.privateKeyPath` is the weakest combination in the whole store:
+   * the passphrase is the only thing protecting the key file being pointed at, so anyone who
+   * can read this JSON gets both halves, and the file-permission argument for referencing a
+   * key by path rather than copying it stops applying. It is kept rather than dropped because
+   * the vault's job is to hold what the user needs to sign in later and a passphrase is
+   * exactly that - but it is now a first-class secret: in SECRET_FIELDS, redacted by toMeta,
+   * flagged as present via ssh.hasPassphrase so the user can SEE that Solace has it, and
+   * warned about at the point it is typed.
+   */
   passphrase?: string;
 };
 
-type StoredCredential = StoredApiKeyCredential | StoredSshCredential;
+type StoredLoginCredential = LoginCredentialMeta & {
+  password?: string;
+  /** TOTP seed or backup codes, as free text - people keep these in wildly different shapes
+   * (a base32 seed, ten numbered codes, an otpauth:// URL) and normalizing them would mean
+   * rejecting whichever form the user's provider actually gave them. */
+  totpSecret?: string;
+};
+
+type StoredSecretCredential = SecretCredentialMeta & {
+  value?: string;
+};
+
+type StoredCredential =
+  | StoredApiKeyCredential
+  | StoredSshCredential
+  | StoredLoginCredential
+  | StoredSecretCredential;
 
 /**
  * Raw secrets live in their own file, separate from .solace-state.json, and - like that
@@ -136,7 +168,7 @@ function saveAll(workspaceRoot: string, all: StoredCredential[]) {
 
 /** Every field of a stored record that is secret, whatever its kind. Listed in one place so
  * that adding a new secret field and forgetting to redact it is a compile error below. */
-const SECRET_FIELDS = ["key", "privateKey", "passphrase"] as const;
+const SECRET_FIELDS = ["key", "privateKey", "passphrase", "password", "totpSecret", "value"] as const;
 
 function secretValuesOf(c: StoredCredential): string[] {
   const record = c as unknown as Record<string, unknown>;
@@ -153,32 +185,65 @@ function secretValuesOf(c: StoredCredential): string[] {
  * Failing closed here means GET /api/credentials errors rather than serving key material.
  */
 function toMeta(c: StoredCredential): CredentialMeta {
-  const meta: CredentialMeta =
-    c.kind === "ssh"
-      ? {
-          kind: "ssh",
-          id: c.id,
-          label: c.label,
-          createdAt: c.createdAt,
-          ssh: {
-            host: c.ssh.host,
-            port: c.ssh.port,
-            username: c.ssh.username,
-            privateKeyPath: c.ssh.privateKeyPath,
-            knownHostsPath: c.ssh.knownHostsPath,
-            hasStoredKeyMaterial: c.ssh.hasStoredKeyMaterial,
-          },
-        }
-      : {
-          kind: "api-key",
-          id: c.id,
-          provider: c.provider,
-          label: c.label,
-          createdAt: c.createdAt,
-          baseUrl: c.baseUrl,
-          connectionName: c.connectionName,
-          hasKey: Boolean(c.key),
-        };
+  let meta: CredentialMeta;
+  switch (c.kind) {
+    case "ssh":
+      meta = {
+        kind: "ssh",
+        id: c.id,
+        label: c.label,
+        createdAt: c.createdAt,
+        notes: c.notes,
+        ssh: {
+          host: c.ssh.host,
+          port: c.ssh.port,
+          username: c.ssh.username,
+          privateKeyPath: c.ssh.privateKeyPath,
+          knownHostsPath: c.ssh.knownHostsPath,
+          hasStoredKeyMaterial: c.ssh.hasStoredKeyMaterial,
+          // Derived from the stored secret, never trusted from the record's own flag: a
+          // hand-edited file claiming hasPassphrase:false while holding one would otherwise
+          // hide it from the only screen that could tell the user it exists.
+          hasPassphrase: Boolean(c.passphrase) || undefined,
+        },
+      };
+      break;
+    case "login":
+      meta = {
+        kind: "login",
+        id: c.id,
+        label: c.label,
+        createdAt: c.createdAt,
+        notes: c.notes,
+        service: c.service,
+        username: c.username,
+        hasPassword: Boolean(c.password),
+        hasTotp: Boolean(c.totpSecret),
+      };
+      break;
+    case "secret":
+      meta = {
+        kind: "secret",
+        id: c.id,
+        label: c.label,
+        createdAt: c.createdAt,
+        notes: c.notes,
+        hasValue: Boolean(c.value),
+      };
+      break;
+    default:
+      meta = {
+        kind: "api-key",
+        id: c.id,
+        provider: c.provider,
+        label: c.label,
+        createdAt: c.createdAt,
+        notes: c.notes,
+        baseUrl: c.baseUrl,
+        connectionName: c.connectionName,
+        hasKey: Boolean(c.key),
+      };
+  }
 
   const serialized = JSON.stringify(meta);
   for (const secret of secretValuesOf(c)) {
@@ -205,6 +270,7 @@ export function saveCredential(
   /** Both only meaningful for providers "custom" and "local" - see CredentialMeta in @solace/shared. */
   baseUrl?: string,
   connectionName?: string,
+  notes?: string,
 ): CredentialMeta {
   const all = loadAll(workspaceRoot);
   const entry: StoredApiKeyCredential = {
@@ -213,12 +279,14 @@ export function saveCredential(
     provider,
     label: label || "unlabeled",
     createdAt: new Date().toISOString(),
+    notes: notes?.trim() || undefined,
     key: rawKey?.trim() ?? "",
     // Trailing slashes would produce "https://host/v1//chat/completions"; normalise once here
     // rather than at every call site.
     baseUrl: baseUrl?.trim().replace(/\/+$/, "") || undefined,
     connectionName: connectionName?.trim() || undefined,
   };
+  assertNotesCarryNoSecret(entry);
   all.push(entry);
   saveAll(workspaceRoot, all);
   return toMeta(entry);
@@ -232,9 +300,11 @@ export interface SshCredentialInput {
   /** Path to an existing private key file. Preferred over privateKey below. */
   privateKeyPath?: string;
   knownHostsPath?: string;
-  /** Pasted key material. Only used when privateKeyPath is absent. */
+  /** Pasted key material. Supplying this AND privateKeyPath is refused, not silently
+   * resolved in favour of one of them - see validateSshInput. */
   privateKey?: string;
   passphrase?: string;
+  notes?: string;
 }
 
 /** `~/.ssh/id_ed25519` is how people actually write key paths; resolve it here so the
@@ -273,15 +343,31 @@ export function validateSshInput(input: SshCredentialInput): { error: string } |
 
   const ssh: SshTargetMeta = { host, port, username };
 
-  if (input.privateKeyPath?.trim()) {
-    const result = validateKeyPath(input.privateKeyPath, "private key path");
+  const hasPath = Boolean(input.privateKeyPath?.trim());
+  const hasMaterial = Boolean(input.privateKey?.trim());
+  // Refused rather than resolved in favour of the path. The previous version took the path
+  // and dropped the pasted key silently, with no error and no flag, so a user who filled in
+  // both came away believing their key was saved when only a reference to a different file
+  // had been. Silently discarding typed key material is the one outcome that leaves the user
+  // wrong about what the store holds.
+  if (hasPath && hasMaterial) {
+    return {
+      error:
+        "you supplied both a private key path and pasted key material - keep one. Referencing the key file is preferred; clear the pasted text to use it, or clear the path to store the pasted key instead",
+    };
+  }
+
+  if (hasPath) {
+    const result = validateKeyPath(input.privateKeyPath!, "private key path");
     if ("error" in result) return result;
     ssh.privateKeyPath = result.path;
-  } else if (input.privateKey?.trim()) {
+  } else if (hasMaterial) {
     ssh.hasStoredKeyMaterial = true;
   } else {
     return { error: "point at a private key file on this machine, or paste key material" };
   }
+
+  if (input.passphrase?.trim()) ssh.hasPassphrase = true;
 
   if (input.knownHostsPath?.trim()) {
     const result = validateKeyPath(input.knownHostsPath, "known_hosts path");
@@ -304,14 +390,152 @@ export function saveSshCredential(workspaceRoot: string, input: SshCredentialInp
     id: nanoid(),
     label: input.label?.trim() || `${validated.ssh.username}@${validated.ssh.host}`,
     createdAt: new Date().toISOString(),
+    notes: input.notes?.trim() || undefined,
     ssh: validated.ssh,
     privateKey: validated.ssh.hasStoredKeyMaterial ? input.privateKey : undefined,
     passphrase: input.passphrase?.trim() || undefined,
   };
+  assertNotesCarryNoSecret(entry);
   const all = loadAll(workspaceRoot);
   all.push(entry);
   saveAll(workspaceRoot, all);
   return toMeta(entry);
+}
+
+/**
+ * `notes` is shown in the list, so a note containing the entry's own secret verbatim would
+ * make toMeta throw and take the whole Connections panel down with it (fail-closed doing
+ * exactly its job, but at the worst possible moment). Catching it here turns that into one
+ * clear message at the point the user typed it, and keeps the scan in toMeta as the backstop
+ * for records that arrive some other way - a hand-edited file, a future writer.
+ */
+function assertNotesCarryNoSecret(entry: StoredCredential) {
+  const notes = entry.notes;
+  if (!notes) return;
+  for (const secret of secretValuesOf(entry)) {
+    if (secret.length >= 6 && notes.includes(secret)) {
+      throw new Error("the notes field contains this entry's own secret - notes are shown in the list, so keep the secret in its own field");
+    }
+  }
+}
+
+export interface LoginCredentialInput {
+  label: string;
+  /** URL or plain service name - whatever the user is actually signing into. */
+  service: string;
+  username: string;
+  password?: string;
+  totpSecret?: string;
+  notes?: string;
+}
+
+/** A service sign-in. `password` is optional because magic-link and SSO logins are real and
+ * an entry recording "this is the account I use" is still worth having; hasPassword in the
+ * metadata is what stops that being confused with a reveal that returned nothing. */
+export function saveLoginCredential(workspaceRoot: string, input: LoginCredentialInput): CredentialMeta {
+  const service = input.service?.trim();
+  const username = input.username?.trim();
+  if (!service) throw new Error("service (a URL or a name) is required");
+  if (!username) throw new Error("username is required");
+
+  const entry: StoredLoginCredential = {
+    kind: "login",
+    id: nanoid(),
+    label: input.label?.trim() || service,
+    createdAt: new Date().toISOString(),
+    notes: input.notes?.trim() || undefined,
+    service,
+    username,
+    hasPassword: Boolean(input.password?.trim()),
+    hasTotp: Boolean(input.totpSecret?.trim()),
+    password: input.password?.trim() || undefined,
+    totpSecret: input.totpSecret?.trim() || undefined,
+  };
+  assertNotesCarryNoSecret(entry);
+  const all = loadAll(workspaceRoot);
+  all.push(entry);
+  saveAll(workspaceRoot, all);
+  return toMeta(entry);
+}
+
+export interface SecretCredentialInput {
+  label: string;
+  value: string;
+  notes?: string;
+}
+
+/** The catch-all kind: a token, a licence key, a recovery code, anything the user wants held
+ * under the same file protection as the rest. A value IS required here - unlike a login,
+ * an entry of this kind with nothing in it records nothing at all. */
+export function saveSecretCredential(workspaceRoot: string, input: SecretCredentialInput): CredentialMeta {
+  const label = input.label?.trim();
+  const value = input.value?.trim();
+  if (!label) throw new Error("a label is required so you can find this again");
+  if (!value) throw new Error("a secret value is required");
+
+  const entry: StoredSecretCredential = {
+    kind: "secret",
+    id: nanoid(),
+    label,
+    createdAt: new Date().toISOString(),
+    notes: input.notes?.trim() || undefined,
+    hasValue: true,
+    value,
+  };
+  assertNotesCarryNoSecret(entry);
+  const all = loadAll(workspaceRoot);
+  all.push(entry);
+  saveAll(workspaceRoot, all);
+  return toMeta(entry);
+}
+
+/**
+ * The ONE function in this file that deliberately returns real secret values, and the only
+ * thing behind POST /api/credentials/:id/reveal. Everything else about the store is built so
+ * that a secret cannot travel outward by accident; this is the single place where it travels
+ * outward on purpose, which is why it:
+ *  - takes exactly one id and has no list/bulk form. There is no code path that reveals two
+ *    entries in one call, so nothing can ever "reveal everything" by passing a wildcard;
+ *  - does not go through toMeta, and toMeta is not weakened to accommodate it. The redaction
+ *    boundary still holds for every other read;
+ *  - returns undefined for an unknown id rather than throwing with the id echoed anywhere.
+ *
+ * Callers must not log the result. The route and the MCP bridge both handle it as a value to
+ * pass straight through, never to interpolate into a log line, an error, or a chat message.
+ */
+export function revealCredential(workspaceRoot: string, id: string): CredentialReveal | undefined {
+  const found = loadAll(workspaceRoot).find((c) => c.id === id);
+  if (!found) return undefined;
+
+  const fields: RevealedField[] = [];
+  switch (found.kind) {
+    case "ssh":
+      if (found.privateKey) fields.push({ name: "private key", value: found.privateKey });
+      if (found.passphrase) {
+        fields.push({
+          name: "key passphrase",
+          value: found.passphrase,
+          note: found.ssh.privateKeyPath
+            ? `unlocks ${found.ssh.privateKeyPath}. Both the path and this passphrase are in Solace's own plaintext file, so anyone who can read that file has both halves.`
+            : "unlocks the key material stored in Solace.",
+        });
+      }
+      break;
+    case "login":
+      if (found.password) fields.push({ name: "password", value: found.password });
+      if (found.totpSecret) fields.push({ name: "TOTP / backup codes", value: found.totpSecret });
+      break;
+    case "secret":
+      if (found.value) fields.push({ name: "secret", value: found.value });
+      break;
+    default:
+      // A keyless connection (a local model server) legitimately has no key - that yields an
+      // empty field list, not an error, and the UI says "nothing stored" rather than implying
+      // the reveal failed.
+      if (found.key) fields.push({ name: "API key", value: found.key });
+  }
+
+  return { id: found.id, kind: found.kind ?? "api-key", label: found.label, fields };
 }
 
 export function deleteCredential(workspaceRoot: string, id: string): boolean {
@@ -336,8 +560,64 @@ export function listSshCredentials(workspaceRoot: string): SshCredentialMeta[] {
  * but pure waste on the hot path of every single chat turn. Never exposed through any route. */
 export function getCredentialSecrets(workspaceRoot: string, id: string): { key?: string; baseUrl?: string } {
   const found = loadAll(workspaceRoot).find((c) => c.id === id);
-  // An SSH record has no API key; returning anything for one would mean an agent pointed at a
-  // deploy target by mistake starts sending SSH material as an Authorization header.
-  if (!found || found.kind === "ssh") return {};
+  // Only an api-key record has an API key. Checked as an allowlist rather than "not ssh",
+  // because the exclusion list silently stopped covering everything the moment login/secret
+  // kinds existed - an agent mistakenly pointed at a saved password would otherwise start
+  // sending it as an Authorization header to whatever endpoint it was configured with.
+  if (!found || found.kind !== "api-key") return {};
   return { key: found.key, baseUrl: found.baseUrl };
+}
+
+/**
+ * Whether an agent at this trust level may pull a secret out of the vault.
+ *
+ * "plan" is the level a user picks when they want the agent to think and not act - it cannot
+ * run a command, so it has nothing legitimate to sign into, and handing it a live credential
+ * would quietly make the weakest trust level the one with the most reach. Split out of the
+ * route so the rule is a testable fact rather than a branch inside an HTTP handler, and so a
+ * second caller cannot re-implement it slightly differently.
+ */
+/**
+ * Every stored secret value, for scrubbing agent-authored text before it is persisted.
+ *
+ * The vault exists so agents can sign into things, which means a secret legitimately reaches a
+ * model - and from there nothing stops it being repeated back into a message. The bridge never
+ * does that and the tool description forbids it, but "the model was told not to" is not a
+ * control. Chat history is written to .solace-state.json in plaintext and shown again in Saved
+ * chats, so a secret echoed once is a secret stored forever.
+ *
+ * Short values are excluded: an 8-character floor keeps a stubby label or passphrase from
+ * matching ordinary prose and redacting legitimate text. Cached against the file's mtime so
+ * this can run on every message without re-reading the file each time.
+ */
+let secretCache: { mtimeMs: number; values: string[] } | undefined;
+
+export function listSecretValues(workspaceRoot: string): string[] {
+  const path = credentialsPath(workspaceRoot);
+  if (!existsSync(path)) return [];
+  try {
+    const mtimeMs = statSync(path).mtimeMs;
+    if (secretCache?.mtimeMs === mtimeMs) return secretCache.values;
+    const values = loadAll(workspaceRoot)
+      .flatMap(secretValuesOf)
+      .filter((v) => v.length >= 8);
+    secretCache = { mtimeMs, values };
+    return values;
+  } catch {
+    return [];
+  }
+}
+
+export function canReadVaultAtTrustLevel(trustLevel: TrustLevel): boolean {
+  return trustLevel !== "plan";
+}
+
+/** Resolve the label an agent (or a slash command) typed to exactly one entry. Case- and
+ * whitespace-insensitive because the label is something a human typed twice, in two places.
+ * Returns the metadata only - getting the secret is a separate, audited step. */
+export function findCredentialByLabel(workspaceRoot: string, labelOrId: string): CredentialMeta | undefined {
+  const wanted = labelOrId.trim().toLowerCase();
+  if (!wanted) return undefined;
+  const all = listCredentials(workspaceRoot);
+  return all.find((c) => c.id === labelOrId.trim()) ?? all.find((c) => c.label.trim().toLowerCase() === wanted);
 }
