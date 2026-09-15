@@ -2,14 +2,19 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentConfig, ChatMessage } from "@solace/shared";
 import type { ChatArchive } from "./archiveStore";
+import type { PersistedAgentQueue } from "./agentManager";
 
 export interface PersistedState {
   agents: AgentConfig[];
   history: ChatMessage[];
   archives: ChatArchive[];
+  /** Each agent's outstanding (queued/in-flight) work, so a restart doesn't silently drop it -
+   * see AgentManager's constructor/getPersistableQueues(). Optional only because state saved
+   * before this field existed won't have it. */
+  queues: PersistedAgentQueue[];
 }
 
-const EMPTY_STATE: PersistedState = { agents: [], history: [], archives: [] };
+const EMPTY_STATE: PersistedState = { agents: [], history: [], archives: [], queues: [] };
 
 function statePath(workspaceRoot: string): string {
   return join(workspaceRoot, ".solace-state.json");
@@ -45,6 +50,7 @@ export function loadState(workspaceRoot: string): PersistedState {
       agents: Array.isArray(parsed.agents) ? parsed.agents.map(migrateAgent) : [],
       history: Array.isArray(parsed.history) ? parsed.history : [],
       archives: Array.isArray(parsed.archives) ? parsed.archives : [],
+      queues: Array.isArray(parsed.queues) ? parsed.queues : [],
     };
   } catch {
     return EMPTY_STATE;

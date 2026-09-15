@@ -31,10 +31,16 @@ async function main() {
   const bus = new ChatBus(persisted.history);
   const approvals = new ApprovalRegistry();
   const archive = new ArchiveStore(persisted.archives);
-  const agents = new AgentManager(bus, persisted.agents, approvals);
+  const agents = new AgentManager(bus, persisted.agents, approvals, persisted.queues);
 
   const persist = debounce(
-    () => saveState(WORKSPACE_ROOT, { agents: agents.listAgents(), history: bus.getHistory(), archives: archive.list() }),
+    () =>
+      saveState(WORKSPACE_ROOT, {
+        agents: agents.listAgents(),
+        history: bus.getHistory(),
+        archives: archive.list(),
+        queues: agents.getPersistableQueues(),
+      }),
     300,
   );
   bus.onChange = persist;
@@ -126,6 +132,15 @@ async function main() {
     if (!stopped) {
       reply.code(404);
       return { error: "agent not found or has no turn in flight" };
+    }
+    return { ok: true };
+  });
+
+  app.post<{ Params: { id: string } }>("/api/agents/:id/retry", async (req, reply) => {
+    const retried = agents.retryAgent(req.params.id);
+    if (!retried) {
+      reply.code(404);
+      return { error: "agent not found or has nothing to retry" };
     }
     return { ok: true };
   });

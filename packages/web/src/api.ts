@@ -107,6 +107,16 @@ export async function clearAgentHistory(agentId: string): Promise<void> {
   await sendAgentDirectMessage(agentId, "/clear");
 }
 
+/** Cancels an agent's in-flight turn without removing the agent itself. */
+export async function stopAgent(agentId: string): Promise<void> {
+  await fetch(`/api/agents/${agentId}/stop`, { method: "POST" });
+}
+
+/** Re-submits an agent's most recently failed turn exactly as it was. */
+export async function retryAgent(agentId: string): Promise<void> {
+  await fetch(`/api/agents/${agentId}/retry`, { method: "POST" });
+}
+
 export async function testProviderConnection(provider: ProviderId): Promise<{ ok: boolean; message: string }> {
   return fetch(`/api/providers/${provider}/test`, { method: "POST" }).then((r) => r.json());
 }

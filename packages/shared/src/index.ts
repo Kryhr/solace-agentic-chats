@@ -71,6 +71,14 @@ export interface AgentStatus {
   /** The literal last error/rate-limit message the provider CLI reported, if any - shown
    * verbatim rather than parsed/interpreted, since providers don't expose a queryable quota API. */
   lastError?: string;
+  /** Set when a failed turn's error text yielded a real, parseable future reset time and a
+   * retry has genuinely been scheduled for it (an ISO timestamp) - lets the UI show "retrying
+   * at ..." instead of a dead-looking error. Absent doesn't mean nothing failed, just that
+   * nothing was auto-scheduled - see canRetry. */
+  retryAt?: string;
+  /** True when there's a failed turn that can be manually retried (the "Retry" button),
+   * whether or not an automatic retry is also scheduled. */
+  canRetry?: boolean;
 }
 
 /** What each provider's CLI actually supports for model/effort selection - kept honest:

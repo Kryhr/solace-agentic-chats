@@ -7,13 +7,27 @@ import type { ApprovalRegistry } from "./approvalRegistry";
 import { getRawKey } from "./credentials";
 import { WORKSPACE_ROOT } from "./workspace";
 
-interface QueuedTurn {
+export interface QueuedTurn {
   prompt: string;
   replyChannel: ChatChannel;
   /** How many agent-to-agent @mention hops led to this turn (0 for a human-triggered turn).
    * Two agents can legitimately keep mentioning each other back and forth; this caps that
    * chain instead of letting it run forever - see MAX_MENTION_CHAIN_DEPTH. */
   mentionChainDepth: number;
+}
+
+/** A snapshot of one agent's still-outstanding work, for persistence.ts - see
+ * AgentManager.getPersistableQueues()/restoreQueues(). */
+export interface PersistedAgentQueue {
+  agentId: string;
+  /** The turn that was actually running (mid-generation) when the process stopped, if any -
+   * there's no way to resume real mid-generation CLI/API state, so this just gets re-run from
+   * scratch on restart, with an honest system message explaining why instead of silently
+   * forgetting it was asked at all. */
+  inFlight?: QueuedTurn;
+  /** Turns that were queued but hadn't started yet - these just run normally on restart,
+   * nothing was interrupted. */
+  queued: QueuedTurn[];
 }
 
 interface AgentRuntime {
@@ -31,6 +45,21 @@ interface AgentRuntime {
    * as long as that turn happened to take, completely invisible to the UI, with no way for
    * the user to stop it short of killing the whole server. */
   activeController?: AbortController;
+  /** The turn currently being run, if any - set right after it's popped off `queue` and
+   * cleared when it finishes. Distinct from `queue` (which only holds turns waiting to
+   * start) so a persistence snapshot taken mid-turn can still capture what was actually
+   * running, not just what's still waiting. */
+  currentTurn?: QueuedTurn;
+  /** The most recently failed turn, kept around so a "Retry" action (automatic or
+   * user-triggered) can re-submit the exact same prompt without the caller needing to retype
+   * it. Cleared on the next successful turn. */
+  lastFailedTurn?: QueuedTurn;
+  /** When a failed turn's error text yielded a real, parseable future reset time, this is a
+   * scheduled retry already in flight - exposed on AgentStatus so the UI can show "retrying
+   * at ..." instead of a dead-looking error. Cleared (and the timeout cancelled) if the agent
+   * is removed or a manual retry/new message preempts it. */
+  scheduledRetryAt?: string;
+  scheduledRetryTimeout?: NodeJS.Timeout;
 }
 
 /** Large open-ended asks (e.g. "build a whole site") can legitimately take a while, but a
@@ -42,6 +71,42 @@ const MAX_TURN_MS = 15 * 60 * 1000;
  * mentioning each other back and forth is legitimate collaboration, not a bug - but with no
  * cap at all, it has no natural stopping point either. */
 const MAX_MENTION_CHAIN_DEPTH = 6;
+
+/** For display only (the interrupted-turn restart notice) - a prompt built by buildGroupPrompt
+ * has a "[group context: ...]" block and a "[group chat message from X]: " prefix wrapped
+ * around the actual message; showing that raw wrapper to the user would bury what they
+ * actually said. Strips known prefixes, falls back to the raw text for anything else
+ * (a direct hub message has no wrapper at all). */
+function summarizePrompt(prompt: string): string {
+  const stripped = prompt.replace(/^\[group context:.*?\]\n\n/s, "").replace(/^\[group chat message from [^\]]+\]:\s*/, "");
+  return stripped.length > 200 ? `${stripped.slice(0, 200)}…` : stripped;
+}
+
+/**
+ * Providers don't expose a queryable quota API - the only real signal a rate limit ever gives
+ * is the literal sentence in the error text (mirrors the same extraction lib/errorFormat.ts
+ * already does client-side for display; this is the server-side version used to actually
+ * schedule a retry, not just show a headline). Returns undefined - never a guess - when the
+ * message isn't clearly a rate limit, or doesn't contain a time this can confidently parse.
+ */
+function parseResetTime(message: string, now: Date): Date | undefined {
+  if (!/usage limit|rate limit/i.test(message)) return undefined;
+  // JS's Date constructor can't reliably parse a bare time-of-day string ("10:50 PM" alone is
+  // Invalid Date in Node, with no timezone attached either) - pull the hour/minute/meridiem
+  // out explicitly and build the Date by hand against today's date instead of trusting
+  // new Date(arbitraryProviderText) to do the right thing.
+  const timeMatch = message.match(/(\d{1,2}):(\d{2})\s?([APap][Mm])/);
+  if (!timeMatch) return undefined;
+  let hour = Number(timeMatch[1]) % 12;
+  if (/pm/i.test(timeMatch[3])) hour += 12;
+  const minute = Number(timeMatch[2]);
+  const parsed = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute, 0, 0);
+  // A bare time-of-day, with no date, means "the next time it's HH:MM" - if that's already in
+  // the past relative to now, the only sensible reading is tomorrow, since a rate limit can't
+  // have already reset before it was even hit.
+  if (parsed.getTime() <= now.getTime()) parsed.setDate(parsed.getDate() + 1);
+  return parsed;
+}
 
 function addUsage(total: TurnUsage, delta: TurnUsage): TurnUsage {
   return {
@@ -80,10 +145,48 @@ export class AgentManager {
     private bus: ChatBus,
     initialAgents: AgentConfig[] = [],
     private approvals?: ApprovalRegistry,
+    initialQueues: PersistedAgentQueue[] = [],
   ) {
     for (const config of initialAgents) {
       this.agents.set(config.id, { config, status: "idle", busy: false, queue: [], totalUsage: {} });
     }
+    // Queued/in-flight work used to be pure in-memory state - a restart (a real crash, or
+    // just editing server source in dev mode) silently dropped it with no trace it had ever
+    // been asked. A turn that was only queued (never started) just runs now, which is
+    // correct - nothing lied about having answered it. A turn that was actually mid-generation
+    // can't be resumed (that state is genuinely gone), so it's re-run from scratch, but with
+    // an honest note explaining why instead of a message that just never got a reply.
+    for (const saved of initialQueues) {
+      if (!this.agents.has(saved.agentId)) continue; // the agent itself was removed before restart
+      if (saved.inFlight) {
+        this.bus.postMessage({
+          id: nanoid(),
+          channel: { agentId: saved.agentId },
+          authorId: "system",
+          authorHandle: "system",
+          mentions: [],
+          text: `This was interrupted by a restart before finishing - retrying now: "${summarizePrompt(saved.inFlight.prompt)}"`,
+          createdAt: new Date().toISOString(),
+        });
+        this.enqueueTurn(saved.agentId, saved.inFlight.prompt, saved.inFlight.replyChannel, saved.inFlight.mentionChainDepth);
+      }
+      for (const turn of saved.queued) {
+        this.enqueueTurn(saved.agentId, turn.prompt, turn.replyChannel, turn.mentionChainDepth);
+      }
+    }
+  }
+
+  /** A snapshot of every agent's outstanding work (in-flight + still-queued turns), for
+   * persistence.ts to save alongside agent configs/history - see the constructor's
+   * `initialQueues` param for how it's restored. Only agents with something outstanding are
+   * included. */
+  getPersistableQueues(): PersistedAgentQueue[] {
+    const result: PersistedAgentQueue[] = [];
+    for (const [agentId, runtime] of this.agents) {
+      if (!runtime.currentTurn && runtime.queue.length === 0) continue;
+      result.push({ agentId, inFlight: runtime.currentTurn, queued: [...runtime.queue] });
+    }
+    return result;
   }
 
   addAgent(config: AgentConfig) {
@@ -98,7 +201,9 @@ export class AgentManager {
     // signal-abort handling) and drop any approval it might be blocked on, *before* the
     // config disappears - otherwise both leak: the turn keeps running against a deleted
     // agent's channel, and a pending approval Promise/resolver sits in the registry forever.
-    this.agents.get(id)?.activeController?.abort();
+    const runtime = this.agents.get(id);
+    runtime?.activeController?.abort();
+    if (runtime?.scheduledRetryTimeout) clearTimeout(runtime.scheduledRetryTimeout);
     this.approvals?.expireForAgent(id);
     this.agents.delete(id);
     this.bus.emitEvent({ type: "agent:removed", payload: { agentId: id } });
@@ -112,6 +217,21 @@ export class AgentManager {
     if (!runtime?.activeController) return false;
     runtime.activeController.abort();
     this.approvals?.expireForAgent(id);
+    return true;
+  }
+
+  /** Re-submits an agent's most recently failed turn, exactly as it was - the manual "Retry"
+   * action for when the error wasn't a rate limit with a parseable reset time (so nothing was
+   * auto-scheduled), or the user just doesn't want to wait for the scheduled one. Returns
+   * false if there's nothing to retry. */
+  retryAgent(id: string): boolean {
+    const runtime = this.agents.get(id);
+    const turn = runtime?.lastFailedTurn;
+    if (!runtime || !turn) return false;
+    if (runtime.scheduledRetryTimeout) clearTimeout(runtime.scheduledRetryTimeout);
+    runtime.scheduledRetryAt = undefined;
+    runtime.lastFailedTurn = undefined;
+    this.enqueueTurn(id, turn.prompt, turn.replyChannel, turn.mentionChainDepth);
     return true;
   }
 
@@ -156,6 +276,8 @@ export class AgentManager {
       lastUsage: runtime.lastUsage,
       totalUsage: runtime.totalUsage,
       lastError: runtime.lastError,
+      retryAt: runtime.scheduledRetryAt,
+      canRetry: runtime.lastFailedTurn !== undefined,
     };
   }
 
@@ -280,6 +402,7 @@ export class AgentManager {
     const runtime = this.agents.get(agentId);
     if (!runtime) return;
     runtime.queue.push({ prompt, replyChannel, mentionChainDepth });
+    this.onChange?.(); // so a restart before this turn even starts still finds it queued
     void this.drainQueue(agentId);
   }
 
@@ -291,6 +414,8 @@ export class AgentManager {
     const { prompt, replyChannel, mentionChainDepth } = turn;
 
     runtime.busy = true;
+    runtime.currentTurn = turn;
+    this.onChange?.(); // persist that this turn is now the one actually in flight
     runtime.status = "thinking";
     this.emitStatus(agentId);
 
@@ -375,6 +500,37 @@ export class AgentManager {
       post(replyChannel, `error: ${message}`);
     }
 
+    if (hadError) {
+      // Keep the exact failed turn around so it can be re-run without the human retyping it -
+      // either automatically (below, only when the error text itself gave a real, parseable
+      // reset time) or via the manual "Retry" action, which is always available regardless.
+      runtime.lastFailedTurn = turn;
+      const resetAt = parseResetTime(runtime.lastError ?? "", new Date());
+      if (resetAt) {
+        runtime.scheduledRetryAt = resetAt.toISOString();
+        this.emitStatus(agentId);
+        runtime.scheduledRetryTimeout = setTimeout(() => {
+          const stillHere = this.agents.get(agentId);
+          if (!stillHere) return;
+          stillHere.scheduledRetryAt = undefined;
+          stillHere.scheduledRetryTimeout = undefined;
+          stillHere.lastFailedTurn = undefined;
+          this.enqueueTurn(agentId, turn.prompt, turn.replyChannel, turn.mentionChainDepth);
+        }, Math.max(0, resetAt.getTime() - Date.now()));
+        if (this.agents.has(runtime.config.id)) {
+          this.bus.postMessage({
+            id: nanoid(),
+            channel: replyChannel,
+            authorId: "system",
+            authorHandle: "system",
+            mentions: [],
+            text: `That looks like a rate limit - will automatically retry the same message at ${resetAt.toLocaleTimeString()}.`,
+            createdAt: new Date().toISOString(),
+          });
+        }
+      }
+    }
+
     if (isGroupTurn && lastText.trim() && !hadError) {
       // Route the agent's own final answer through the same mention-parsing/triggering logic
       // as a human message - see routeGroupMessage's doc comment for why this matters. Guard
@@ -390,9 +546,11 @@ export class AgentManager {
     }
 
     runtime.activeController = undefined;
+    runtime.currentTurn = undefined;
     runtime.busy = false;
     runtime.status = hadError ? "error" : "idle";
     this.emitStatus(agentId);
+    this.onChange?.(); // this turn is no longer outstanding - persist that too
     void this.drainQueue(agentId); // pick up anything queued while this turn ran
   }
 }

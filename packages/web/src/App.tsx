@@ -20,8 +20,10 @@ import {
   fetchProviderModels,
   removeAgent,
   resolveApproval,
+  retryAgent,
   sendAgentDirectMessage,
   sendChatMessage,
+  stopAgent,
   updateAgent,
   type ChatArchive,
 } from "./api";
@@ -258,6 +260,8 @@ export default function App() {
           onSendDirect={(text) => sendAgentDirectMessage(hubAgent.id, text)}
           onClearHistory={() => void clearAgentHistory(hubAgent.id)}
           onRemoveAgent={() => void removeAgent(hubAgent.id)}
+          onStop={() => void stopAgent(hubAgent.id)}
+          onRetry={() => void retryAgent(hubAgent.id)}
         />
       ) : (
         <ChatPanel

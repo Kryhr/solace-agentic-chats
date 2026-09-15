@@ -24,6 +24,8 @@ export function AgentHubPage({
   onSendDirect,
   onClearHistory,
   onRemoveAgent,
+  onStop,
+  onRetry,
 }: {
   agent: AgentConfig;
   status?: AgentStatus;
@@ -35,6 +37,8 @@ export function AgentHubPage({
   onSendDirect: (text: string) => Promise<void>;
   onClearHistory: () => void;
   onRemoveAgent: () => void;
+  onStop: () => void;
+  onRetry: () => void;
 }) {
   const [draft, setDraft] = useState("");
   const [sendError, setSendError] = useState<string | null>(null);
@@ -149,6 +153,16 @@ export function AgentHubPage({
         </div>
 
         <div className="hub-page-actions">
+          {state === "thinking" && (
+            <button className="btn-secondary btn-xs" onClick={onStop} title="Cancel this turn without removing the agent">
+              Stop
+            </button>
+          )}
+          {status?.canRetry && (
+            <button className="btn-secondary btn-xs" onClick={onRetry} title="Re-send the last message that failed">
+              Retry
+            </button>
+          )}
           <button
             className="btn-secondary btn-xs"
             onClick={() => {
@@ -193,6 +207,7 @@ export function AgentHubPage({
             <path d="M8 5v3.5M8 11h.01" />
           </svg>
           {error.headline}
+          {status?.retryAt && ` · retrying at ${new Date(status.retryAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
         </div>
       )}
 
