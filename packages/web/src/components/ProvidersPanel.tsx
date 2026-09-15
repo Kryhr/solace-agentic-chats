@@ -215,7 +215,6 @@ function SshConnections({
     <>
       <div className="connection-subhead">
         Deploy targets (SSH)
-        <span className="label-rule" />
       </div>
 
       {targets.length === 0 && !adding && <div className="provider-hint connection-empty">No SSH targets yet.</div>}
@@ -442,7 +441,6 @@ function VaultEntries({
     <>
       <div className="connection-subhead">
         Logins &amp; secrets
-        <span className="label-rule" />
       </div>
 
       {logins.length === 0 && secrets.length === 0 && !adding && (
@@ -755,7 +753,6 @@ export function SavedConnections() {
     <div className="saved-connections">
       <div className="connection-subhead">
         API keys
-        <span className="label-rule" />
       </div>
 
       {credentials !== null && apiKeys.length === 0 && !adding && (
@@ -836,7 +833,6 @@ export function SavedConnections() {
 
           <div className="connection-subhead">
             Local servers
-            <span className="label-rule" />
           </div>
           <button className="btn-ghost btn-xs" onClick={scan} disabled={scanning}>
             {scanning ? "Scanning…" : "Scan for local servers"}
