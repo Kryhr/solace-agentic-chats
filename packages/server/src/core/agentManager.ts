@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { nanoid } from "nanoid";
 import type { AgentConfig, AgentRunState, AgentStatus, ChatChannel, ChatMessage, TurnUsage } from "@solace/shared";
 import { getAdapter } from "../adapters";
@@ -52,6 +53,23 @@ interface AgentRuntime {
    * as long as that turn happened to take, completely invisible to the UI, with no way for
    * the user to stop it short of killing the whole server. */
   activeController?: AbortController;
+  /** Why activeController was aborted, set immediately before .abort(). The adapter only
+   * reports THAT it was cancelled; the reason lives here, because only the caller knows it.
+   * Read after runTurn resolves to tell a real timeout (an error, worth retrying) from the
+   * user pressing Stop (not an error at all) - which the UI used to conflate, telling the user
+   * a turn they deliberately stopped had "exceeded the maximum turn duration". */
+  abortKind?: "timeout" | "stop" | "interrupt";
+  /** Per-turn secret handed to helper processes this turn spawns, so an internal HTTP route can
+   * verify a caller really is this agent's currently-running turn. Cleared when the turn ends,
+   * which also stops a child that outlived its turn from acting as the agent. */
+  activeTurnToken?: string;
+  /** The model the provider itself reported for the most recent turn (e.g. "claude-sonnet-5"),
+   * which is more specific than the configured alias ("sonnet" names more than one real model).
+   * Display only - never written back into config, which is the user's choice, not ours. */
+  lastResolvedModel?: string;
+  /** The provider CLI's own session id for this agent's ongoing conversation. Undefined means
+   * the next turn starts cold. */
+  sessionId?: string;
   /** The turn currently being run, if any - set right after it's popped off `queue` and
    * cleared when it finishes. Distinct from `queue` (which only holds turns waiting to
    * start) so a persistence snapshot taken mid-turn can still capture what was actually
@@ -216,6 +234,7 @@ export class AgentManager {
     // config disappears - otherwise both leak: the turn keeps running against a deleted
     // agent's channel, and a pending approval Promise/resolver sits in the registry forever.
     const runtime = this.agents.get(id);
+    if (runtime) runtime.abortKind = "stop";
     runtime?.activeController?.abort();
     if (runtime?.scheduledRetryTimeout) clearTimeout(runtime.scheduledRetryTimeout);
     this.approvals?.expireForAgent(id);
@@ -224,11 +243,26 @@ export class AgentManager {
     this.onChange?.();
   }
 
+  /**
+   * Does (agentId, token) identify a turn that is running RIGHT NOW? Internal HTTP routes are
+   * driven by helper processes the CLI spawns, so the only thing distinguishing a real caller
+   * from anything else that can reach the port is this per-turn secret. It also expires
+   * naturally: the token is cleared when the turn ends, so a child process that outlives its
+   * turn (Windows kill() does not reliably reap a whole process tree) cannot keep acting as
+   * the agent afterwards.
+   */
+  verifyTurnToken(agentId: string, token: unknown): boolean {
+    const runtime = this.agents.get(agentId);
+    if (!runtime?.activeTurnToken || typeof token !== "string" || !token) return false;
+    return runtime.activeTurnToken === token;
+  }
+
   /** Cancels an agent's in-flight turn (if any) without removing the agent itself - the
    * "Stop" action in the UI, distinct from "Remove agent" which also deletes the config. */
   stopAgent(id: string): boolean {
     const runtime = this.agents.get(id);
     if (!runtime?.activeController) return false;
+    runtime.abortKind = "stop";
     runtime.activeController.abort();
     this.approvals?.expireForAgent(id);
     return true;
@@ -479,11 +513,14 @@ export class AgentManager {
 
     runtime.busy = true;
     runtime.currentTurn = turn;
+    runtime.abortKind = undefined; // a previous turn's reason must never leak into this one
+    runtime.activeTurnToken = randomUUID();
     this.onChange?.(); // persist that this turn is now the one actually in flight
     runtime.status = "thinking";
     this.emitStatus(agentId);
 
     let hadError = false;
+    let cancelled = false;
     let lastText = "";
     const isGroupTurn = replyChannel === "group";
     const ownChannel: ChatChannel = { agentId: runtime.config.id };
@@ -500,7 +537,7 @@ export class AgentManager {
         authorHandle: runtime.config.handle,
         mentions: [],
         text,
-        model: runtime.config.model,
+        model: runtime.lastResolvedModel ?? runtime.config.model,
         createdAt: new Date().toISOString(),
       });
     };
@@ -526,6 +563,7 @@ export class AgentManager {
       const controller = new AbortController();
       runtime.activeController = controller;
       const turnTimeout = setTimeout(() => {
+        runtime.abortKind = "timeout";
         controller.abort();
         // A killed turn shouldn't leave a live approval card in the UI for it.
         this.approvals?.expireForAgent(agentId);
@@ -536,7 +574,7 @@ export class AgentManager {
         trustLevel: runtime.config.trustLevel,
         agentId: runtime.config.id,
         agentHandle: runtime.config.handle,
-        model: runtime.config.model,
+        model: runtime.lastResolvedModel ?? runtime.config.model,
         effort: runtime.config.effort,
         apiKey,
         baseUrl,
@@ -556,6 +594,15 @@ export class AgentManager {
           } else if (event.type === "usage") {
             runtime.lastUsage = event.usage;
             runtime.totalUsage = addUsage(runtime.totalUsage, event.usage);
+          } else if (event.type === "cancelled") {
+            // Not a failure - see AdapterEvent.cancelled. Deliberately does NOT set hadError,
+            // so an aborted turn never lands in lastFailedTurn or schedules a retry.
+            cancelled = true;
+          } else if (event.type === "model") {
+            runtime.lastResolvedModel = event.model;
+          } else if (event.type === "session") {
+            runtime.sessionId = event.sessionId;
+            this.onChange?.();
           } else if (event.type === "error" && event.message.trim()) {
             hadError = true;
             runtime.lastError = event.message.trim();
@@ -567,10 +614,31 @@ export class AgentManager {
       });
       clearTimeout(turnTimeout);
     } catch (err) {
-      hadError = true;
-      const message = err instanceof Error ? err.message : String(err);
-      runtime.lastError = message;
-      post(replyChannel, `error: ${message}`);
+      // An aborted fetch rejects rather than emitting a "cancelled" event (the API adapters
+      // have no child process to kill), so the abort reason is the authority here, not the
+      // shape of the throw.
+      if (runtime.abortKind) {
+        cancelled = true;
+      } else {
+        hadError = true;
+        const message = err instanceof Error ? err.message : String(err);
+        runtime.lastError = message;
+        post(replyChannel, `error: ${message}`);
+      }
+    }
+
+    if (cancelled) {
+      // A cancelled turn is reported honestly for what it was, and deliberately skips the whole
+      // failure path below: no lastFailedTurn, no Retry affordance, no rate-limit retry
+      // scheduled for a turn the user chose to end. A timeout IS a real failure, so it keeps
+      // the retry affordance; "stop" does not, because the user already decided.
+      if (runtime.abortKind === "timeout") {
+        hadError = true;
+        runtime.lastError = `turn stopped after ${Math.round(MAX_TURN_MS / 60000)} minutes without finishing`;
+        post(replyChannel, `error: ${runtime.lastError}`);
+      } else if (runtime.abortKind === "stop" && this.agents.has(runtime.config.id)) {
+        post(ownChannel, "_stopped before this turn finished_");
+      }
     }
 
     if (hadError) {
@@ -613,7 +681,7 @@ export class AgentManager {
         this.routeGroupMessage(runtime.config.id, runtime.config.handle, lastText.trim(), {
           broadcastIfUnmentioned: false,
           mentionChainDepth: mentionChainDepth + 1,
-          model: runtime.config.model,
+          model: runtime.lastResolvedModel ?? runtime.config.model,
           replyTo: addressedBy,
         });
       }
@@ -627,6 +695,8 @@ export class AgentManager {
     }
 
     runtime.activeController = undefined;
+    runtime.activeTurnToken = undefined; // a child that outlived its turn can no longer post as this agent
+    runtime.abortKind = undefined;
     runtime.currentTurn = undefined;
     runtime.busy = false;
     runtime.status = hadError ? "error" : "idle";

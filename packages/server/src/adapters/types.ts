@@ -4,6 +4,19 @@ export type AdapterEvent =
   | { type: "text"; text: string }
   | { type: "tool-use"; description: string }
   | { type: "usage"; usage: TurnUsage }
+  /** The provider's own id for this agent's ongoing conversation, so the next turn can resume
+   * it instead of starting cold. Emitted as soon as it is known. */
+  | { type: "session"; sessionId: string }
+  /** The resolved model the provider actually used. Not always what was asked for: "sonnet" is
+   * an alias that can point at more than one real model, and the honest thing to show is the id
+   * the provider itself reported. */
+  | { type: "model"; model: string }
+  /** The abort signal fired and the child was killed. Deliberately distinct from "error": an
+   * abort is something WE did and the caller knows why (timeout, Stop button, interrupt) - the
+   * adapter doesn't. Reporting it as an error made the UI tell the user a turn they had
+   * deliberately stopped "exceeded the maximum turn duration", and set the failure state that
+   * lights up Retry and can schedule a rate-limit retry for a turn nobody wanted retried. */
+  | { type: "cancelled" }
   | { type: "done" }
   | { type: "error"; message: string };
 
@@ -26,8 +39,18 @@ export interface RunTurnOptions {
    * credential (e.g. "https://api.deepseek.com/v1"). Resolved server-side from the credential,
    * not from the agent config, at the same point apiKey is. Every other adapter ignores it. */
   baseUrl?: string;
+  /** Resume the agent's own prior CLI conversation instead of starting cold. Undefined means
+   * this is a first turn. Without this every turn was a fresh stateless process, so an agent
+   * genuinely could not remember work it had announced one message earlier. */
+  sessionId?: string;
+  /** A per-turn secret handed to any helper process this turn spawns (the approval bridge, the
+   * solace bridge), so an internal route can tell a real in-flight turn from anything else that
+   * can reach the port. */
+  turnToken?: string;
   onEvent: (event: AdapterEvent) => void;
-  /** Aborting kills the underlying CLI process - used to enforce a max turn duration. */
+  /** Aborting kills the underlying CLI process - used for the max turn duration, the Stop
+   * action, agent removal, and (see agentManager) interrupting one turn to answer another
+   * agent's question. The reason lives on the caller, not here. */
   signal?: AbortSignal;
 }
 

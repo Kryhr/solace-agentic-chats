@@ -296,7 +296,27 @@ async function main() {
   // Internal only - called by the per-turn approval bridge script (approval/bridgeScript.mjs),
   // never by the browser. Blocks (from the bridge script's perspective) until a human resolves
   // the approval via POST /api/approvals/:id/resolve below.
-  app.post<{ Body: { agentId: string; description: string } }>("/internal/approvals", async (req) => {
+  // /internal/* is the channel helper processes spawned BY a turn use to call back in. It is
+  // not part of the public API and nothing outside this machine has any business reaching it,
+  // but the server binds 0.0.0.0 so the user can open the UI from another device - so rather
+  // than moving the whole server to loopback and breaking that, the internal surface alone is
+  // restricted here. Two independent checks, because either one alone is weak: the caller must
+  // be on the loopback interface, AND must present the secret for a turn that is running now.
+  app.addHook("onRequest", async (req, reply) => {
+    if (!req.url.startsWith("/internal/")) return;
+    const ip = req.ip;
+    const isLoopback = ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+    if (!isLoopback) {
+      req.log.warn({ ip, url: req.url }, "rejected non-loopback request to an internal route");
+      reply.code(403).send({ error: "internal routes are local-only" });
+    }
+  });
+
+  app.post<{ Body: { agentId: string; turnToken?: string; description: string } }>("/internal/approvals", async (req, reply) => {
+    if (!agents.verifyTurnToken(req.body.agentId, req.body.turnToken)) {
+      reply.code(403);
+      return { error: "no matching in-flight turn" };
+    }
     const { id, wait } = approvals.create(req.body.agentId, req.body.description);
     bus.emitEvent({ type: "approval:requested", payload: approvals.get(id)! });
     // AgentRunState already had a dedicated "waiting-approval" value (with its own sidebar

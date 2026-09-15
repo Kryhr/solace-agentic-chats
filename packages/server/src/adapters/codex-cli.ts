@@ -60,9 +60,9 @@ export const codexCliAdapter: ProviderAdapter = {
       const rl = readline.createInterface({ input: child.stdout! });
 
       let reportedError = false;
-      let timedOut = false;
+      let aborted = false;
       const onAbort = () => {
-        timedOut = true;
+        aborted = true;
         child.kill();
       };
       signal?.addEventListener("abort", onAbort);
@@ -113,8 +113,9 @@ export const codexCliAdapter: ProviderAdapter = {
 
       child.on("close", (code) => {
         signal?.removeEventListener("abort", onAbort);
-        if (timedOut) {
-          onEvent({ type: "error", message: "turn cancelled: exceeded the maximum turn duration" });
+        if (aborted) {
+          // Why it was aborted is the caller's knowledge, not ours - see AdapterEvent.cancelled.
+          onEvent({ type: "cancelled" });
         } else if (code !== 0 && !reportedError && stderrBuffer.trim()) {
           onEvent({ type: "error", message: stderrBuffer.trim() });
         }

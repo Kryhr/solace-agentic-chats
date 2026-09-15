@@ -21,6 +21,9 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 
 const agentId = process.env.SOLACE_AGENT_ID;
 const port = process.env.SOLACE_SERVER_PORT ?? "4310";
+// Proves to the server that this process belongs to a turn that is actually running right now.
+// Without it the internal route could be driven by anything able to reach the port.
+const turnToken = process.env.SOLACE_TURN_TOKEN;
 
 const server = new Server({ name: "approval-bridge", version: "0.0.1" }, { capabilities: { tools: {} } });
 
@@ -35,7 +38,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const res = await fetch(`http://localhost:${port}/internal/approvals`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ agentId, description }),
+    body: JSON.stringify({ agentId, turnToken, description }),
   });
   const { approved } = await res.json();
 

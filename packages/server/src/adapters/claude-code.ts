@@ -38,7 +38,7 @@ function flagsForTrustLevel(trustLevel: TrustLevel): string[] {
 
 export const claudeCodeAdapter: ProviderAdapter = {
   id: "claude-code",
-  async runTurn({ cwd, prompt, trustLevel, model, effort, agentId, onEvent, signal }: RunTurnOptions): Promise<void> {
+  async runTurn({ cwd, prompt, trustLevel, model, effort, agentId, turnToken, onEvent, signal }: RunTurnOptions): Promise<void> {
     const serverPort = Number(process.env.PORT ?? 4310);
     // The prompt goes in on STDIN, never as an argv element. On Windows `claude` resolves to
     // an npm .cmd shim, so cross-spawn has to route it through `cmd.exe /d /s /c` - and a
@@ -65,7 +65,12 @@ export const claudeCodeAdapter: ProviderAdapter = {
       const child = spawnCli("claude", args, {
         cwd,
         stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env, SOLACE_AGENT_ID: agentId, SOLACE_SERVER_PORT: String(serverPort) },
+        env: {
+          ...process.env,
+          SOLACE_AGENT_ID: agentId,
+          SOLACE_SERVER_PORT: String(serverPort),
+          ...(turnToken ? { SOLACE_TURN_TOKEN: turnToken } : {}),
+        },
       });
       // Claude Code only starts the turn once stdin reaches EOF, so this must always end().
       // An EPIPE here (child died before reading) is not worth crashing the server over - the
@@ -74,17 +79,25 @@ export const claudeCodeAdapter: ProviderAdapter = {
       child.stdin!.end(prompt);
       const rl = readline.createInterface({ input: child.stdout! });
 
-      let timedOut = false;
+      let aborted = false;
       const onAbort = () => {
-        timedOut = true;
+        aborted = true;
         child.kill();
       };
       signal?.addEventListener("abort", onAbort);
 
+      let reportedModel: string | undefined;
       rl.on("line", (line) => {
         if (!line.trim()) return;
         try {
           const event = JSON.parse(line);
+          // The model the provider actually resolved the request to. "sonnet" is an alias, so
+          // this is the only way to say which Sonnet a message really came from.
+          const model = event?.message?.model;
+          if (typeof model === "string" && model && model !== reportedModel) {
+            reportedModel = model;
+            onEvent({ type: "model", model });
+          }
           // Claude Code's stream-json emits {type: "assistant", message: {content: [...]}}
           // and tool-use blocks inside that content array. Schema per code.claude.com/docs/en/headless.
           const content = event?.message?.content;
@@ -124,8 +137,9 @@ export const claudeCodeAdapter: ProviderAdapter = {
 
       child.on("close", (code) => {
         signal?.removeEventListener("abort", onAbort);
-        if (timedOut) {
-          onEvent({ type: "error", message: "turn cancelled: exceeded the maximum turn duration" });
+        if (aborted) {
+          // Why it was aborted is the caller's knowledge, not ours - see AdapterEvent.cancelled.
+          onEvent({ type: "cancelled" });
         } else if (code !== 0 && stderrBuffer.trim()) {
           onEvent({ type: "error", message: stderrBuffer.trim() });
         }
