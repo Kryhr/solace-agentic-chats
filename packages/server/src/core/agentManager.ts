@@ -710,6 +710,8 @@ export class AgentManager {
       rateLimit: runtime.rateLimit ?? this.rateLimits.get(runtime.config.provider),
       retryAt: runtime.scheduledRetryAt,
       canRetry: runtime.lastFailedTurn !== undefined,
+      // Display only, and only when the provider actually told us - see AgentStatus.resolvedModel.
+      resolvedModel: runtime.lastResolvedModel,
     };
   }
 
@@ -1328,7 +1330,11 @@ export class AgentManager {
             // so an aborted turn never lands in lastFailedTurn or schedules a retry.
             cancelled = true;
           } else if (event.type === "model") {
+            // Push it out immediately rather than waiting for the turn to end: the whole point
+            // of showing the resolved id is to answer "which model is answering me right now".
+            const changed = runtime.lastResolvedModel !== event.model;
             runtime.lastResolvedModel = event.model;
+            if (changed) this.emitStatus(agentId);
           } else if (event.type === "session") {
             runtime.sessionId = event.sessionId;
             this.onChange?.();

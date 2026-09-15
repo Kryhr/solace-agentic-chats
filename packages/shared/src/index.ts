@@ -289,15 +289,82 @@ export interface AgentStatus {
   /** True when there's a failed turn that can be manually retried (the "Retry" button),
    * whether or not an automatic retry is also scheduled. */
   canRetry?: boolean;
+  /** The concrete model the provider itself reported for this agent's most recent turn, when
+   * its stream carried one. This is the only honest answer to "which Opus did I just get":
+   * an alias like "opus" names whatever the CLI currently maps it to, and the mapping is the
+   * provider's to change. Absent means no turn has run yet, or that provider's stream never
+   * says - it must never be back-filled with the configured value to look complete. */
+  resolvedModel?: string;
+}
+
+/**
+ * Where a list of model ids actually came from. Every model this app offers carries one of
+ * these, because "which models exist" and "which models your subscription can run" are two
+ * different questions and only the first is answerable from this machine. The UI renders the
+ * source verbatim next to the picker rather than letting a list imply an entitlement.
+ */
+export type ModelCatalogSourceKind =
+  /** The CLI asked its own provider and answered just now (Codex's `debug models` refresh). */
+  | "cli-live"
+  /** Read out of the installed CLI's own shipped files - its real build, not our memory of it. */
+  | "cli-artifact"
+  /** The CLI's on-disk cache of something its server told it about THIS account. */
+  | "account-cache"
+  /** A dated, cited documentation reference, used only where nothing above exists. */
+  | "docs";
+
+export interface ModelCatalogSource {
+  kind: ModelCatalogSourceKind;
+  /** Exactly where this came from: a command line, an absolute file path, or a doc URL. */
+  origin: string;
+  /** Version of the CLI/artifact read, when the artifact stated one. */
+  version?: string;
+  /** ISO time this app actually read it. A model list without one is a claim without a date. */
+  readAt: string;
+  /** How many model ids this particular source contributed. */
+  count: number;
+}
+
+/** One selectable model, as described by whichever source produced it. */
+export interface ModelOption {
+  /** The exact string passed to the CLI's own --model flag. Never a prettified name. */
+  id: string;
+  /** Human label the source itself gave (e.g. "Opus 4.8"); the id when it gave none. */
+  label: string;
+  /** Grouping key, e.g. "opus" / "gpt-5.6" - so six Opus variants read as one family. */
+  family: string;
+  /** Heading for that group, e.g. "Opus". */
+  familyLabel: string;
+  /** A detail the source actually stated (knowledge cutoff, Codex's own description). Never
+   * editorialised and never invented - absent when the source said nothing. */
+  note?: string;
+  /** Set only for alias ids ("opus", "sonnet"): what the installed CLI's OWN alias table says
+   * this currently resolves to. An alias is not a model, and the app must not pretend it is. */
+  aliasFor?: string;
+  /** Effort levels this specific model declares, where the source states them per model
+   * (Codex does). Absent means fall back to ProviderModelInfo.effortLevels. */
+  effortLevels?: string[];
+  defaultEffort?: string;
+  /** True when the source itself marks this model as one it does not normally list. Shown in a
+   * separate group rather than dropped, so nothing the user might legitimately reach is hidden. */
+  hiddenBySource?: boolean;
+  /** Index of the ModelCatalogSource in ProviderModelInfo.sources that produced this entry. */
+  sourceIndex: number;
 }
 
 /** What each provider's CLI actually supports for model/effort selection - kept honest:
- * no hardcoded model catalog for providers whose available models change over time or
- * depend on the user's plan, just the real, verified effort levels each CLI accepts. */
+ * every model id here is traceable to `sources`, the effort levels are the ones each CLI's
+ * own --help documents, and nothing here claims the current plan can reach any of it. */
 export interface ProviderModelInfo {
   provider: ProviderId;
-  /** A few example model values to hint at in the UI - not an exhaustive or guaranteed-valid list. */
-  modelExamples: string[];
+  /** Every model this app could find for the provider, each tagged with where it came from.
+   * Empty is a real answer: it means nothing could be enumerated, see sourceError. */
+  models: ModelOption[];
+  /** The sources behind `models`, in the order they were consulted. Empty when none answered. */
+  sources: ModelCatalogSource[];
+  /** Verbatim reason enumeration failed or fell back, when it did. Surfaced to the user rather
+   * than swallowed: "we couldn't ask" must never look like "there is nothing to list". */
+  sourceError?: string;
   /** Empty means this provider's adapter doesn't support effort selection (yet). */
   effortLevels: string[];
   /** The model this provider's CLI is actually configured to use by default, read live from
