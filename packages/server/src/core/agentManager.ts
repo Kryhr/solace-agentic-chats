@@ -385,17 +385,29 @@ export class AgentManager {
   private buildGroupPrompt(fromHandle: string, text: string, forAgentId: string): string {
     const self = this.agents.get(forAgentId)?.config;
     const others = [...this.agents.values()].map((a) => a.config).filter((a) => a.id !== forAgentId);
-    if (!self || others.length === 0) {
+    if (!self) {
       return `[group chat message from ${fromHandle}]: ${text}`;
     }
-    const roster = others
-      .map((a) => `"${a.handle}" (${a.provider})${a.currentTask ? ` - currently: ${a.currentTask}` : ""}`)
-      .join("; ");
-    const context =
-      `[group context: you are "${self.handle}" in this group chat. Other agents here: ${roster}. ` +
-      `Mention an agent by handle (e.g. "@${others[0].handle} ...") to bring them into this specific thread - ` +
-      `otherwise your reply only reaches whoever already mentioned you.]\n\n`;
-    return `${context}[group chat message from ${fromHandle}]: ${text}`;
+    // Real, live-observed problems this addresses: two agents independently built competing
+    // versions of the same page with zero coordination (fixed above by the roster), and
+    // separately, an agent reported "Built and launched the candle landing page at
+    // http://localhost:3010" when it was not, in fact, actually running there - a claim of
+    // success nobody had verified. Neither is fixable by code alone, but a direct, concrete
+    // reminder in the one place every group turn passes through is the cheapest real lever
+    // available.
+    const identity =
+      `[group context: you are "${self.handle}" in the group chat for solace-agentic-chats, an open-source, ` +
+      `local multi-agent hub (like an open-source Claude Desktop) - this chat is the actual product, not a demo. ` +
+      `Don't claim something is running, deployed, or "live" unless you've actually verified it yourself just now ` +
+      `(e.g. curled the URL, ran the command) - say what you did and haven't yet checked, rather than assuming.`;
+    const roster =
+      others.length > 0
+        ? ` Other agents here: ${others
+            .map((a) => `"${a.handle}" (${a.provider})${a.currentTask ? ` - currently: ${a.currentTask}` : ""}`)
+            .join("; ")}. Mention an agent by handle (e.g. "@${others[0].handle} ...") to bring them into this ` +
+          `specific thread - otherwise your reply only reaches whoever already mentioned you.`
+        : "";
+    return `${identity}${roster}]\n\n[group chat message from ${fromHandle}]: ${text}`;
   }
 
   private enqueueTurn(agentId: string, prompt: string, replyChannel: ChatChannel, mentionChainDepth = 0) {
