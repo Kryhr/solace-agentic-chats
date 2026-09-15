@@ -3913,3 +3913,9 @@ body {
     max-width: 100%;
   }
 }
+
+/* A healthy connection is just its dot - no label, no timestamp. The status element still
+   renders (it carries the dot and the hover), it simply has no text to make room for. */
+.provider-status.dot-only {
+  gap: 0;
+}

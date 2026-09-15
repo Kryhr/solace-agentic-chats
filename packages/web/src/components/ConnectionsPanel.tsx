@@ -86,6 +86,10 @@ function CheckControl({ state, onCheck, title }: { state: CheckState; onCheck?: 
   const dot =
     state.status === "checking" ? "pending" : state.status === "unchecked" ? "unknown" : state.status === "error" ? "fail" : state.check.ok ? "ok" : "fail";
   const tone = dot === "ok" ? "is-ok" : dot === "fail" ? "is-fail" : "";
+  // A healthy connection says it with the dot alone. "Working 6:29 PM" on every row was a
+  // timestamp repeated down a list of two, which is noise standing in for information - and
+  // the exact time is still one hover away. Anything NOT healthy keeps its words, because
+  // that is the case where a dot alone leaves you guessing.
   const text =
     state.status === "checking"
       ? "Checking…"
@@ -93,10 +97,14 @@ function CheckControl({ state, onCheck, title }: { state: CheckState; onCheck?: 
         ? "Not checked"
         : state.status === "error"
           ? "Check failed"
-          : `${state.check.ok ? "Working" : "Failed"} ${shortTime(state.check.checkedAt)}`;
+          : state.check.ok
+            ? ""
+            : `Failed ${shortTime(state.check.checkedAt)}`;
   const hover =
     state.status === "done"
-      ? state.check.detail
+      ? // Carries the time now that the row no longer prints it.
+        `${state.check.ok ? "Working" : "Failed"} - checked ${shortTime(state.check.checkedAt)}${state.check.detail ? `
+${state.check.detail}` : ""}`
       : state.status === "error"
         ? state.message
         : state.status === "unchecked"
@@ -106,7 +114,7 @@ function CheckControl({ state, onCheck, title }: { state: CheckState; onCheck?: 
   return (
     <>
       <span className="provider-swap">
-        <span className={`provider-status ${tone}`} title={hover}>
+        <span className={`provider-status ${tone} ${text ? "" : "dot-only"}`} title={hover}>
           {text}
         </span>
         {onCheck && (
