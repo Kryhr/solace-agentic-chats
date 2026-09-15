@@ -1,13 +1,15 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentConfig, ChatMessage } from "@solace/shared";
+import type { ChatArchive } from "./archiveStore";
 
 export interface PersistedState {
   agents: AgentConfig[];
   history: ChatMessage[];
+  archives: ChatArchive[];
 }
 
-const EMPTY_STATE: PersistedState = { agents: [], history: [] };
+const EMPTY_STATE: PersistedState = { agents: [], history: [], archives: [] };
 
 function statePath(workspaceRoot: string): string {
   return join(workspaceRoot, ".solace-state.json");
@@ -42,6 +44,7 @@ export function loadState(workspaceRoot: string): PersistedState {
     return {
       agents: Array.isArray(parsed.agents) ? parsed.agents.map(migrateAgent) : [],
       history: Array.isArray(parsed.history) ? parsed.history : [],
+      archives: Array.isArray(parsed.archives) ? parsed.archives : [],
     };
   } catch {
     return EMPTY_STATE;

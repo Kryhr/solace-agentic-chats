@@ -45,11 +45,14 @@ export class ChatBus {
     this.onChange?.();
   }
 
-  /** Used by the /clear slash command - drops every message in one channel only. */
-  clearChannel(channel: ChatChannel) {
+  /** Used by the /clear slash command - drops every message in one channel and returns
+   * exactly what was removed, so the caller can archive it instead of losing it outright. */
+  clearChannel(channel: ChatChannel): ChatMessage[] {
+    const removed = this.history.filter((m) => sameChannel(m.channel, channel));
     this.history = this.history.filter((m) => !sameChannel(m.channel, channel));
     this.emit({ type: "chat:cleared", payload: { channel } });
     this.onChange?.();
+    return removed;
   }
 
   emitEvent(event: ServerEvent) {

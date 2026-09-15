@@ -13,6 +13,7 @@ import {
   createAgent,
   fetchAgentDirectHistory,
   fetchAgents,
+  fetchArchives,
   fetchHistory,
   fetchPermissionModes,
   fetchProviderModels,
@@ -20,20 +21,24 @@ import {
   sendAgentDirectMessage,
   sendChatMessage,
   updateAgent,
+  type ChatArchive,
 } from "./api";
 import { AgentCard } from "./components/AgentCard";
 import { AddAgentModal } from "./components/AddAgentModal";
 import { AgentHubPage } from "./components/AgentHubPage";
 import { ApprovalPrompt } from "./components/ApprovalPrompt";
+import { ArchivesPage } from "./components/ArchivesPage";
 import { ChatPanel } from "./components/ChatPanel";
 import { GithubPanel } from "./components/GithubPanel";
 import { ProvidersPanel } from "./components/ProvidersPanel";
 
-type View = { type: "chat" } | { type: "hub"; agentId: string };
+type View = { type: "chat" } | { type: "hub"; agentId: string } | { type: "archives" };
 
 function parseHash(hash: string): View {
-  const match = hash.match(/^#\/agent\/(.+)$/);
-  return match ? { type: "hub", agentId: match[1] } : { type: "chat" };
+  const agentMatch = hash.match(/^#\/agent\/(.+)$/);
+  if (agentMatch) return { type: "hub", agentId: agentMatch[1] };
+  if (hash === "#/archives") return { type: "archives" };
+  return { type: "chat" };
 }
 
 export default function App() {
@@ -49,6 +54,7 @@ export default function App() {
   const [showAddAgent, setShowAddAgent] = useState(false);
   const [connected, setConnected] = useState(true);
   const [pendingApprovals, setPendingApprovals] = useState<Record<string, PendingApproval>>({});
+  const [archives, setArchives] = useState<ChatArchive[]>([]);
   const [view, setView] = useState<View>(() => parseHash(location.hash));
 
   const agents = useMemo(() => Object.values(agentsById), [agentsById]);
@@ -58,7 +64,11 @@ export default function App() {
   );
 
   useEffect(() => {
-    const onHashChange = () => setView(parseHash(location.hash));
+    const onHashChange = () => {
+      const next = parseHash(location.hash);
+      setView(next);
+      if (next.type === "archives") fetchArchives().then(setArchives);
+    };
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
@@ -71,6 +81,10 @@ export default function App() {
   };
   const goToChat = () => {
     location.hash = "";
+  };
+  const goToArchives = () => {
+    location.hash = "#/archives";
+    fetchArchives().then(setArchives);
   };
 
   useEffect(() => {
@@ -117,6 +131,7 @@ export default function App() {
             const agentId = event.payload.channel.agentId;
             setDirectById((d) => ({ ...d, [agentId]: {} }));
           }
+          fetchArchives().then(setArchives);
         }
       },
       (isConnected) => setConnected(isConnected),
@@ -177,9 +192,14 @@ export default function App() {
         <ProvidersPanel />
         <div className="sidebar-section-label">GitHub</div>
         <GithubPanel />
+        <button className="add-agent-btn" onClick={goToArchives}>
+          Saved chats
+        </button>
       </aside>
 
-      {hubAgent ? (
+      {view.type === "archives" ? (
+        <ArchivesPage archives={archives} agentsById={agentsById} onBack={goToChat} />
+      ) : hubAgent ? (
         <AgentHubPage
           agent={hubAgent}
           status={statuses[hubAgent.id]}

@@ -1,13 +1,14 @@
 :root {
-  /* neutrals: charcoal/graphite scale, not pure black/white */
-  --gray-950: #101114;
-  --gray-900: #16171b;
-  --gray-800: #1d1f24;
-  --gray-700: #26282e;
-  --gray-600: #33353c;
-  --gray-500: #52555e;
-  --gray-400: #82868f;
-  --gray-300: #b0b4bb;
+  /* neutrals: warm charcoal scale (calmer, less blue-tinted than a typical "dev tool" dark
+     theme - closer to how Claude's own product reads) */
+  --gray-950: #1a1918;
+  --gray-900: #201f1d;
+  --gray-800: #2a2825;
+  --gray-700: #34322e;
+  --gray-600: #423f3a;
+  --gray-500: #635d55;
+  --gray-400: #948d82;
+  --gray-300: #bcb5a9;
 
   --bg: var(--gray-950);
   --panel: var(--gray-900);
@@ -15,7 +16,7 @@
   --border: var(--gray-700);
   --border-strong: var(--gray-600);
 
-  --text: #f0f1f4;
+  --text: #f3f0ea;
   --text-muted: var(--gray-400);
   --text-faint: var(--gray-500);
 
@@ -975,6 +976,74 @@ body {
 
 .message-row.hub-message {
   max-width: 720px;
+}
+
+/* ---------- saved chats (archives) ---------- */
+
+.archive-entry {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel-raised);
+  overflow: hidden;
+}
+
+.archive-entry-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  font-family: var(--font-sans);
+}
+.archive-entry-header:hover {
+  background: var(--gray-700);
+}
+
+.archive-entry-title {
+  font-weight: 600;
+  font-size: var(--text-sm);
+}
+
+.archive-entry-meta {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.archive-entry-body {
+  border-top: 1px solid var(--border);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.archive-message {
+  display: flex;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.archive-message-author {
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  flex-shrink: 0;
+  min-width: 70px;
+  text-transform: capitalize;
+}
+
+.archive-message-text {
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* ---------- live approval prompts ---------- */

@@ -11,6 +11,7 @@ import { getModelCatalog } from "./core/modelCatalog";
 import { getPermissionCatalog } from "./core/permissionCatalog";
 import { debounce, loadState, saveState } from "./core/persistence";
 import { ApprovalRegistry } from "./core/approvalRegistry";
+import { ArchiveStore } from "./core/archiveStore";
 import { tryHandleCommand } from "./core/commands";
 import { checkGithubAuth } from "./core/github";
 import { deleteCredential, listCredentials, saveCredential } from "./core/credentials";
@@ -28,9 +29,13 @@ async function main() {
   const persisted = loadState(WORKSPACE_ROOT);
   const bus = new ChatBus(persisted.history);
   const approvals = new ApprovalRegistry();
+  const archive = new ArchiveStore(persisted.archives);
   const agents = new AgentManager(bus, persisted.agents, approvals);
 
-  const persist = debounce(() => saveState(WORKSPACE_ROOT, { agents: agents.listAgents(), history: bus.getHistory() }), 300);
+  const persist = debounce(
+    () => saveState(WORKSPACE_ROOT, { agents: agents.listAgents(), history: bus.getHistory(), archives: archive.list() }),
+    300,
+  );
   bus.onChange = persist;
   agents.onChange = persist;
 
@@ -95,7 +100,7 @@ async function main() {
   app.get("/api/chat/history", async () => bus.getHistoryFor("group"));
 
   app.post<{ Body: { text: string } }>("/api/chat", async (req) => {
-    const handled = await tryHandleCommand(req.body.text, { channel: "group", agents, bus });
+    const handled = await tryHandleCommand(req.body.text, { channel: "group", agents, bus, archive });
     if (!handled) agents.submitMessage("user", "you", req.body.text);
     return { ok: true };
   });
@@ -107,10 +112,12 @@ async function main() {
 
   app.post<{ Params: { id: string }; Body: { text: string } }>("/api/agents/:id/chat", async (req) => {
     const channel = { agentId: req.params.id };
-    const handled = await tryHandleCommand(req.body.text, { channel, agents, bus });
+    const handled = await tryHandleCommand(req.body.text, { channel, agents, bus, archive });
     if (!handled) agents.submitDirectMessage(req.params.id, req.body.text);
     return { ok: true };
   });
+
+  app.get("/api/archives", async () => archive.list());
 
   app.get("/api/github/status", async () => checkGithubAuth());
 

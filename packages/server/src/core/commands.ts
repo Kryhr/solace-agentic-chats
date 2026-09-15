@@ -2,12 +2,14 @@ import { nanoid } from "nanoid";
 import type { ChatChannel } from "@solace/shared";
 import type { AgentManager } from "./agentManager";
 import type { ChatBus } from "./chatBus";
+import type { ArchiveStore } from "./archiveStore";
 import { checkGithubAuth } from "./github";
 
 export interface CommandContext {
   channel: ChatChannel;
   agents: AgentManager;
   bus: ChatBus;
+  archive: ArchiveStore;
 }
 
 const HELP_TEXT = [
@@ -15,7 +17,7 @@ const HELP_TEXT = [
   "/status - summarize every agent's state, model, and task",
   "/github status - check gh auth on this machine",
   "/github init <repo-name> - (from an agent's own hub) ask it to init + push a GitHub repo",
-  "/clear - clear this channel's history",
+  "/clear - archive this channel's history (nothing is deleted - see Saved chats)",
   "/model <value> - (from an agent's own hub) switch its model",
   "/effort <value> - (from an agent's own hub) switch its thinking effort",
   "/help - show this list",
@@ -93,7 +95,8 @@ export async function tryHandleCommand(text: string, ctx: CommandContext): Promi
     }
 
     case "clear": {
-      ctx.bus.clearChannel(ctx.channel);
+      const removed = ctx.bus.clearChannel(ctx.channel);
+      ctx.archive.add(ctx.channel, removed);
       return true;
     }
 

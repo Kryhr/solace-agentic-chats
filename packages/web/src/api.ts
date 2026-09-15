@@ -73,6 +73,17 @@ export async function fetchAgentDirectHistory(agentId: string): Promise<ChatMess
   return fetch(`/api/agents/${agentId}/chat`).then((r) => r.json());
 }
 
+export interface ChatArchive {
+  id: string;
+  channel: "group" | { agentId: string };
+  clearedAt: string;
+  messages: ChatMessage[];
+}
+
+export async function fetchArchives(): Promise<ChatArchive[]> {
+  return fetch("/api/archives").then((r) => r.json());
+}
+
 export async function sendAgentDirectMessage(agentId: string, text: string): Promise<void> {
   await fetch(`/api/agents/${agentId}/chat`, {
     method: "POST",
