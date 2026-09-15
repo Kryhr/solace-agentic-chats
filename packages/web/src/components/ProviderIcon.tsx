@@ -12,6 +12,7 @@ const PROVIDER_STYLE: Record<Exclude<ProviderId, "custom">, { color: string; lab
   "codex-cli": { color: "#8fd1c9", label: "codex" },
   "gemini-cli": { color: "#7c93f2", label: "gemini" },
   "qwen-code": { color: "#c084e0", label: "qwen" },
+  "copilot-cli": { color: "#9aa4b2", label: "copilot" },
   local: { color: "#7fb069", label: "local" },
 };
 
@@ -67,6 +68,9 @@ const PROVIDER_BRAND: Partial<Record<ProviderId, string>> = {
   "claude-code": "claude",
   "gemini-cli": "googlegemini",
   "qwen-code": "qwen",
+  // GitHub Copilot has a real published mark and brandIcons already carries it, so the
+  // abstract glyph above is only the fallback if that entry ever goes away.
+  "copilot-cli": "githubcopilot",
 };
 
 /**

@@ -1,0 +1,471 @@
+import { randomUUID } from "node:crypto";
+import { existsSync, readdirSync } from "node:fs";
+import * as readline from "node:readline";
+import { join } from "node:path";
+import type { TrustLevel } from "@solace/shared";
+import { killCliTree, spawnCli } from "../core/spawnCli";
+import type { ProviderAdapter, RunTurnOptions } from "./types";
+
+/** The group-chat MCP bridge, re-anchored to the *source* copy from the package root exactly as
+ * claude-code.ts does - it's plain JS with no compile step, so the same path works under
+ * `tsx watch` and in `dist/`. */
+const SOLACE_BRIDGE_SCRIPT = join(__dirname, "..", "..", "src", "mcp", "solaceBridge.mjs");
+
+/**
+ * Copilot addresses an MCP tool as `<server>-<tool>` - a single HYPHEN, not Claude Code's
+ * `mcp__server__tool` and not Gemini's single underscore. Confirmed from a real turn: with the
+ * bridge registered as "solace", the tool table in Copilot's own session.usage_checkpoint event
+ * listed `solace-post_to_group`, `solace-list_agents` and `solace-get_secret` verbatim.
+ *
+ * The permission PATTERN language is a different spelling again: `--allow-tool`/`--deny-tool`
+ * take `<mcp-server-name>(tool-name?)`, e.g. `solace(post_to_group)`, or bare `solace` for every
+ * tool on that server (documented in `copilot help permissions`). So the two forms below are not
+ * redundant - one is how the model names the tool, the other is how permissions match it.
+ */
+const SOLACE_SERVER = "solace";
+
+/**
+ * Where the npm package actually keeps its executable code.
+ *
+ * `copilot` on PATH is a .cmd shim whose entire body is `node npm-loader.js %*`, and that shim
+ * is the problem this adapter has to route around: a cmd.exe command line is TERMINATED by a
+ * literal newline, silently, with exit code 0 (see the long note in core/spawnCli.ts). Unlike
+ * every other CLI here, Copilot has NO stdin channel for the prompt - verified: `-p -` is taken
+ * as the literal one-character prompt "-" (the turn came back with
+ * {"type":"user.message","data":{"content":"-"}}), and `-p` is a required string option so it
+ * cannot be left to fall through to stdin either.
+ *
+ * So the prompt has to go in argv, and the only honest way to do that safely is to stop going
+ * through cmd.exe at all: spawn `node` (a native .exe) on the loader the shim itself invokes.
+ * CreateProcess passes argv straight through and handles newlines fine - which is exactly why
+ * codex, a native codex.exe, was never affected by the original bug. Verified end to end: a
+ * three-line prompt sent this way arrived with all three lines intact in Copilot's own
+ * user.message event, where the same prompt through copilot.cmd would have lost everything
+ * after line one.
+ *
+ * spawnCli's newline guard stays satisfied for the right reason rather than by accident: it
+ * checks what the command actually RESOLVES to, and `node` resolves to node.exe, not a shim.
+ */
+function findLoader(): string | undefined {
+  for (const dir of (process.env.PATH ?? "").split(process.platform === "win32" ? ";" : ":")) {
+    if (!dir) continue;
+    const loader = join(dir, "node_modules", "@github", "copilot", "npm-loader.js");
+    if (existsSync(loader)) return loader;
+  }
+  return undefined;
+}
+
+/**
+ * The installed Copilot package root, if it can be found. Exported because modelCatalog needs
+ * the same tree to read the built-in model catalog out of the shipped SDK.
+ */
+export function copilotPackageDir(): string | undefined {
+  const loader = findLoader();
+  return loader ? join(loader, "..") : undefined;
+}
+
+/**
+ * The platform-specific sub-package that carries the real binary and the bundled SDK
+ * (`copilot-win32-x64` on this machine). Discovered rather than named, so a different platform
+ * or a future rename doesn't silently break it.
+ */
+export function copilotPlatformDir(): string | undefined {
+  const pkg = copilotPackageDir();
+  if (!pkg) return undefined;
+  const scope = join(pkg, "node_modules", "@github");
+  if (!existsSync(scope)) return undefined;
+  try {
+    const entry = readdirSync(scope).find((name) => /^copilot-[a-z0-9]+-[a-z0-9]+$/i.test(name));
+    return entry ? join(scope, entry) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Trust level -> Copilot's own permission flags.
+ *
+ * Copilot's permission language is unusually granular for this app: `--deny-tool` takes a
+ * pattern of the form `kind(argument)` where the kinds include `write` (anything that creates or
+ * modifies a file, except via the shell) and `shell(command:*?)` (shell invocations), and
+ * "denial rules always take precedence over allow rules, EVEN --allow-all-tools" (verbatim from
+ * `copilot help permissions`). That is what makes a real middle ground expressible here rather
+ * than approximated, which is not true of most providers in this directory.
+ *
+ * Every mapping below was verified behaviourally with a real turn that was asked to both write
+ * a file and run a shell command, not merely checked for flag acceptance:
+ *
+ *   plan        file NOT created; `apply_patch` blocked ("Plan mode does not permit changes
+ *               outside...") AND `powershell` blocked ("Permission to run this tool was denied
+ *               due to the following rules: `shell`"). Belt and braces on purpose: --mode plan
+ *               is Copilot's own read-only agent mode, and the two deny rules hold even if a
+ *               future build loosens what plan mode itself allows.
+ *   acceptEdits file WAS created via apply_patch; `powershell` blocked by the same `shell` rule.
+ *               Note this proves `shell` matches the concrete tool Copilot actually exposes on
+ *               Windows, which is named `powershell`, not `shell` - the deny kind is about the
+ *               tool's category, not its name, so this does not need a per-platform tool list.
+ *   bypass/auto --allow-all (documented as exactly --allow-all-tools --allow-all-paths
+ *               --allow-all-urls).
+ *
+ * "manual" is the one level Copilot CANNOT honour, and it is treated the same way codex-cli.ts
+ * treats its own gap rather than being quietly faked. Claude Code has --permission-prompt-tool,
+ * which hands each approval decision to an external process we control, so a real card can be
+ * raised in this app's UI and a human can answer it. Copilot has no such hook. Its nearest
+ * relative, --assisted-approval, routes approvals to an LLM "safety judge" INSIDE Copilot -
+ * that is a model deciding, not a person, so presenting it as "approval per action" would tell
+ * the user a human gate exists when none does. Nor can approvals fall through to the terminal:
+ * --allow-all-tools is documented as "required for non-interactive mode", and without it a
+ * headless turn has nobody to answer the prompt.
+ *
+ * So "manual" is NOT offered in core/permissionCatalog.ts for this provider, and the
+ * unreachable case here falls back to the plan-mode flags - the safest option, never a wider
+ * one. An agent that somehow arrives here is over-restricted, which is the failure direction
+ * that cannot hurt anyone.
+ */
+export function copilotPermissionFlags(trustLevel: TrustLevel): string[] {
+  switch (trustLevel) {
+    case "bypassPermissions":
+    case "auto":
+      // Copilot's own documented shorthand for the three --allow-all-* flags together.
+      return ["--allow-all"];
+    case "acceptEdits":
+      // Edits allowed, shell still gated - the deny rule outranks --allow-all-tools.
+      return ["--allow-all-tools", "--allow-all-paths", "--deny-tool=shell"];
+    case "manual":
+    case "plan":
+    default:
+      return ["--mode", "plan", "--allow-all-tools", "--deny-tool=write", "--deny-tool=shell"];
+  }
+}
+
+/**
+ * Copilot takes MCP config as a JSON STRING (or a file path prefixed with "@"), augmenting
+ * ~/.copilot/mcp-config.json for this session only - so nothing is written to the user's global
+ * config, exactly as qwen-code.ts and claude-code.ts avoid doing.
+ *
+ * Verified with a real turn: Copilot emitted
+ * {"type":"session.mcp_server_status_changed","data":{"serverName":"solace","status":"connected"}}
+ * and then listed all three bridge tools in its own tool table.
+ *
+ * env is passed explicitly inside the server entry rather than relied upon through inheritance,
+ * for the reason codex-cli.ts documents: an MCP server the CLI spawns is not guaranteed to
+ * inherit our environment, and without SOLACE_AGENT_ID / SOLACE_TURN_TOKEN the bridge has no
+ * identity and the server refuses every tool call - which presents as an agent that simply never
+ * talks to the group rather than as an error.
+ *
+ * process.execPath rather than "node" so this doesn't depend on whatever PATH Copilot hands its
+ * MCP child. `tools: ["*"]` is Copilot's own opt-in for enabling a server's tools without an
+ * interactive confirmation.
+ */
+export function solaceMcpConfig(agentId: string, serverPort: number, turnToken?: string): string {
+  return JSON.stringify({
+    mcpServers: {
+      [SOLACE_SERVER]: {
+        command: process.execPath,
+        args: [SOLACE_BRIDGE_SCRIPT],
+        tools: ["*"],
+        env: {
+          SOLACE_AGENT_ID: agentId,
+          SOLACE_SERVER_PORT: String(serverPort),
+          ...(turnToken ? { SOLACE_TURN_TOKEN: turnToken } : {}),
+        },
+      },
+    },
+  });
+}
+
+/**
+ * Pure so it can be asserted on without spawning anything - see copilotArgs.test.ts.
+ *
+ * Unlike the other adapters in this directory the prompt IS a parameter here, because Copilot
+ * has no stdin channel for it (see findLoader's note). That is a deliberate, verified exception
+ * and not a regression of the rule: the transport is `node` rather than a .cmd shim precisely so
+ * that a multi-line prompt in argv is safe. The test suite asserts the loader-not-shim
+ * invariant, which is the thing that actually makes this sound.
+ */
+export function buildCopilotArgs(opts: {
+  loader: string;
+  prompt: string;
+  trustLevel: TrustLevel;
+  model?: string;
+  effort?: string;
+  /** The id to resume, or undefined on a first turn. */
+  sessionId?: string;
+  /** The id to register when this is a first turn. */
+  newSessionId: string;
+  agentId: string;
+  serverPort: number;
+  turnToken?: string;
+}): string[] {
+  return [
+    opts.loader,
+    "-p",
+    opts.prompt,
+    "--output-format",
+    "json",
+    // Copilot's --session-id is documented as "Resume an existing session or task by ID, OR set
+    // the UUID for a new session", so the same flag covers both directions and there is no
+    // separate --resume to switch to. Confirmed live in both directions: a first turn with a
+    // UUID we generated came back with that exact id in the terminal {"type":"result",
+    // "sessionId":...} event, and a second turn passing the same id correctly recalled the first
+    // turn's message.
+    //
+    // Deliberately NOT --continue: it "resumes the most recent session", which is scoped to the
+    // machine and not to this agent, so two Copilot agents in one workspace would silently
+    // inherit each other's conversation - the same trap as codex's --last and qwen's -c. See
+    // copilotArgs.test.ts, which asserts it can never appear.
+    "--session-id",
+    opts.sessionId ?? opts.newSessionId,
+    ...copilotPermissionFlags(opts.trustLevel),
+    "--additional-mcp-config",
+    solaceMcpConfig(opts.agentId, opts.serverPort, opts.turnToken),
+    // Copilot's built-in GitHub MCP server is left alone rather than disabled: it is the user's
+    // own configured tooling and turning it off is not this app's call.
+    ...(opts.model ? ["--model", opts.model] : []),
+    // --effort/--reasoning-effort is a real flag with a documented choice list
+    // (none/minimal/low/medium/high/xhigh/max); anything outside it is rejected at parse time,
+    // so the values offered in modelCatalog.ts are exactly that list and nothing is invented.
+    ...(opts.effort ? ["--effort", opts.effort] : []),
+  ];
+}
+
+/**
+ * Copilot writes the not-signed-in failure as PLAIN TEXT on stderr and exits 1, emitting no
+ * JSON at all - not even the terminal `result` event - because the auth check runs before the
+ * JSONL pump is attached. So a parser waiting for `result` sees only EOF, and stderr is the
+ * only evidence there is. Read out of the shipped bundle (app.js, the prompt-mode auth branch)
+ * rather than guessed, and deliberately matched loosely: the point is to recognise the case,
+ * and the CLI's own words are still what gets shown.
+ */
+export function isNotSignedInError(stderr: string): boolean {
+  return /No authentication information found|Authentication token found but could not be validated|not supported by Copilot/i.test(
+    stderr,
+  );
+}
+
+/** What to tell the user when the CLI says it has no credentials. The fix is a real command
+ * they can run, not a generic "check your setup". */
+export const COPILOT_LOGIN_HINT =
+  "GitHub Copilot CLI is installed but not signed in. Run `copilot login` in a terminal, then try again.";
+
+export const copilotCliAdapter: ProviderAdapter = {
+  id: "copilot-cli",
+  async runTurn({
+    cwd,
+    prompt,
+    trustLevel,
+    model,
+    effort,
+    agentId,
+    turnToken,
+    sessionId,
+    onEvent,
+    signal,
+  }: RunTurnOptions): Promise<void> {
+    const serverPort = Number(process.env.PORT ?? 4310);
+    const loader = findLoader();
+    if (!loader) {
+      onEvent({
+        type: "error",
+        message:
+          "Could not find the GitHub Copilot CLI's npm-loader.js on PATH. Install it with `npm install -g @github/copilot`.",
+      });
+      onEvent({ type: "done" });
+      return;
+    }
+
+    // Pick the id ourselves on a first turn so we know it even if the turn dies before we parse
+    // a single line - same reason claude-code.ts does.
+    const resolvedSessionId = sessionId ?? randomUUID();
+    if (!sessionId) onEvent({ type: "session", sessionId: resolvedSessionId });
+
+    const args = buildCopilotArgs({
+      loader,
+      prompt,
+      trustLevel,
+      model,
+      effort,
+      sessionId,
+      newSessionId: resolvedSessionId,
+      agentId,
+      serverPort,
+      turnToken,
+    });
+
+    await new Promise<void>((resolve) => {
+      // "node", not "copilot": see findLoader. spawnCli still guards everything else.
+      const child = spawnCli(process.execPath, args, {
+        cwd,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          SOLACE_AGENT_ID: agentId,
+          SOLACE_SERVER_PORT: String(serverPort),
+          ...(turnToken ? { SOLACE_TURN_TOKEN: turnToken } : {}),
+        },
+      });
+
+      const rl = readline.createInterface({ input: child.stdout! });
+
+      let aborted = false;
+      const onAbort = () => {
+        aborted = true;
+        // Not child.kill(): on Windows that leaves the real CLI (and the per-turn MCP bridge it
+        // spawned) running against a turn we already gave up on. See killCliTree.
+        killCliTree(child);
+      };
+      signal?.addEventListener("abort", onAbort);
+
+      let reportedModel: string | undefined;
+      // Copilot streams reasoning as many tiny deltas and then never restates it whole, so it
+      // is accumulated per reasoningId and flushed once, rather than emitting one "reasoning"
+      // event per word.
+      const reasoning = new Map<string, string>();
+      const flushReasoning = () => {
+        for (const [, text] of reasoning) {
+          if (text.trim()) onEvent({ type: "reasoning", text });
+        }
+        reasoning.clear();
+      };
+
+      rl.on("line", (line) => {
+        if (!line.trim()) return;
+        let event: Record<string, unknown>;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          // Non-JSON line - surface it rather than dropping it silently.
+          onEvent({ type: "text", text: line });
+          return;
+        }
+        const type = event.type as string | undefined;
+        const data = (event.data ?? {}) as Record<string, unknown>;
+
+        // Copilot's real JSONL vocabulary, captured from live turns. Anything not handled here
+        // is intentionally ignored rather than guessed at - but the three that carry actual
+        // content (assistant.message, assistant.reasoning_delta, result) are all covered, which
+        // is the mistake this file is written to avoid repeating.
+        switch (type) {
+          case "session.auto_mode_resolved": {
+            // `--model auto` routes server-side, so this is the only statement of which model
+            // will actually answer. Reported for the same reason claude-code.ts reports its
+            // resolved model: an alias that could be any of several models is not an answer.
+            const chosen = data.chosenModel;
+            if (typeof chosen === "string" && chosen && chosen !== reportedModel) {
+              reportedModel = chosen;
+              onEvent({ type: "model", model: chosen });
+            }
+            break;
+          }
+          case "assistant.reasoning_delta": {
+            const id = typeof data.reasoningId === "string" ? data.reasoningId : "";
+            const delta = typeof data.deltaContent === "string" ? data.deltaContent : "";
+            if (delta) reasoning.set(id, (reasoning.get(id) ?? "") + delta);
+            break;
+          }
+          case "assistant.message": {
+            // The settled message. Preferred over the assistant.message_delta stream because it
+            // is the only place the COMPLETE tool arguments appear: assistant.tool_call_delta
+            // carries `inputDelta` fragments of a JSON string ("{\"", "command", ...) which
+            // would have to be reassembled and could not be trusted mid-stream.
+            flushReasoning();
+            const modelId = data.model;
+            if (typeof modelId === "string" && modelId && modelId !== reportedModel) {
+              reportedModel = modelId;
+              onEvent({ type: "model", model: modelId });
+            }
+            const content = data.content;
+            if (typeof content === "string" && content.trim()) onEvent({ type: "text", text: content });
+            const requests = data.toolRequests;
+            if (Array.isArray(requests)) {
+              for (const raw of requests) {
+                const req = raw as { name?: unknown; arguments?: unknown; intentionSummary?: unknown };
+                if (typeof req?.name !== "string" || !req.name) continue;
+                // toolName and input passed through unflattened so core/toolLabel.ts can derive
+                // a human label from the real argument values.
+                onEvent({
+                  type: "tool-use",
+                  description:
+                    typeof req.intentionSummary === "string" && req.intentionSummary
+                      ? req.intentionSummary
+                      : `${req.name}(${JSON.stringify(req.arguments)})`,
+                  toolName: req.name,
+                  input: req.arguments,
+                });
+              }
+            }
+            break;
+          }
+          case "result": {
+            // Terminal event. Copilot reports AI-credit consumption and wall-clock time, but no
+            // input/output token counts and no dollar cost on this event, so TurnUsage carries
+            // only what was actually stated - nothing is derived from a rate card this app has
+            // no way to know is current.
+            const sid = event.sessionId;
+            if (typeof sid === "string" && sid && sid !== resolvedSessionId) {
+              // Belt and braces: if the CLI ever rejects our id or forks the session, the stream
+              // is the authority on what the session actually is.
+              onEvent({ type: "session", sessionId: sid });
+            }
+            break;
+          }
+          case "session.usage_checkpoint": {
+            // The only place real token counts appear. Copilot nests them inside its prompt
+            // cache bookkeeping, one entry per conversation per model; the main conversation's
+            // entry is the turn's own usage.
+            const states = data.promptCacheBreakState;
+            if (!Array.isArray(states)) break;
+            for (const raw of states) {
+              const models = (raw as { models?: Record<string, unknown> })?.models;
+              if (!models) continue;
+              for (const value of Object.values(models)) {
+                const m = value as { prompt_tokens?: unknown };
+                if (typeof m?.prompt_tokens === "number") {
+                  onEvent({ type: "usage", usage: { inputTokens: m.prompt_tokens } });
+                }
+              }
+            }
+            break;
+          }
+          default:
+            break;
+        }
+      });
+
+      let stderrBuffer = "";
+      child.stderr!.on("data", (chunk) => {
+        stderrBuffer += chunk.toString();
+      });
+
+      child.on("close", (code) => {
+        signal?.removeEventListener("abort", onAbort);
+        flushReasoning();
+        if (aborted) {
+          // Why it was aborted is the caller's knowledge, not ours - see AdapterEvent.cancelled.
+          onEvent({ type: "cancelled" });
+        } else if (code !== 0) {
+          // stderr is the only channel a failure can use: Copilot's JSONL stream carries no
+          // error event at all, and on the auth path it emits no JSON whatsoever.
+          const stderr = stderrBuffer.trim();
+          // The not-signed-in case gets the real fix appended to Copilot's own words, because
+          // the CLI's message names three alternatives and the one that applies here is the
+          // login command. Everything else is passed through verbatim.
+          if (isNotSignedInError(stderr)) {
+            onEvent({ type: "error", message: `${COPILOT_LOGIN_HINT}\n\n${stderr}` });
+          } else if (stderr) {
+            onEvent({ type: "error", message: stderr });
+          }
+        }
+        onEvent({ type: "done" });
+        resolve();
+      });
+
+      child.on("error", (err) => {
+        signal?.removeEventListener("abort", onAbort);
+        onEvent({ type: "error", message: `failed to start the Copilot CLI: ${err.message}` });
+        onEvent({ type: "done" });
+        resolve();
+      });
+    });
+  },
+};

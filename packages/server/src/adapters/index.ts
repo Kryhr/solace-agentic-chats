@@ -7,12 +7,14 @@ import { openaiApiAdapter } from "./openai-api";
 import { customApiAdapter } from "./custom-api";
 import { geminiCliAdapter } from "./gemini-cli";
 import { qwenCodeAdapter } from "./qwen-code";
+import { copilotCliAdapter } from "./copilot-cli";
 
 const cliAdapters: Record<CliProviderId, ProviderAdapter> = {
   "claude-code": claudeCodeAdapter,
   "codex-cli": codexCliAdapter,
   "gemini-cli": geminiCliAdapter,
   "qwen-code": qwenCodeAdapter,
+  "copilot-cli": copilotCliAdapter,
 };
 
 // Only claude-code and codex-cli have a direct-API-key alternative today. Gemini and Qwen have
