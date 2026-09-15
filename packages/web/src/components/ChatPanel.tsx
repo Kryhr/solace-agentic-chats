@@ -1,46 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { AgentConfig, AgentStatus, ChatMessage, ProviderModelInfo, ProviderRateLimit } from "@solace/shared";
 import { ProviderIcon, UserAvatar } from "./ProviderIcon";
-import { UsageMeter } from "./UsageMeter";
-import { SendIcon } from "./SendIcon";
+import { Composer } from "./Composer";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 import { useEntranceTracker } from "../lib/useEntranceTracker";
+import { displayText, isErrorLine, isToolUse } from "../lib/messageKind";
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
-
-/** Finds the "@partial" token touching the cursor, so we know what to autocomplete. */
-function findMentionQuery(text: string, cursor: number): { start: number; query: string } | null {
-  const upToCursor = text.slice(0, cursor);
-  const at = upToCursor.lastIndexOf("@");
-  if (at === -1) return null;
-  const between = upToCursor.slice(at + 1);
-  if (/\s/.test(between)) return null; // the "@" isn't part of the token under the cursor anymore
-  return { start: at, query: between };
-}
-
-const SLASH_COMMANDS = [
-  { name: "task", hint: "@handle <description>" },
-  { name: "status", hint: "" },
-  { name: "usage", hint: "" },
-  { name: "reset", hint: "(from an agent's hub)" },
-  { name: "github", hint: "status | init <repo-name>" },
-  { name: "clear", hint: "" },
-  { name: "model", hint: "<value> (from an agent's hub)" },
-  { name: "effort", hint: "<value> (from an agent's hub)" },
-  { name: "help", hint: "" },
-];
-
-/** Only offered while typing the very first token of the message and it starts with "/". */
-function findSlashQuery(text: string, cursor: number): string | null {
-  if (!text.startsWith("/")) return null;
-  const upToCursor = text.slice(0, cursor);
-  if (/\s/.test(upToCursor)) return null;
-  return upToCursor.slice(1);
-}
-
-const MAX_COMPOSER_HEIGHT = 160;
 
 export function ChatPanel({
   history,
@@ -48,6 +16,7 @@ export function ChatPanel({
   statuses,
   modelCatalog,
   rateLimits,
+  connected,
   onSend,
 }: {
   history: ChatMessage[];
@@ -55,27 +24,15 @@ export function ChatPanel({
   statuses: Record<string, AgentStatus>;
   modelCatalog: ProviderModelInfo[];
   rateLimits: ProviderRateLimit[];
+  connected: boolean;
   onSend: (text: string) => Promise<void>;
 }) {
-  const [draft, setDraft] = useState("");
-  const [cursor, setCursor] = useState(0);
-  const [highlighted, setHighlighted] = useState(0);
-  const [sendError, setSendError] = useState<string | null>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
   const historyRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
 
   const agentById = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
-  const mention = findMentionQuery(draft, cursor);
-  const mentionSuggestions = mention
-    ? agents.filter((a) => a.handle.toLowerCase().startsWith(mention.query.toLowerCase()))
-    : [];
-  const slashQuery = mention ? null : findSlashQuery(draft, cursor);
-  const slashSuggestions =
-    slashQuery !== null ? SLASH_COMMANDS.filter((c) => c.name.startsWith(slashQuery.toLowerCase())) : [];
-  const hasSuggestions = mentionSuggestions.length > 0 || slashSuggestions.length > 0;
-
   const thinkingAgents = agents.filter((a) => statuses[a.id]?.state === "thinking");
+  const erroredAgents = agents.filter((a) => statuses[a.id]?.state === "error");
   const trackEntrance = useEntranceTracker();
 
   // Auto-scroll to the newest message, but only when the reader was already near the
@@ -93,103 +50,42 @@ export function ChatPanel({
     stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   };
 
-  const resizeComposer = () => {
-    const el = inputRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, MAX_COMPOSER_HEIGHT)}px`;
-  };
-
-  const acceptMention = (handle: string) => {
-    if (!mention) return;
-    const before = draft.slice(0, mention.start);
-    const after = draft.slice(cursor);
-    const next = `${before}@${handle} ${after}`;
-    setDraft(next);
-    const nextCursor = before.length + handle.length + 2;
-    requestAnimationFrame(() => {
-      inputRef.current?.setSelectionRange(nextCursor, nextCursor);
-      inputRef.current?.focus();
-      resizeComposer();
-    });
-    setCursor(nextCursor);
-    setHighlighted(0);
-  };
-
-  const acceptSlashCommand = (name: string) => {
-    const next = `/${name} `;
-    setDraft(next);
-    requestAnimationFrame(() => {
-      inputRef.current?.setSelectionRange(next.length, next.length);
-      inputRef.current?.focus();
-      resizeComposer();
-    });
-    setCursor(next.length);
-    setHighlighted(0);
-  };
-
-  const submit = () => {
-    const text = draft.trim();
-    if (!text) return;
-    setSendError(null);
-    // Clear optimistically so typing feels instant - but if the request actually fails (most
-    // commonly: the dev server just hot-reloaded and the WS/HTTP layer hasn't reconnected yet),
-    // put the text back instead of letting it silently vanish with no trace anything went
-    // wrong. Only restore into an empty box, so it doesn't clobber something new the user
-    // already started typing while the failed request was in flight.
-    onSend(text).catch(() => {
-      setSendError("Couldn't send - the connection may have dropped. Your message is back in the box.");
-      setDraft((current) => (current === "" ? text : current));
-    });
-    setDraft("");
-    setCursor(0);
-    // Sending a message is a deliberate "I'm back in this conversation" signal, even if the
-    // reader had scrolled up to review earlier history - snap back to the bottom so the
-    // message they just sent (and the reply that follows) is visible without a manual scroll.
-    stickToBottom.current = true;
-    requestAnimationFrame(() => {
-      resizeComposer();
-      if (historyRef.current) historyRef.current.scrollTop = historyRef.current.scrollHeight;
-    });
-  };
-
-  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (hasSuggestions) {
-      const count = mentionSuggestions.length || slashSuggestions.length;
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setHighlighted((h) => (h + 1) % count);
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setHighlighted((h) => (h - 1 + count) % count);
-        return;
-      }
-      if (e.key === "Enter" || e.key === "Tab") {
-        e.preventDefault();
-        if (mentionSuggestions.length > 0) acceptMention(mentionSuggestions[highlighted].handle);
-        else acceptSlashCommand(slashSuggestions[highlighted].name);
-        return;
-      }
-      if (e.key === "Escape") {
-        setCursor(-1); // force both lookups to miss until the user moves the caret again
-        return;
-      }
-    }
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      submit();
-    }
-  };
-
-  const isErrorLine = (text: string) => text.startsWith("error: ");
-  const isToolUse = (text: string) => text.startsWith("_used ") && text.endsWith("_");
-
   const shouldAnimate = trackEntrance(history.map((m) => m.id));
 
   return (
     <div className="chat">
+      {/* The group view had no header at all while the hub had one, so the two halves of the
+          app disagreed about where controls live and there was nowhere to put a view-level
+          action. Mirrors .hub-page-header's structure so both read as the same page chrome. */}
+      <div className="hub-page-header chat-header">
+        <div className="hub-page-identity">
+          <h2>Group chat</h2>
+          <span className="hub-subtitle">
+            {agents.length === 0
+              ? "no agents yet"
+              : `${agents.length} agent${agents.length === 1 ? "" : "s"}`}
+            {thinkingAgents.length > 0 && (
+              <>
+                <span className="sep">·</span>
+                {thinkingAgents.length} working
+              </>
+            )}
+            {erroredAgents.length > 0 && (
+              <>
+                <span className="sep">·</span>
+                <span className="hub-subtitle-error">
+                  {erroredAgents.length} errored
+                </span>
+              </>
+            )}
+          </span>
+        </div>
+
+        {/* Slot for the group-chat action row. The "Save chat" button lands here in a later
+            phase; the container exists now so it has a home that matches the hub's. */}
+        <div className="hub-page-actions chat-header-actions" />
+      </div>
+
       <div className="chat-history" ref={historyRef} onScroll={onHistoryScroll}>
         {history.length === 0 && (
           <div className="chat-empty">
@@ -210,8 +106,10 @@ export function ChatPanel({
           const isUser = m.authorId === "user";
           const isSystem = m.authorId === "system";
           const author = agentById.get(m.authorId);
-          const text = isToolUse(m.text) ? m.text.slice(6, -1) : m.text;
-          const showModel = !isUser && !isSystem && !isToolUse(m.text) && !isErrorLine(m.text);
+          const toolUse = isToolUse(m.text);
+          const errorLine = isErrorLine(m.text);
+          const text = displayText(m.text);
+          const showModel = !isUser && !isSystem && !toolUse && !errorLine;
           const modelLabel =
             m.model || (author ? modelCatalog.find((c) => c.provider === author.provider)?.currentDefaultModel : undefined);
           const enter = shouldAnimate(m.id) ? "message-enter" : "";
@@ -249,11 +147,7 @@ export function ChatPanel({
                   ))}
                   <span className="meta-time">{formatTime(m.createdAt)}</span>
                 </div>
-                <div
-                  className={`body ${isToolUse(m.text) ? "tool-use" : ""} ${isErrorLine(m.text) ? "error-line" : ""}`}
-                >
-                  {text}
-                </div>
+                <div className={`body ${toolUse ? "tool-use" : ""} ${errorLine ? "error-line" : ""}`}>{text}</div>
               </div>
             </div>
           );
@@ -262,79 +156,23 @@ export function ChatPanel({
           <ThinkingIndicator key={a.id} label={`${a.handle} is working…`} />
         ))}
       </div>
-      <div className="composer-wrap">
-        {mentionSuggestions.length > 0 && (
-          <div className="mention-menu">
-            {mentionSuggestions.map((a, i) => (
-              <button
-                key={a.id}
-                className={`mention-option ${i === highlighted ? "active" : ""}`}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  acceptMention(a.handle);
-                }}
-              >
-                <ProviderIcon provider={a.provider} size={18} />
-                <span>{a.handle}</span>
-              </button>
-            ))}
-          </div>
-        )}
-        {slashSuggestions.length > 0 && (
-          <div className="mention-menu">
-            {slashSuggestions.map((c, i) => (
-              <button
-                key={c.name}
-                className={`mention-option ${i === highlighted ? "active" : ""}`}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  acceptSlashCommand(c.name);
-                }}
-              >
-                <span className="slash-command-name">/{c.name}</span>
-                {c.hint && <span className="slash-command-hint">{c.hint}</span>}
-              </button>
-            ))}
-          </div>
-        )}
-        <div className="composer">
-          {sendError && <div className="composer-error">{sendError}</div>}
-          <div className="composer-field">
-            <textarea
-              ref={inputRef}
-              rows={1}
-              value={draft}
-              aria-label="Message the group chat"
-              placeholder="Message the group…"
-              onChange={(e) => {
-                setDraft(e.target.value);
-                setCursor(e.target.selectionStart ?? e.target.value.length);
-                setHighlighted(0);
-                if (sendError) setSendError(null);
-                resizeComposer();
-              }}
-              onKeyUp={(e) => setCursor(e.currentTarget.selectionStart ?? 0)}
-              onClick={(e) => setCursor(e.currentTarget.selectionStart ?? 0)}
-              onKeyDown={onKeyDown}
-            />
-            <UsageMeter rateLimits={rateLimits} providersInUse={[...new Set(agents.map((a) => a.provider))]} />
-            <button className="send-btn" onClick={submit} disabled={!draft.trim()} aria-label="Send message" title="Send · Enter">
-              <SendIcon />
-            </button>
-          </div>
-          <div className="composer-hint">
-            <span>
-              No <code>@</code> → everyone replies · <code>@handle</code> → just them
-            </span>
-            <span>
-              <code>/</code> commands
-            </span>
-            <span>
-              <code>Shift</code> + <code>Enter</code> for a new line
-            </span>
-          </div>
-        </div>
-      </div>
+
+      <Composer
+        placeholder={connected ? "Message the group…" : "Reconnecting…"}
+        ariaLabel="Message the group chat"
+        mentionAgents={agents}
+        usage={{ rateLimits, providersInUse: [...new Set(agents.map((a) => a.provider))] }}
+        onSend={onSend}
+        onSubmitted={() => {
+          // Sending a message is a deliberate "I'm back in this conversation" signal, even if
+          // the reader had scrolled up to review earlier history - snap back to the bottom so
+          // the message they just sent (and the reply that follows) is visible.
+          stickToBottom.current = true;
+          requestAnimationFrame(() => {
+            if (historyRef.current) historyRef.current.scrollTop = historyRef.current.scrollHeight;
+          });
+        }}
+      />
     </div>
   );
 }

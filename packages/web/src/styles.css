@@ -555,7 +555,7 @@ body {
   grid-template-columns: auto minmax(0, 1fr);
   grid-template-rows: auto auto;
   column-gap: var(--space-2);
-  row-gap: 3px;
+  row-gap: var(--space-1);
   align-items: center;
   padding: var(--space-2);
   border: 1px solid transparent;
@@ -583,14 +583,20 @@ body {
   grid-row: span 2;
   position: relative;
   align-self: start;
+  display: block;
+  /* Optical, not mathematical: start-aligned so the glyph reads as level with the handle's
+     cap-height rather than with the line box's top edge. */
   margin-top: 1px;
 }
 
-/* status travels with the identity glyph rather than sitting on its own line */
+/* status travels with the identity glyph rather than sitting on its own line.
+   Sits inside the avatar's own box: at -2px it overflowed into the column gap, which
+   ate 2px of the gutter between the glyph and the handle and made the avatar column
+   measure wider than the 24px icon it contains. */
 .agent-avatar .status-dot {
   position: absolute;
-  right: -2px;
-  bottom: -2px;
+  right: 0;
+  bottom: 0;
   box-shadow: 0 0 0 2px var(--panel);
 }
 .agent-row:hover .agent-avatar .status-dot {
@@ -629,18 +635,26 @@ body {
 
 .agent-row-bottom {
   display: flex;
-  align-items: center;
+  /* Top-aligned rather than centred: the task line can now run to two lines, and a centred
+     trust chip next to a two-line description floats in the middle of nothing. */
+  align-items: flex-start;
   gap: var(--space-2);
   min-width: 0;
 }
 
+/* Two lines, clamped. A real task description ("reconciling the broker fill log against…")
+   lost its verb to a single-line clamp roughly every time, which made the busiest row in
+   the sidebar also the least informative one. Two lines is enough to carry the subject. */
 .task-line {
   color: var(--text-muted);
   font-size: var(--text-xs);
   line-height: var(--lh-snug);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
   min-width: 0;
   flex: 1;
 }
@@ -2414,5 +2428,267 @@ body {
   font-size: var(--text-xs);
   color: var(--text-muted);
   line-height: 1.45;
+}
+
+/* =========================================================================
+   UI refresh pass — appended block.
+   Everything below is new and scoped to classes introduced by this pass, or
+   is a deliberate override of a rule above it (each of those says why).
+   Kept in one block so it merges mechanically against concurrent work in
+   the Connections section.
+
+   Token discipline as per the file header: every value here resolves to an
+   existing var. No new scales and no one-off pixels except optical nudges,
+   which are commented as such.
+   ========================================================================= */
+
+/* ---- readable measure --------------------------------------------------
+   --chat-col-max is min(1100px, 92%), which is the right width for the row
+   (avatar gutter, timestamps, tool rails) but not for the prose inside it:
+   at 1440px it put ~150 characters on a line, roughly double a comfortable
+   measure. The row keeps its width; the text gets a measure. */
+.message .body {
+  max-width: 74ch;
+}
+/* Mono runs narrower per character, so it gets its own cap rather than
+   inheriting a measure tuned for the sans face. */
+.message .body.tool-use,
+.message .body.error-line {
+  max-width: 88ch;
+}
+
+/* ---- group chat header -------------------------------------------------
+   Shares .hub-page-header so the two views have identical page chrome; only
+   the bits that differ are set here. */
+.chat-header {
+  gap: var(--space-3);
+}
+
+/* No back button on the group view, so the identity block starts the row and
+   stacks its title over its subtitle instead of sitting beside a glyph. */
+.chat-header .hub-page-identity {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+
+/* Intentionally empty until the Save chat button lands. It still reserves
+   the right-hand slot, so adding that button is a markup change with no
+   layout change. */
+.chat-header-actions {
+  margin-left: auto;
+  min-height: 24px;
+}
+
+.hub-subtitle-error {
+  color: var(--danger);
+}
+
+/* ---- empty states ------------------------------------------------------ */
+
+/* A second line under the empty-state body, for the reason nothing is
+   happening (agent not started) rather than for what to type. */
+.chat-empty-note {
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  font-size: var(--text-xs);
+  line-height: var(--lh-snug);
+  color: var(--text-muted);
+}
+
+/* Was a bare faint sentence in a gap, which read as a rendering failure
+   rather than as a state. A dashed well says "nothing here yet" on purpose. */
+.sidebar-empty {
+  margin: var(--space-1) 0 var(--space-2);
+  padding: var(--space-3);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* ---- tool-use disclosure (hub) -----------------------------------------
+   Reuses .archive-entry wholesale; these rules only quiet it down for a
+   transcript, where it sits among messages rather than in a list of its own. */
+
+/* The disclosure replaces a message body, so it lines up with the message
+   column rather than with the avatar gutter beside it. */
+.tool-run-row {
+  padding-left: calc(22px + var(--space-3));
+}
+
+.tool-run {
+  background: transparent;
+  border-color: var(--border);
+}
+.tool-run:hover {
+  background: var(--surface-1);
+}
+
+.tool-run-header {
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-muted);
+}
+
+.tool-run-title {
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--text-muted);
+  letter-spacing: var(--tracking-tight);
+}
+.tool-run-header:hover .tool-run-title {
+  color: var(--text-secondary);
+}
+
+/* The closed row previews the most recent call, so a collapsed group still
+   says what the agent is actually doing. */
+.tool-run-latest {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-faint);
+  min-width: 0;
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-run-body {
+  gap: var(--space-1);
+  background: var(--surface-1);
+}
+
+.tool-run-line {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--lh-snug);
+  color: var(--text-muted);
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+/* .archive-entry sets overflow:hidden, which clips the offset focus ring on
+   its header button. Keyboard focus has to stay visible, so this disclosure
+   uses the tight (inset-safe) ring instead. */
+.archive-entry-header:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-tight);
+  border-radius: var(--radius-sm);
+}
+
+/* ---- interactive states ------------------------------------------------
+   Filling in the states left at browser defaults: pressed, focus, disabled
+   and in-flight. Hover was the only designed state on several of these. */
+
+.mention-option:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-tight);
+}
+.mention-option:active {
+  background: var(--surface-3);
+}
+
+.back-btn:focus-visible,
+.add-agent-btn:focus-visible,
+.nav-row:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-tight);
+}
+
+.add-agent-btn:disabled,
+.back-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Send is async and previously looked identical while the request was in
+   flight and after it resolved. The button is disabled for the duration and
+   the icon breathes, reusing the existing keyframe rather than adding one. */
+.send-btn.is-sending {
+  cursor: progress;
+}
+.send-btn.is-sending svg {
+  animation: breathe 1.6s var(--ease-in-out) infinite;
+}
+
+.trust-select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Non-interactive text inside an interactive row should not inherit the
+   row's pointer cursor. */
+.agent-model-tag,
+.task-line,
+.message .meta-time {
+  cursor: default;
+}
+
+/* ---- spacing normalisation ---------------------------------------------
+   Values that were off the 4px scale in the rules above. */
+.composer-hint {
+  margin-top: var(--space-2);
+  flex-wrap: wrap;
+  row-gap: var(--space-1);
+}
+
+.add-agent-btn {
+  margin-top: var(--space-1);
+}
+
+.hub-subtitle {
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+}
+
+.hub-page-settings label {
+  gap: var(--space-1);
+}
+
+.back-btn {
+  gap: var(--space-1);
+}
+
+/* ---- narrow widths -----------------------------------------------------
+   A previous session found the composer collapsing to a one-character
+   column here: the textarea is a flex child, so once the field's other
+   children (usage trigger, send button) plus padding exceeded the
+   container, flex-shrink took the width out of the only shrinkable child.
+   A real min-width on the textarea stops that. */
+.composer-field {
+  min-width: 0;
+}
+.composer-field textarea {
+  min-width: 6ch;
+}
+
+@media (max-width: 600px) {
+  .chat-header {
+    padding: var(--space-3) var(--space-4);
+  }
+
+  .chat-header .hub-page-identity h2 {
+    font-size: var(--text-lg);
+  }
+
+  /* At this width the avatar gutter is a meaningful share of the line, and
+     the disclosure reads fine flush with the rest of the transcript. */
+  .tool-run-row {
+    padding-left: 0;
+  }
+
+  /* The preview is the first thing to go when there isn't room for both it
+     and the count; the count is what the control is for. */
+  .tool-run-latest {
+    display: none;
+  }
+
+  .agent-model-tag {
+    max-width: 120px;
+  }
 }
 
