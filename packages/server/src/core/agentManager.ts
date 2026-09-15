@@ -156,10 +156,27 @@ interface AgentRuntime {
   interruptTimer?: NodeJS.Timeout;
 }
 
-/** Large open-ended asks (e.g. "build a whole site") can legitimately take a while, but a
- * turn must eventually end so a genuinely stuck CLI doesn't leave an agent stuck "thinking"
- * forever with no feedback. */
-export const MAX_TURN_MS = 15 * 60 * 1000;
+/**
+ * The absolute ceiling on one turn. Deliberately generous: this is the backstop for a turn
+ * that keeps emitting forever, NOT the normal way a turn ends.
+ *
+ * This used to be 15 minutes of wall-clock time measured from the start of the turn, which
+ * killed agents that were working perfectly. Observed live: two agents were building a site
+ * together, one of them streaming tool calls and progress the whole time, and it was cut off
+ * mid-build with "turn stopped after 15 minutes without finishing" - our own timer, reported
+ * as if the provider had failed. "Build this site" is exactly the kind of ask this app exists
+ * for, and those take longer than fifteen minutes.
+ */
+export const MAX_TURN_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * How long a turn may produce NOTHING before it is treated as hung.
+ *
+ * This is the check that actually matters. A working CLI emits constantly - text, tool
+ * calls, usage - so silence is the real signal of a stuck process, where elapsed time is
+ * only a signal that the task was big. Any adapter event resets it.
+ */
+export const MAX_TURN_IDLE_MS = 5 * 60 * 1000;
 
 /** How many agent-to-agent @mention hops are allowed before a chain is cut off. Two agents
  * mentioning each other back and forth is legitimate collaboration, not a bug - but with no
@@ -1249,6 +1266,12 @@ export class AgentManager {
 
     let hadError = false;
     let cancelled = false;
+    /** Which limit ended the turn, so the message can say what actually happened rather than
+     * quoting a duration the turn may not have reached. */
+    let timedOutBecause: "idle" | "ceiling" | undefined;
+    // Declared out here so the finally below can always disarm them, whatever happens inside.
+    let turnTimeout: NodeJS.Timeout | undefined;
+    let idleTimeout: NodeJS.Timeout | undefined;
     let lastText = "";
     const chatTurnId = isChatChannel(replyChannel) ? replyChannel.chatId : undefined;
     const isGroupTurn = chatTurnId !== undefined;
@@ -1330,12 +1353,21 @@ export class AgentManager {
       const baseUrl = secrets?.baseUrl;
       const controller = new AbortController();
       runtime.activeController = controller;
-      const turnTimeout = setTimeout(() => {
+      // Two separate limits, because they mean different things. The idle timer is the one
+      // that fires in practice; the ceiling only catches a turn that never stops talking.
+      const giveUp = (reason: "idle" | "ceiling") => {
+        timedOutBecause = reason;
         runtime.abortKind = "timeout";
         controller.abort();
         // A killed turn shouldn't leave a live approval card in the UI for it.
         this.approvals?.expireForAgent(agentId);
-      }, turnBudgetMs);
+      };
+      turnTimeout = setTimeout(() => giveUp("ceiling"), turnBudgetMs);
+      idleTimeout = setTimeout(() => giveUp("idle"), MAX_TURN_IDLE_MS);
+      const noteActivity = () => {
+        clearTimeout(idleTimeout);
+        idleTimeout = setTimeout(() => giveUp("idle"), MAX_TURN_IDLE_MS);
+      };
       await adapter.runTurn({
         cwd: runtime.config.cwd,
         prompt,
@@ -1353,6 +1385,7 @@ export class AgentManager {
         sessionId: runtime.sessionId,
         signal: controller.signal,
         onEvent: (event) => {
+          noteActivity();
           if (event.type === "text" && event.text.trim()) {
             // Group chat is a coordination channel, not a transcript: it only ever sees an
             // agent's final answer for the turn, posted once the turn completes below. Every
@@ -1410,7 +1443,6 @@ export class AgentManager {
           }
         },
       });
-      clearTimeout(turnTimeout);
     } catch (err) {
       // An aborted fetch rejects rather than emitting a "cancelled" event (the API adapters
       // have no child process to kill), so the abort reason is the authority here, not the
@@ -1423,6 +1455,12 @@ export class AgentManager {
         runtime.lastError = message;
         post(replyChannel, `error: ${message}`, { agentKind: "error" });
       }
+    } finally {
+      // In a finally, not after the await: if runTurn throws, both timers were still armed
+      // and would fire later against a controller whose turn had already ended - aborting
+      // whatever turn happened to be running by then.
+      clearTimeout(turnTimeout);
+      clearTimeout(idleTimeout);
     }
 
     // Captured before the cleanup at the bottom clears abortKind, and used to suppress the
@@ -1441,7 +1479,13 @@ export class AgentManager {
       // schedule a rate-limit retry for a turn that never actually failed.
       if (runtime.abortKind === "timeout") {
         hadError = true;
-        runtime.lastError = `turn stopped after ${Math.round(turnBudgetMs / 60000)} minutes without finishing`;
+        // Name the limit that actually fired. The old message quoted a duration the turn had
+        // not necessarily reached, which read as "the provider gave up" when the truth was
+        // "we stopped it".
+        runtime.lastError =
+          timedOutBecause === "ceiling"
+            ? `turn stopped after ${Math.round(turnBudgetMs / 3600000)}h - it hit this app's maximum turn length while still producing output`
+            : `turn stopped: no output for ${Math.round(MAX_TURN_IDLE_MS / 60000)} minutes, so it was treated as stuck`;
         post(replyChannel, `error: ${runtime.lastError}`, { agentKind: "error" });
       } else if (runtime.abortKind === "stop" && this.agents.has(runtime.config.id)) {
         post(ownChannel, "_stopped before this turn finished_", { agentKind: "progress" });

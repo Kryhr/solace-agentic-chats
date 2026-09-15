@@ -72,8 +72,10 @@ test("a resumed turn inherits the remaining budget, not a fresh one", () => {
   assert.equal(resumeBudgetMs(undefined), MAX_TURN_MS);
   assert.equal(resumeBudgetMs({ ofTurnId: "a", count: 1, elapsedMs: 5 * 60_000 }), MAX_TURN_MS - 5 * 60_000);
   // Repeated interruption must not reset the clock - this is the arithmetic that stops an agent
-  // interrupted every ten minutes from running forever.
-  assert.equal(resumeBudgetMs({ ofTurnId: "a", count: 3, elapsedMs: 14 * 60_000 }), 60_000);
+  // interrupted over and over from running forever. Expressed relative to MAX_TURN_MS rather
+  // than against a hardcoded duration: this previously asserted 14 minutes against a 15-minute
+  // ceiling, so raising the ceiling broke a test that was really about the one-minute floor.
+  assert.equal(resumeBudgetMs({ ofTurnId: "a", count: 3, elapsedMs: MAX_TURN_MS - 30_000 }), 60_000);
   assert.equal(resumeBudgetMs({ ofTurnId: "a", count: 3, elapsedMs: MAX_TURN_MS * 5 }), 60_000);
 });
 
