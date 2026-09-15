@@ -4,6 +4,7 @@ import { getAdapter } from "../adapters";
 import { ChatBus } from "./chatBus";
 import { parseMentions } from "./mentions";
 import type { ApprovalRegistry } from "./approvalRegistry";
+import { extractLocalUrlClaims, findUnreachableClaims, unreachableClaimNotice } from "./claimCheck";
 import { getCredentialSecrets } from "./credentials";
 import { WORKSPACE_ROOT } from "./workspace";
 
@@ -618,6 +619,13 @@ export class AgentManager {
       }
     }
 
+    // Deliberately not awaited: this does real (short) network waits, and the turn is already
+    // finished - holding the agent "thinking" while we fact-check it would be worse than the
+    // note arriving a couple of seconds late.
+    if (lastText.trim() && !hadError) {
+      void this.checkLocalUrlClaims(runtime.config.id, lastText, replyChannel);
+    }
+
     runtime.activeController = undefined;
     runtime.currentTurn = undefined;
     runtime.busy = false;
@@ -625,5 +633,28 @@ export class AgentManager {
     this.emitStatus(agentId);
     this.onChange?.(); // this turn is no longer outstanding - persist that too
     void this.drainQueue(agentId); // pick up anything queued while this turn ran
+  }
+
+  /**
+   * Fact-check any localhost URL an agent just claimed, and post an honest note if nothing is
+   * actually listening there - see claimCheck.ts for why a prompt-level instruction wasn't
+   * enough. The note is a system message, never attributed to the agent, and only ever states
+   * an observed failed connection.
+   */
+  private async checkLocalUrlClaims(agentId: string, text: string, channel: ChatChannel) {
+    const claims = extractLocalUrlClaims(text);
+    if (claims.length === 0) return;
+    const unreachable = await findUnreachableClaims(claims);
+    if (unreachable.length === 0) return;
+    if (!this.agents.has(agentId)) return; // agent removed while we were probing
+    this.bus.postMessage({
+      id: nanoid(),
+      channel,
+      authorId: "system",
+      authorHandle: "system",
+      mentions: [],
+      text: unreachableClaimNotice(unreachable, new Date()),
+      createdAt: new Date().toISOString(),
+    });
   }
 }
