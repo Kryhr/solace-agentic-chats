@@ -100,6 +100,8 @@ const LABELS: Record<string, Labeller> = {
   write: (i) => withFile("Writing", i, "file_path", "path", "absolute_path"),
   write_file: (i) => withFile("Writing", i, "file_path", "absolute_path", "path"),
   edit: (i) => withFile("Editing", i, "file_path", "path", "absolute_path"),
+  // The OpenAI-compatible adapter's own edit tool (adapters/custom-api.ts + core/agentTools.ts).
+  edit_file: (i) => withFile("Editing", i, "path", "file_path", "absolute_path"),
   multiedit: (i) => withFile("Editing", i, "file_path", "path"),
   notebookedit: (i) => withFile("Editing", i, "notebook_path", "file_path"),
   replace: (i) => withFile("Editing", i, "file_path", "absolute_path", "path"),
