@@ -11,6 +11,13 @@ export type { CatalogProvider } from "./providerCatalog";
 export const PROVIDER_CATALOG = CATALOG;
 export const searchCatalog = search;
 
+// Same re-binding rule as above - a plain `export { ... } from` here becomes a lazy getter
+// Rollup can't trace, and the web build fails with "not exported by shared/dist/index.js".
+import { CONNECTOR_KINDS as KINDS, connectorKind as kindById } from "./connectors";
+export type { ConnectorKind, ConnectorKindId } from "./connectors";
+export const CONNECTOR_KINDS = KINDS;
+export const connectorKind = kindById;
+
 export type ProviderId = "claude-code" | "codex-cli" | "gemini-cli" | "qwen-code" | "custom" | "local";
 
 /**
@@ -487,11 +494,78 @@ export interface ChatMessage {
   turnId?: string;
 }
 
+/**
+ * The result of one real check against one connection, and the only thing in the UI allowed
+ * to turn a dot green.
+ *
+ * There is no "assumed" or "probably" state here by design. A connection the user has not
+ * checked is represented by the ABSENCE of a ConnectionCheck - `null`, rendered as "Not
+ * checked" - which is a different thing from `ok: false`. `checkedAt` is mandatory because
+ * every one of these can stop being true five minutes later: a CLI gets uninstalled, a token
+ * expires, a local server is closed. A green dot with no time on it is a claim about now
+ * that we cannot actually make.
+ */
+export interface ConnectionCheck {
+  ok: boolean;
+  /**
+   * What the underlying tool or endpoint actually said, as close to verbatim as it can be
+   * carried - `gh auth status`'s own text, the CLI's own `--version` line, the endpoint's own
+   * error body. Never a phrase this app made up about what it assumes happened.
+   */
+  detail: string;
+  /** ISO timestamp of the moment the check ran. */
+  checkedAt: string;
+}
+
 export interface ProviderStatus {
   provider: ProviderId;
   /** Is the provider's own CLI binary found on PATH at all. */
   installed: boolean;
   detail?: string;
+  /**
+   * The first line the CLI printed for `--version`, verbatim. Present only when that command
+   * actually exited 0, so it doubles as the evidence behind `installed`.
+   */
+  version?: string;
+  /** When `installed` was determined. See ConnectionCheck.checkedAt for why this is required
+   * rather than optional in spirit - it is optional here only so older persisted shapes and
+   * test fixtures don't become invalid. */
+  checkedAt?: string;
+  /** The real command that installs this CLI, for a provider that isn't installed. Shown as
+   * something to copy, not as prose about "installing the CLI". */
+  installCommand?: string;
+  /** The real command that signs it in once installed, when that is a separate step. */
+  loginCommand?: string;
+}
+
+/**
+ * What `gh` on this machine actually reports. Deliberately carries `statusText` - the raw
+ * output of `gh auth status` - rather than a set of capability flags this app invented: the
+ * user asked for what gh says, and a summarised "GitHub: connected" hides the part that
+ * matters (which host, which account, which scopes).
+ */
+export interface GithubConnection {
+  /** Is the `gh` binary on PATH at all. False means every other field is meaningless. */
+  installed: boolean;
+  authenticated: boolean;
+  /** The current login, asked of GitHub directly via `gh api user`. See core/github.ts for
+   * why this is not taken from `gh auth status`'s own text. */
+  account?: string;
+  /** The account name `gh auth status` printed. Kept separately from `account` because gh
+   * caches it from when the token was stored and it can genuinely disagree after a rename. */
+  reportedAccount?: string;
+  /** `gh auth status`'s own output, verbatim. gh masks the token itself; nothing is added. */
+  statusText?: string;
+  /** Token scopes exactly as gh listed them, e.g. "repo", "read:org". Empty array means gh
+   * reported a scope line with nothing in it; absent means gh printed no scope line at all. */
+  scopes?: string[];
+  /** The real command to run next, given the state above - `gh auth login`, or the install
+   * command for this OS. Absent only where no single command is true for the platform. */
+  fixCommand?: string;
+  /** The sentence that goes with fixCommand, or stands alone where there is no one command
+   * (Linux, where the install depends on the distribution's package manager). */
+  fixHint?: string;
+  checkedAt: string;
 }
 
 export interface PendingApproval {

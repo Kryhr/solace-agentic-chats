@@ -44,8 +44,7 @@ import { ApprovalPrompt } from "./components/ApprovalPrompt";
 import { ArchivesPage } from "./components/ArchivesPage";
 import { ChatPanel } from "./components/ChatPanel";
 import { ChatRail } from "./components/ChatRail";
-import { GithubPanel } from "./components/GithubPanel";
-import { ProvidersPanel, SavedConnections } from "./components/ProvidersPanel";
+import { ConnectionsPanel } from "./components/ConnectionsPanel";
 import { SkillsPage } from "./components/SkillsPage";
 import { agentsInScope, chatsInScope } from "./lib/projectScope";
 
@@ -402,20 +401,10 @@ export default function App() {
             </button>
           </section>
 
-          {/* Providers and GitHub are the same kind of thing - a connection this machine
-              either has or doesn't - so they share one list instead of two headed sections. */}
-          <section className="sidebar-group">
-            <div className="sidebar-section-label">
-              Connections
-            </div>
-            <div className="connection-list">
-              <ProvidersPanel />
-              <GithubPanel />
-              {/* Saved API keys sit last: the rows above are "is this machine signed in",
-                  these are keys the user pasted and can add/remove here. */}
-              <SavedConnections />
-            </div>
-          </section>
+          {/* Every kind of connection - CLI agents, GitHub, local servers, hosted endpoints,
+              deploy targets, vault entries - is one list behind one "Add connection", so no
+              single kind reads as what Connections is for. See ConnectionsPanel.tsx. */}
+          <ConnectionsPanel />
         </div>
 
         <div className="sidebar-footer">

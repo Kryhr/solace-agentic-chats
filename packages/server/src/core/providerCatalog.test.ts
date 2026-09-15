@@ -58,6 +58,58 @@ test("Perplexity points at the Router API, not the retiring Sonar chat root", ()
   assert.equal(perplexity.baseUrl, "https://api.perplexity.ai/router/v1");
 });
 
+test("the hosted entries added on 2026-09-15 are present with the roots their own docs state", () => {
+  // Each of these was confirmed against the provider's own docs on that date, and each has a
+  // root that is easy to "tidy" into something wrong later: Gemini's compatibility layer is
+  // NOT at the API root, Novita's has no /v1 at all, Venice really does have a doubled /api,
+  // and Z.AI's general root is not its coding-plan root. Pinning them here means a cleanup
+  // pass has to go and re-read the docs rather than guessing.
+  const expected: Record<string, string> = {
+    "Anthropic (Claude)": "https://api.anthropic.com/v1",
+    OpenAI: "https://api.openai.com/v1",
+    "Google Gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "Nebius Token Factory": "https://api.tokenfactory.nebius.com/v1",
+    "Novita AI": "https://api.novita.ai/openai",
+    Hyperbolic: "https://api.hyperbolic.xyz/v1",
+    SambaNova: "https://api.sambanova.ai/v1",
+    Baseten: "https://inference.baseten.co/v1",
+    "Featherless AI": "https://api.featherless.ai/v1",
+    "Inference.net": "https://api.inference.net/v1",
+    Parasail: "https://api.parasail.io/v1",
+    "Venice AI": "https://api.venice.ai/api/v1",
+    "Z.AI (GLM)": "https://api.z.ai/api/paas/v4",
+    "GMI Cloud": "https://api.gmi-serving.com/v1",
+  };
+  for (const [name, baseUrl] of Object.entries(expected)) {
+    const entry = PROVIDER_CATALOG.find((p) => p.name === name);
+    assert.ok(entry, `${name} is missing from the catalog`);
+    assert.equal(entry.baseUrl, baseUrl, `${name} base URL`);
+  }
+});
+
+test("providers whose own docs no longer state a base URL stay out of the catalog", () => {
+  // The standing rule for this file, as a test rather than a comment. Every name here was
+  // considered on 2026-09-15 and deliberately left out: sunset products (Anyscale, Lambda),
+  // docs that no longer resolve (Kluster), and an endpoint that is workspace-scoped and so
+  // cannot be expressed as one static URL (Alibaba Model Studio / DashScope).
+  const omitted = ["Anyscale", "Lambda", "Kluster", "DashScope", "Alibaba", "Chutes", "Avian"];
+  for (const name of omitted) {
+    assert.ok(
+      !PROVIDER_CATALOG.some((p) => p.name.toLowerCase().includes(name.toLowerCase())),
+      `${name} was added back without a verified base URL and key source`,
+    );
+  }
+});
+
+test("no hosted entry points at a loopback or private address", () => {
+  // A hosted tile that silently pointed at 127.0.0.1 would send a key nowhere useful, and a
+  // local tile in the hosted half would be billed-looking when it isn't.
+  for (const p of PROVIDER_CATALOG.filter((x) => !x.local)) {
+    assert.ok(p.baseUrl.startsWith("https://"), `${p.name} must be https`);
+    assert.ok(!/127\.0\.0\.1|localhost|(^https:\/\/(10|192\.168)\.)/.test(p.baseUrl), `${p.name} is not a hosted endpoint`);
+  }
+});
+
 test("searchCatalog matches on name and base URL, and returns everything when blank", () => {
   assert.equal(searchCatalog("  ").length, PROVIDER_CATALOG.length);
   assert.ok(searchCatalog("ollama").some((p) => p.name === "Ollama"));

@@ -1,10 +1,28 @@
-import type { CliProviderId, ProviderId, ProviderStatus } from "@solace/shared";
+import type { CliProviderId, ConnectionCheck, ProviderId, ProviderStatus } from "@solace/shared";
 import { getAdapter } from "../adapters";
 import { spawnCli } from "./spawnCli";
 
 const CLI_BIN: Record<CliProviderId, string> = {
   "claude-code": "claude",
   "codex-cli": "codex",
+  "gemini-cli": "gemini",
+  "qwen-code": "qwen",
+};
+
+/** The actual command, on its own, so the UI can show something copy-pasteable rather than a
+ * sentence about installing. Kept separate from LOGIN_COMMAND because they are two different
+ * steps and a user who has done the first needs to be told the second, not the whole line
+ * again. */
+export const INSTALL_COMMAND: Record<CliProviderId, string> = {
+  "claude-code": "npm install -g @anthropic-ai/claude-code",
+  "codex-cli": "npm install -g @openai/codex",
+  "gemini-cli": "npm install -g @google/gemini-cli",
+  "qwen-code": "npm install -g @qwen-code/qwen-code",
+};
+
+export const LOGIN_COMMAND: Record<CliProviderId, string> = {
+  "claude-code": "claude",
+  "codex-cli": "codex login",
   "gemini-cli": "gemini",
   "qwen-code": "qwen",
 };
@@ -16,43 +34,91 @@ const INSTALL_HINT: Record<CliProviderId, string> = {
   "qwen-code": "npm install -g @qwen-code/qwen-code, then run `qwen` once to log in",
 };
 
+export function isCliProvider(provider: ProviderId): provider is CliProviderId {
+  return provider in CLI_BIN;
+}
+
+interface VersionProbe {
+  ok: boolean;
+  /** stdout's first non-empty line when ok; otherwise the most useful thing the failure gave
+   * us. Always something the CLI or the OS said, never a phrase invented here. */
+  output: string;
+}
+
 /**
  * Runs `<bin> --version` asynchronously - this MUST NOT be spawnSync. A synchronous spawn
  * blocks Node's entire single-threaded event loop for as long as the subprocess takes, and on
  * Windows that's routed through cmd.exe (slow to start); with 4 providers checked back-to-back
  * that was stalling everything else on the server, including in-flight WebSocket handshakes,
  * for several seconds on every page load.
+ *
+ * Output is captured now (it used to be discarded to /dev/null) because the version line is
+ * the evidence. "Installed" with nothing behind it is the kind of unbacked green state this
+ * panel is being rebuilt to remove; "claude 2.1.4" is a thing the CLI actually printed.
  */
-function isInstalled(bin: string): Promise<boolean> {
+function probeVersion(bin: string): Promise<VersionProbe> {
   return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
     try {
-      const child = spawnCli(bin, ["--version"], { stdio: ["ignore", "ignore", "ignore"] });
+      const child = spawnCli(bin, ["--version"], { stdio: ["ignore", "pipe", "pipe"] });
+      child.stdout?.on("data", (chunk) => (stdout += chunk.toString()));
+      child.stderr?.on("data", (chunk) => (stderr += chunk.toString()));
       const timeout = setTimeout(() => {
         child.kill();
-        resolve(false);
+        resolve({ ok: false, output: `\`${bin} --version\` did not answer within 5s` });
       }, 5000);
       child.on("close", (code) => {
         clearTimeout(timeout);
-        resolve(code === 0);
+        const first = (text: string) => text.split(/\r?\n/).map((l) => l.trim()).find((l) => l.length > 0) ?? "";
+        if (code === 0) {
+          // Some CLIs print their version on stderr; take whichever actually said something.
+          resolve({ ok: true, output: first(stdout) || first(stderr) || `\`${bin} --version\` exited 0 but printed nothing` });
+        } else {
+          resolve({ ok: false, output: first(stderr) || first(stdout) || `\`${bin} --version\` exited with code ${code}` });
+        }
       });
-      child.on("error", () => {
+      child.on("error", (err) => {
         clearTimeout(timeout);
-        resolve(false);
+        resolve({ ok: false, output: (err as Error).message });
       });
-    } catch {
-      resolve(false);
+    } catch (err) {
+      resolve({ ok: false, output: (err as Error).message });
     }
   });
 }
 
 export async function checkAllProviders(): Promise<ProviderStatus[]> {
   const providers = Object.keys(CLI_BIN) as CliProviderId[];
-  const installedFlags = await Promise.all(providers.map((provider) => isInstalled(CLI_BIN[provider])));
+  const probes = await Promise.all(providers.map((provider) => probeVersion(CLI_BIN[provider])));
+  const checkedAt = new Date().toISOString();
   return providers.map((provider, i) => ({
     provider,
-    installed: installedFlags[i],
-    detail: installedFlags[i] ? undefined : INSTALL_HINT[provider],
+    installed: probes[i].ok,
+    detail: probes[i].ok ? undefined : INSTALL_HINT[provider],
+    version: probes[i].ok ? probes[i].output : undefined,
+    checkedAt,
+    installCommand: INSTALL_COMMAND[provider],
+    loginCommand: LOGIN_COMMAND[provider],
   }));
+}
+
+/**
+ * The per-row "Check" in Connections. Cheap and honest: it proves the binary resolves on PATH
+ * and that `--version` exited 0, and says so in those words. It deliberately does NOT prove
+ * the CLI is signed in - that needs a real turn, which costs the user tokens and is a separate,
+ * explicitly-labelled action (testProvider below).
+ */
+export async function checkCliProvider(provider: CliProviderId): Promise<ConnectionCheck> {
+  const bin = CLI_BIN[provider];
+  const probe = await probeVersion(bin);
+  return {
+    ok: probe.ok,
+    detail: probe.ok
+      ? `\`${bin} --version\` → ${probe.output}`
+      : `\`${bin} --version\` failed: ${probe.output}`,
+    checkedAt: new Date().toISOString(),
+  };
 }
 
 /** Actually runs a trivial real turn through the provider's CLI - proves sign-in end to end. */

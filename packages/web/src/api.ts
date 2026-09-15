@@ -4,6 +4,8 @@ import type {
   ChatChannel,
   ChatMessage,
   ChatMeta,
+  ConnectionCheck,
+  GithubConnection,
   ProjectMeta,
   CredentialMeta,
   CredentialReveal,
@@ -171,6 +173,43 @@ export async function retryAgent(agentId: string): Promise<void> {
 
 export async function testProviderConnection(provider: ProviderId): Promise<{ ok: boolean; message: string }> {
   return fetch(`/api/providers/${provider}/test`, { method: "POST" }).then((r) => r.json());
+}
+
+/** Everything Connections shows for GitHub, including `gh auth status`'s own text. */
+export async function fetchGithubConnection(): Promise<GithubConnection> {
+  const res = await fetch("/api/github/connection");
+  if (!res.ok) throw new Error(`Could not ask gh about GitHub (${res.status})`);
+  return res.json();
+}
+
+/**
+ * The cheap, honest check for a CLI provider: does its binary resolve and does `--version`
+ * exit 0. Not the same thing as testProviderConnection above, which runs a real billed turn -
+ * these are two different claims and the UI keeps them as two different buttons.
+ */
+export async function checkCliConnection(provider: ProviderId): Promise<ConnectionCheck> {
+  const res = await fetch(`/api/connections/cli/${provider}/check`, { method: "POST" });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? `Check failed (${res.status})`);
+  return data;
+}
+
+/** Thrown for the entries where there is genuinely nothing to verify - a stored password.
+ * Kept as its own type so the UI can say that instead of painting the row red, which would
+ * claim a failure that never happened. */
+export class NotCheckableError extends Error {}
+
+/**
+ * Runs the real check behind one saved connection: a GET /models against the endpoint, or -
+ * for a deploy target - a look at whether its key file is still there. POST because it makes
+ * an outbound request or touches the filesystem, so it only ever happens on a real press.
+ */
+export async function checkCredentialConnection(id: string): Promise<ConnectionCheck> {
+  const res = await fetch(`/api/credentials/${id}/check`, { method: "POST" });
+  const data = await res.json();
+  if (res.status === 422) throw new NotCheckableError(data.error ?? "there is nothing to check for this entry");
+  if (!res.ok) throw new Error(data.error ?? `Check failed (${res.status})`);
+  return data;
 }
 
 export async function resolveApproval(id: string, approved: boolean): Promise<void> {
