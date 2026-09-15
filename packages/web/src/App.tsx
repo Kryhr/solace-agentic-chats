@@ -282,6 +282,18 @@ export default function App() {
     return disconnect;
   }, []);
 
+  // The model and permission catalogs are fetched once on mount, so a tab opened before a
+  // provider existed knows nothing about it - and an agent using that provider then rendered
+  // an EMPTY model list and an EMPTY trust dropdown, which reads as a broken black box rather
+  // than as stale data. Refetch when an agent turns up whose provider we have no catalog for.
+  useEffect(() => {
+    const known = new Set(permissionCatalog.map((p) => p.provider));
+    const missing = agents.some((a) => a.provider !== "custom" && a.provider !== "local" && !known.has(a.provider));
+    if (!missing) return;
+    fetchProviderModels().then(setModelCatalog);
+    fetchPermissionModes().then(setPermissionCatalog);
+  }, [agents, permissionCatalog]);
+
   const handleTrustChange = (agentId: string, trustLevel: TrustLevel) => {
     setAgentsById((prev) => (prev[agentId] ? { ...prev, [agentId]: { ...prev[agentId], trustLevel } } : prev));
     void updateAgent(agentId, { trustLevel });
