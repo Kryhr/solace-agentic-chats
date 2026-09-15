@@ -1,4 +1,9 @@
-import type { ChatMessage, ServerEvent } from "@solace/shared";
+import type { ChatChannel, ChatMessage, ServerEvent } from "@solace/shared";
+
+function sameChannel(a: ChatChannel, b: ChatChannel): boolean {
+  if (a === "group" || b === "group") return a === b;
+  return a.agentId === b.agentId;
+}
 
 type Listener = (event: ServerEvent) => void;
 
@@ -19,6 +24,10 @@ export class ChatBus {
 
   getHistory(): ChatMessage[] {
     return this.history;
+  }
+
+  getHistoryFor(channel: ChatChannel): ChatMessage[] {
+    return this.history.filter((m) => sameChannel(m.channel, channel));
   }
 
   subscribe(listener: Listener): () => void {

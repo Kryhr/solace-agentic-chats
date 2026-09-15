@@ -21,7 +21,7 @@ function sandboxFlagsForTrustLevel(trustLevel: TrustLevel): string[] {
 
 export const codexCliAdapter: ProviderAdapter = {
   id: "codex-cli",
-  async runTurn({ cwd, prompt, trustLevel, onEvent, signal }: RunTurnOptions): Promise<void> {
+  async runTurn({ cwd, prompt, trustLevel, model, effort, onEvent, signal }: RunTurnOptions): Promise<void> {
     const args = [
       "exec",
       "--json",
@@ -29,6 +29,10 @@ export const codexCliAdapter: ProviderAdapter = {
       "-C",
       cwd,
       ...sandboxFlagsForTrustLevel(trustLevel),
+      ...(model ? ["-m", model] : []),
+      // model_reasoning_effort is a TOML string value, hence the literal embedded quotes -
+      // see the -c examples in `codex exec --help`.
+      ...(effort ? ["-c", `model_reasoning_effort="${effort}"`] : []),
       prompt,
     ];
 
@@ -66,6 +70,14 @@ export const codexCliAdapter: ProviderAdapter = {
           } else if (event.type === "turn.failed") {
             reportedError = true;
             onEvent({ type: "error", message: event.error?.message ?? "codex exec reported an error" });
+          } else if (event.type === "turn.completed" && event.usage) {
+            onEvent({
+              type: "usage",
+              usage: {
+                inputTokens: event.usage.input_tokens,
+                outputTokens: event.usage.output_tokens,
+              },
+            });
           }
         } catch {
           onEvent({ type: "text", text: line });

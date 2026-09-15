@@ -1,4 +1,12 @@
-import type { AgentConfig, AgentStatus, ChatMessage, ProviderId, ProviderStatus, ServerEvent } from "@solace/shared";
+import type {
+  AgentConfig,
+  AgentStatus,
+  ChatMessage,
+  ProviderId,
+  ProviderModelInfo,
+  ProviderStatus,
+  ServerEvent,
+} from "@solace/shared";
 
 export interface ProjectInfo {
   name: string;
@@ -36,7 +44,10 @@ export async function createAgent(config: Omit<AgentConfig, "id">): Promise<Agen
   }).then((r) => r.json());
 }
 
-export async function updateAgent(id: string, patch: Partial<Pick<AgentConfig, "trustLevel" | "currentTask">>): Promise<void> {
+export async function updateAgent(
+  id: string,
+  patch: Partial<Pick<AgentConfig, "trustLevel" | "currentTask" | "model" | "effort">>,
+): Promise<void> {
   await fetch(`/api/agents/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -46,6 +57,22 @@ export async function updateAgent(id: string, patch: Partial<Pick<AgentConfig, "
 
 export async function fetchProviderStatuses(): Promise<ProviderStatus[]> {
   return fetch("/api/providers/status").then((r) => r.json());
+}
+
+export async function fetchProviderModels(): Promise<ProviderModelInfo[]> {
+  return fetch("/api/providers/models").then((r) => r.json());
+}
+
+export async function fetchAgentDirectHistory(agentId: string): Promise<ChatMessage[]> {
+  return fetch(`/api/agents/${agentId}/chat`).then((r) => r.json());
+}
+
+export async function sendAgentDirectMessage(agentId: string, text: string): Promise<void> {
+  await fetch(`/api/agents/${agentId}/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
 }
 
 export async function testProviderConnection(provider: ProviderId): Promise<{ ok: boolean; message: string }> {

@@ -7,6 +7,7 @@ import { ChatBus } from "./core/chatBus";
 import { AgentManager } from "./core/agentManager";
 import { WORKSPACE_ROOT, createProject, ensureWorkspaceRoot, listProjects } from "./core/workspace";
 import { checkAllProviders, testProvider } from "./core/providerStatus";
+import { getModelCatalog } from "./core/modelCatalog";
 import { debounce, loadState, saveState } from "./core/persistence";
 import type { ProviderId } from "@solace/shared";
 
@@ -59,13 +60,13 @@ async function main() {
     return config;
   });
 
-  app.patch<{ Params: { id: string }; Body: Partial<Pick<AgentConfig, "trustLevel" | "currentTask">> }>(
-    "/api/agents/:id",
-    async (req) => {
-      agents.updateAgent(req.params.id, req.body);
-      return { ok: true };
-    },
-  );
+  app.patch<{
+    Params: { id: string };
+    Body: Partial<Pick<AgentConfig, "trustLevel" | "currentTask" | "model" | "effort">>;
+  }>("/api/agents/:id", async (req) => {
+    agents.updateAgent(req.params.id, req.body);
+    return { ok: true };
+  });
 
   app.delete<{ Params: { id: string } }>("/api/agents/:id", async (req) => {
     agents.removeAgent(req.params.id);
@@ -73,6 +74,7 @@ async function main() {
   });
 
   app.get("/api/providers/status", async () => checkAllProviders());
+  app.get("/api/providers/models", async () => getModelCatalog());
 
   app.post<{ Params: { provider: ProviderId } }>("/api/providers/:provider/test", async (req) => {
     return testProvider(req.params.provider, WORKSPACE_ROOT);
@@ -82,6 +84,16 @@ async function main() {
 
   app.post<{ Body: { text: string } }>("/api/chat", async (req) => {
     agents.submitMessage("user", "you", req.body.text);
+    return { ok: true };
+  });
+
+  // Direct 1:1 channel with a single agent, separate from the shared group chat.
+  app.get<{ Params: { id: string } }>("/api/agents/:id/chat", async (req) => {
+    return bus.getHistoryFor({ agentId: req.params.id });
+  });
+
+  app.post<{ Params: { id: string }; Body: { text: string } }>("/api/agents/:id/chat", async (req) => {
+    agents.submitDirectMessage(req.params.id, req.body.text);
     return { ok: true };
   });
 

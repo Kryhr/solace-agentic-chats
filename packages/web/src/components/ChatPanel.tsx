@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import type { AgentConfig, ChatMessage } from "@solace/shared";
+import type { AgentConfig, ChatMessage, ProviderModelInfo } from "@solace/shared";
 import { ProviderIcon } from "./ProviderIcon";
 
 function formatTime(iso: string): string {
@@ -19,10 +19,12 @@ function findMentionQuery(text: string, cursor: number): { start: number; query:
 export function ChatPanel({
   history,
   agents,
+  modelCatalog,
   onSend,
 }: {
   history: ChatMessage[];
   agents: AgentConfig[];
+  modelCatalog: ProviderModelInfo[];
   onSend: (text: string) => void;
 }) {
   const [draft, setDraft] = useState("");
@@ -98,12 +100,16 @@ export function ChatPanel({
           const isUser = m.authorId === "user";
           const author = agentById.get(m.authorId);
           const text = isToolUse(m.text) ? m.text.slice(6, -1) : m.text;
+          const showModel = !isUser && !isToolUse(m.text) && !isErrorLine(m.text);
+          const modelLabel =
+            m.model || (author ? modelCatalog.find((c) => c.provider === author.provider)?.currentDefaultModel : undefined);
           return (
             <div key={m.id} className={`message-row ${isUser ? "from-user" : ""}`}>
               {!isUser && (author ? <ProviderIcon provider={author.provider} /> : <span className="user-avatar">?</span>)}
               <div className="message">
                 <div className="meta">
                   <span className="meta-author">{m.authorHandle}</span>
+                  {showModel && modelLabel && <span className="meta-model">{modelLabel}</span>}
                   <span>·</span>
                   <span>{formatTime(m.createdAt)}</span>
                   {m.mentions.map((h) => (

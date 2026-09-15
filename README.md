@@ -40,6 +40,12 @@ already sign in to with a subscription. This project is specifically about that 
   separately.
 - **Fully local.** The server runs on your machine, the UI is a local web page, nothing
   is sent anywhere except each CLI's own normal traffic to its own provider.
+- **Per-agent model + thinking effort**, set from that agent's hub (click its card) using
+  each CLI's own real flags. The hub shows your CLI's actual currently-configured default
+  model (read live from its own config file, e.g. Codex's `~/.codex/config.toml`) rather
+  than a guessed name, plus real per-turn token/cost usage as the CLI itself reports it -
+  no fabricated quota numbers, since none of these CLIs expose a queryable usage API.
+- **Direct 1:1 chat with any agent**, separate from the shared group chat, from its hub.
 
 ## Repo layout
 
@@ -86,12 +92,10 @@ Per-project rule: don't add more until the current thing works cleanly. Rough or
    interface used by Claude Code and Codex CLI.
 2. Real per-action approval flow (a popup asking "allow `Edit(file.ts)`?" instead of the
    current allow-listed-tools approximation of trust levels).
-3. Click into an agent hub to see its full turn-by-turn history (including tool calls and
-   reasoning, not just what it posted to the group chat).
-4. Multiple accounts per provider (run N instances of the same CLI under different
+3. Multiple accounts per provider (run N instances of the same CLI under different
    profiles/credentials, load-balance tasks across them).
-5. Slash commands for the group chat (`/task @codex "build the parser"`, `/status`, etc).
-6. Packaging as a single local desktop app instead of "clone + npm run dev".
+4. Slash commands for the group chat (`/task @codex "build the parser"`, `/status`, etc).
+5. Packaging as a single local desktop app instead of "clone + npm run dev".
 
 ## License
 

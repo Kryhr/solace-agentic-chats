@@ -1,8 +1,9 @@
-import type { ProviderId, TrustLevel } from "@solace/shared";
+import type { ProviderId, TrustLevel, TurnUsage } from "@solace/shared";
 
 export type AdapterEvent =
   | { type: "text"; text: string }
   | { type: "tool-use"; description: string }
+  | { type: "usage"; usage: TurnUsage }
   | { type: "done" }
   | { type: "error"; message: string };
 
@@ -11,6 +12,9 @@ export interface RunTurnOptions {
   /** The prompt for this turn: the triggering chat message, plus any context the caller wants included. */
   prompt: string;
   trustLevel: TrustLevel;
+  /** Model alias/id and reasoning effort to pass to the CLI's own flags - undefined means provider default. */
+  model?: string;
+  effort?: string;
   onEvent: (event: AdapterEvent) => void;
   /** Aborting kills the underlying CLI process - used to enforce a max turn duration. */
   signal?: AbortSignal;

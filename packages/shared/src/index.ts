@@ -22,6 +22,21 @@ export interface AgentConfig {
   trustLevel: TrustLevel;
   /** Free-text description of what this agent currently owns, e.g. "compiler backend". */
   currentTask?: string;
+  /** Model alias or full model id, passed straight through to the provider's own --model flag. Empty = provider default. */
+  model?: string;
+  /** Reasoning/thinking effort, passed straight through to the provider's own flag. Empty = provider default. */
+  effort?: string;
+}
+
+/**
+ * Real per-turn usage as reported by the provider's own CLI output (Claude Code's final
+ * "result" message, Codex's "turn.completed" event) - never estimated or fabricated. Absent
+ * fields just mean that provider didn't report them.
+ */
+export interface TurnUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalCostUsd?: number;
 }
 
 export interface AgentStatus {
@@ -29,6 +44,28 @@ export interface AgentStatus {
   state: AgentRunState;
   currentTask?: string;
   lastActivityAt: string;
+  /** Usage from the most recently completed turn. */
+  lastUsage?: TurnUsage;
+  /** Running total across every turn this agent has completed since the server started. */
+  totalUsage?: TurnUsage;
+  /** The literal last error/rate-limit message the provider CLI reported, if any - shown
+   * verbatim rather than parsed/interpreted, since providers don't expose a queryable quota API. */
+  lastError?: string;
+}
+
+/** What each provider's CLI actually supports for model/effort selection - kept honest:
+ * no hardcoded model catalog for providers whose available models change over time or
+ * depend on the user's plan, just the real, verified effort levels each CLI accepts. */
+export interface ProviderModelInfo {
+  provider: ProviderId;
+  /** A few example model values to hint at in the UI - not an exhaustive or guaranteed-valid list. */
+  modelExamples: string[];
+  /** Empty means this provider's adapter doesn't support effort selection (yet). */
+  effortLevels: string[];
+  /** The model this provider's CLI is actually configured to use by default, read live from
+   * its own config file on disk - undefined if that file wasn't found/parseable, never guessed. */
+  currentDefaultModel?: string;
+  currentDefaultEffort?: string;
 }
 
 export type ChatChannel = "group" | { agentId: string };
@@ -43,6 +80,8 @@ export interface ChatMessage {
   mentions: string[];
   text: string;
   createdAt: string;
+  /** The model that produced this message, if the author is an agent and a model was set. */
+  model?: string;
 }
 
 export interface ProviderStatus {

@@ -29,7 +29,7 @@ function flagsForTrustLevel(trustLevel: TrustLevel): string[] {
 
 export const claudeCodeAdapter: ProviderAdapter = {
   id: "claude-code",
-  async runTurn({ cwd, prompt, trustLevel, onEvent, signal }: RunTurnOptions): Promise<void> {
+  async runTurn({ cwd, prompt, trustLevel, model, effort, onEvent, signal }: RunTurnOptions): Promise<void> {
     const args = [
       "-p",
       prompt,
@@ -37,6 +37,8 @@ export const claudeCodeAdapter: ProviderAdapter = {
       "stream-json",
       "--verbose",
       ...flagsForTrustLevel(trustLevel),
+      ...(model ? ["--model", model] : []),
+      ...(effort ? ["--effort", effort] : []),
     ];
 
     await new Promise<void>((resolve) => {
@@ -65,6 +67,17 @@ export const claudeCodeAdapter: ProviderAdapter = {
                 onEvent({ type: "tool-use", description: `${block.name}(${JSON.stringify(block.input)})` });
               }
             }
+          } else if (event.type === "result" && event.usage) {
+            // Final message of the stream - real per-turn cost/token usage as Claude Code
+            // itself reports it. See code.claude.com/docs/en/headless.
+            onEvent({
+              type: "usage",
+              usage: {
+                inputTokens: event.usage.input_tokens,
+                outputTokens: event.usage.output_tokens,
+                totalCostUsd: event.total_cost_usd,
+              },
+            });
           }
         } catch {
           // Non-JSON line (shouldn't normally happen with --output-format stream-json) -

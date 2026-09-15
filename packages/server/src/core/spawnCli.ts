@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type SpawnOptions, type SpawnSyncOptions } from "node:child_process";
+import { spawn, type SpawnOptions } from "node:child_process";
 
 /**
  * Provider CLIs (claude, codex, gemini, qwen) are installed as npm-global .cmd shims on
@@ -22,9 +22,4 @@ function prepareArgs(args: string[]): string[] {
 export function spawnCli(bin: string, args: string[], options: SpawnOptions = {}) {
   const isWin = process.platform === "win32";
   return spawn(bin, prepareArgs(args), { ...options, shell: isWin });
-}
-
-export function spawnCliSync(bin: string, args: string[], options: SpawnSyncOptions = {}) {
-  const isWin = process.platform === "win32";
-  return spawnSync(bin, prepareArgs(args), { ...options, shell: isWin });
 }

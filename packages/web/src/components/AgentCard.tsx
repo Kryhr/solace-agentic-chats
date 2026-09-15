@@ -1,4 +1,4 @@
-import type { AgentConfig, AgentStatus, TrustLevel } from "@solace/shared";
+import type { AgentConfig, AgentStatus, ProviderModelInfo, TrustLevel } from "@solace/shared";
 import { ProviderIcon } from "./ProviderIcon";
 
 const TRUST_LABELS: Record<TrustLevel, string> = {
@@ -10,17 +10,22 @@ const TRUST_LABELS: Record<TrustLevel, string> = {
 export function AgentCard({
   agent,
   status,
+  modelInfo,
   onTrustChange,
+  onOpen,
 }: {
   agent: AgentConfig;
   status?: AgentStatus;
+  modelInfo?: ProviderModelInfo;
   onTrustChange: (level: TrustLevel) => void;
+  onOpen: () => void;
 }) {
   const state = status?.state ?? "offline";
   const task = agent.currentTask ?? status?.currentTask;
+  const modelLabel = agent.model || modelInfo?.currentDefaultModel || "provider default";
 
   return (
-    <div className="agent-card">
+    <div className="agent-card" onClick={onOpen} role="button" tabIndex={0} onKeyDown={(e) => e.key === "Enter" && onOpen()}>
       <div className="row">
         <div className="agent-identity">
           <ProviderIcon provider={agent.provider} />
@@ -28,6 +33,9 @@ export function AgentCard({
             {agent.handle}
           </span>
         </div>
+        <span className="agent-model-tag" title={modelLabel}>
+          {modelLabel}
+        </span>
       </div>
       <div className="row" style={{ gap: 6 }}>
         <span className={`status-dot status-${state}`} title={state} />
@@ -36,6 +44,7 @@ export function AgentCard({
       <select
         className="trust-select"
         value={agent.trustLevel}
+        onClick={(e) => e.stopPropagation()}
         onChange={(e) => onTrustChange(e.target.value as TrustLevel)}
       >
         {(Object.keys(TRUST_LABELS) as TrustLevel[]).map((level) => (
