@@ -92,6 +92,16 @@ export async function sendAgentDirectMessage(agentId: string, text: string): Pro
   });
 }
 
+export async function removeAgent(agentId: string): Promise<void> {
+  await fetch(`/api/agents/${agentId}`, { method: "DELETE" });
+}
+
+/** Reuses the /clear slash command's own handling (archives, doesn't delete) by posting it
+ * as if the user had typed it - one code path, no special "clear via button" logic to drift. */
+export async function clearAgentHistory(agentId: string): Promise<void> {
+  await sendAgentDirectMessage(agentId, "/clear");
+}
+
 export async function testProviderConnection(provider: ProviderId): Promise<{ ok: boolean; message: string }> {
   return fetch(`/api/providers/${provider}/test`, { method: "POST" }).then((r) => r.json());
 }

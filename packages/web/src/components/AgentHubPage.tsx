@@ -20,6 +20,8 @@ export function AgentHubPage({
   onBack,
   onSave,
   onSendDirect,
+  onClearHistory,
+  onRemoveAgent,
 }: {
   agent: AgentConfig;
   status?: AgentStatus;
@@ -29,6 +31,8 @@ export function AgentHubPage({
   onBack: () => void;
   onSave: (patch: Partial<Pick<AgentConfig, "trustLevel" | "model" | "effort">>) => void;
   onSendDirect: (text: string) => void;
+  onClearHistory: () => void;
+  onRemoveAgent: () => void;
 }) {
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -126,6 +130,28 @@ export function AgentHubPage({
               ))}
             </select>
           </label>
+        </div>
+
+        <div className="hub-page-actions">
+          <button
+            className="btn-secondary"
+            onClick={() => {
+              if (confirm(`Clear ${agent.handle}'s history? It'll be moved to Saved Chats, not deleted.`)) onClearHistory();
+            }}
+          >
+            Clear history
+          </button>
+          <button
+            className="btn-secondary danger"
+            onClick={() => {
+              if (confirm(`Remove ${agent.handle}? This can't be undone (its chat history stays in Saved Chats).`)) {
+                onRemoveAgent();
+                onBack();
+              }
+            }}
+          >
+            Remove agent
+          </button>
         </div>
       </div>
 

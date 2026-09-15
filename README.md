@@ -5,10 +5,36 @@ same project at the same time** — Claude Code, Codex CLI, Gemini CLI, Qwen Cod
 you've got — where they can see each other's work, task each other in a shared group chat,
 and you control how much they're allowed to do without asking first.
 
-> Status: **early skeleton (v0.1)**. Claude Code and Codex CLI adapters are real and
-> working; Gemini CLI and Qwen Code are stubbed with a clear contract to fill in (see
-> [ARCHITECTURE.md](ARCHITECTURE.md)). The goal right now is "a couple of providers work
-> end to end, cleanly" before adding more.
+## Quick setup
+
+```bash
+git clone https://github.com/Kryhr/solace-agentic-chats.git
+cd solace-agentic-chats
+npm install
+npm run dev
+```
+
+That's one command for both the server (`http://localhost:4310`) and the UI
+(`http://localhost:5173`) — open the UI in your browser. You'll need at least one of these
+already signed in on your machine:
+
+| Provider | Install | Sign in |
+|---|---|---|
+| Claude Code | `npm install -g @anthropic-ai/claude-code` | run `claude` once |
+| Codex CLI | `npm install -g @openai/codex` | `codex login` |
+| Gemini CLI / Qwen Code | CLI adapters not wired up yet | — |
+
+The sidebar's **Providers** panel shows what it actually found installed, with a **Test
+connection** button that runs a real trivial prompt through each one. Click **+ Add agent**,
+pick a project (or create one — every project lives under `~/Desktop/solace-workspace` by
+default, override with `SOLACE_WORKSPACE_ROOT`), pick a connected provider, and start
+chatting. `@mention` a handle to give it a turn in the group chat, or click its card to open
+its own hub for a direct 1:1 conversation. Type `/help` in either for the full command list.
+
+Don't have a CLI subscription? Any agent can instead run on a **raw API key** (Anthropic or
+OpenAI) — pick "API key" as the sign-in method when adding it. Keys are stored in a local
+file outside the repo, never sent anywhere except that provider's own API, and never shown
+again in the UI after you save one.
 
 ## Why this exists
 
@@ -36,23 +62,33 @@ already sign in to with a subscription. This project is specifically about that 
   the `codex` agent to look at it; agents with no mention keep working uninterrupted. A
   message with no `@mention` is still visible to everyone as shared context, it just doesn't
   interrupt anyone.
-- **Trust levels, per agent**: `Read-only`, `Can edit files`, `Full auto`. This maps directly
-  onto each CLI's own permission flags — see [ARCHITECTURE.md#trust-levels](ARCHITECTURE.md#trust-levels)
-  for exactly what each level allows today and what's still roadmap (a real per-action
-  "approve this one tool call" popup needs more plumbing than v0.1 has).
-- **Sign in with your subscription, not just an API key.** We never touch auth directly —
-  each agent is just a wrapper around that provider's own official CLI (`claude`, `codex`,
-  `gemini`, `qwen`, ...), running whatever is already logged in on your machine. Want five
-  Claude accounts? Point five agents at five machines/profiles that are each logged in
-  separately.
-- **Fully local.** The server runs on your machine, the UI is a local web page, nothing
-  is sent anywhere except each CLI's own normal traffic to its own provider.
-- **Per-agent model + thinking effort**, set from that agent's hub (click its card) using
-  each CLI's own real flags. The hub shows your CLI's actual currently-configured default
-  model (read live from its own config file, e.g. Codex's `~/.codex/config.toml`) rather
-  than a guessed name, plus real per-turn token/cost usage as the CLI itself reports it -
-  no fabricated quota numbers, since none of these CLIs expose a queryable usage API.
-- **Direct 1:1 chat with any agent**, separate from the shared group chat, from its hub.
+- **Real permission modes**, not an invented approximation: `Plan`, `Manual`, `Accept edits`,
+  `Bypass permissions`, `Auto` — these are Claude Code's own `--permission-mode` values.
+  `Manual` on a Claude Code agent is a genuine live approval loop: the CLI actually pauses
+  mid-turn and a popup in the browser asks Allow/Deny before it proceeds. Codex CLI doesn't
+  expose an equivalent live-approval hook, so its `Manual` mode is a best-effort mapping onto
+  its own sandbox/approval flags — see [ARCHITECTURE.md](ARCHITECTURE.md) for the full mechanism.
+- **Slash commands**: `/task @handle <desc>`, `/status`, `/github status` / `/github init
+  <repo>`, `/clear`, `/model <value>`, `/effort <value>`, `/help` — typed straight into
+  either chat composer, with autocomplete.
+- **GitHub-aware.** The sidebar shows whether `gh` is authenticated on this machine; `/github
+  init <name>` (from an agent's own hub) asks that agent to initialize and push the project
+  using its own shell access, gated by its own trust level like anything else it does.
+- **Sign in with your subscription, not just an API key.** Each CLI-based agent is a wrapper
+  around that provider's own official CLI (`claude`, `codex`, `gemini`, `qwen`), running
+  whatever is already logged in on your machine. Want five Claude accounts? Point five agents
+  at five machines/profiles that are each logged in separately. Prefer an API key instead?
+  That's supported too (see Quick setup above), with real per-token cost tracking.
+- **Fully local, nothing silently lost.** The server runs on your machine; every agent config
+  and message is continuously saved to disk and survives a crash or restart. `/clear` (or the
+  hub's "Clear history" button) never deletes anything — it moves that chat to **Saved
+  Chats**, browsable from the sidebar.
+- **Per-agent model + thinking effort**, set from that agent's hub using each CLI's own real
+  flags. The hub shows your CLI's actual currently-configured default model (read live from
+  its own config file, e.g. Codex's `~/.codex/config.toml`) rather than a guessed name, plus
+  real per-turn token/cost usage as the CLI itself reports it. For CLI/subscription agents
+  that's labeled as an API-equivalent estimate, not a real bill — no provider exposes a
+  queryable usage-quota API, so this project doesn't pretend to show one.
 
 ## Repo layout
 
@@ -60,48 +96,22 @@ already sign in to with a subscription. This project is specifically about that 
 packages/
   shared/   # types shared between server and web (AgentConfig, ChatMessage, ...)
   server/   # Node/TS backend: spawns provider CLIs, routes group chat, WebSocket + REST API
-  web/      # React + Vite UI: agent hubs sidebar, group chat panel
+    src/adapters/   one file per provider (CLI-based and API-key-based)
+    src/approval/   the live approval-loop MCP bridge (Claude Code "Manual" mode)
+    src/core/       agent manager, chat bus, slash commands, persistence, credentials, ...
+  web/      # React + Vite UI: agent hubs sidebar, group chat panel, hub pages, saved chats
 ```
-
-## Setup
-
-Prerequisites:
-- Node.js 20+ and npm
-- At least one provider CLI installed and **already signed in with your subscription**:
-  - Claude Code: `npm install -g @anthropic-ai/claude-code`, then run `claude` once to log in
-  - Codex CLI: `npm install -g @openai/codex`, then run `codex login`
-  - Gemini CLI / Qwen Code: not wired up yet, see roadmap below
-
-```bash
-git clone https://github.com/Kryhr/solace-agentic-chats.git
-cd solace-agentic-chats
-npm install
-npm run dev
-```
-
-One command starts both the server (`http://localhost:4310`) and the UI
-(`http://localhost:5173`) in the same terminal. Every project lives under one workspace
-folder created automatically on first run — `~/Desktop/solace-workspace` by default,
-override with the `SOLACE_WORKSPACE_ROOT` env var.
-
-Open the UI: the **Providers** panel in the sidebar shows which CLIs it found installed on
-your machine, with a **Test connection** button that runs a real trivial prompt through
-each one so you can confirm sign-in actually works before adding an agent for it. Then
-click **+ Add agent**, pick an existing project or create a new one right there, choose a
-provider that shows as connected, and start chatting — @mention its handle to give it a
-turn (autocompletes as you type).
 
 ## Roadmap (deliberately not built yet)
 
-Per-project rule: don't add more until the current thing works cleanly. Rough order:
-
 1. Implement the Gemini CLI and Qwen Code adapters against the same `ProviderAdapter`
    interface used by Claude Code and Codex CLI.
-2. Real per-action approval flow (a popup asking "allow `Edit(file.ts)`?" instead of the
-   current allow-listed-tools approximation of trust levels).
+2. A live approval-loop equivalent for Codex CLI, if OpenAI ever exposes one (currently
+   confirmed not to exist - see ARCHITECTURE.md).
 3. Multiple accounts per provider (run N instances of the same CLI under different
    profiles/credentials, load-balance tasks across them).
-4. Slash commands for the group chat (`/task @codex "build the parser"`, `/status`, etc).
+4. Custom-built dropdown components (currently native `<select>`s, styled) for full control
+   over the model/effort/trust pickers' appearance.
 5. Packaging as a single local desktop app instead of "clone + npm run dev".
 
 ## License

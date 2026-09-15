@@ -9,6 +9,7 @@ import type {
   TrustLevel,
 } from "@solace/shared";
 import {
+  clearAgentHistory,
   connectSocket,
   createAgent,
   fetchAgentDirectHistory,
@@ -17,6 +18,7 @@ import {
   fetchHistory,
   fetchPermissionModes,
   fetchProviderModels,
+  removeAgent,
   resolveApproval,
   sendAgentDirectMessage,
   sendChatMessage,
@@ -212,6 +214,8 @@ export default function App() {
             void updateAgent(hubAgent.id, patch);
           }}
           onSendDirect={(text) => void sendAgentDirectMessage(hubAgent.id, text)}
+          onClearHistory={() => void clearAgentHistory(hubAgent.id)}
+          onRemoveAgent={() => void removeAgent(hubAgent.id)}
         />
       ) : (
         <ChatPanel

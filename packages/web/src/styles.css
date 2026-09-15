@@ -922,6 +922,25 @@ body {
   outline-offset: 1px;
 }
 
+.hub-page-actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-end;
+}
+.hub-page-actions button {
+  padding: 6px 10px;
+  font-size: var(--text-xs);
+}
+.btn-secondary.danger {
+  color: var(--danger);
+  border-color: rgba(224, 104, 95, 0.35);
+}
+.btn-secondary.danger:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: rgba(224, 104, 95, 0.08);
+}
+
 .hub-usage-bar {
   display: flex;
   align-items: center;

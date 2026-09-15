@@ -84,6 +84,10 @@ async function main() {
   });
 
   app.delete<{ Params: { id: string } }>("/api/agents/:id", async (req) => {
+    // Removing an agent doesn't lose its direct-channel history - archive it first, same as /clear.
+    const channel = { agentId: req.params.id };
+    const removed = bus.clearChannel(channel);
+    archive.add(channel, removed);
     agents.removeAgent(req.params.id);
     return { ok: true };
   });
