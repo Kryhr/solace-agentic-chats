@@ -2,6 +2,8 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+const SERVER_PORT = process.env.SOLACE_SERVER_PORT ?? "4310";
+
 export default defineConfig({
   plugins: [react()],
   resolve: {
@@ -20,11 +22,13 @@ export default defineConfig({
       "@solace/shared": fileURLToPath(new URL("../shared/src/index.ts", import.meta.url)),
     },
   },
+  // Overridable so a second instance can be run beside a live one (a spare port pointed at a
+  // spare server) without editing this file and risking that edit being committed.
   server: {
-    port: 5173,
+    port: Number(process.env.SOLACE_WEB_PORT ?? 5173),
     proxy: {
-      "/api": "http://localhost:4310",
-      "/ws": { target: "ws://localhost:4310", ws: true },
+      "/api": `http://localhost:${SERVER_PORT}`,
+      "/ws": { target: `ws://localhost:${SERVER_PORT}`, ws: true },
     },
   },
 });

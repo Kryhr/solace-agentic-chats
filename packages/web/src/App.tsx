@@ -1,31 +1,40 @@
-import { useEffect, useMemo, useState } from "react";
-import type {
-  AgentConfig,
-  AgentStatus,
-  ChatMessage,
-  PendingApproval,
-  ProviderModelInfo,
-  ProviderPermissionInfo,
-  ProviderRateLimit,
-  TrustLevel,
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  isChatChannel,
+  type AgentConfig,
+  type AgentStatus,
+  type ChatMessage,
+  type ChatMeta,
+  type PendingApproval,
+  type ProjectMeta,
+  type ProviderModelInfo,
+  type ProviderPermissionInfo,
+  type ProviderRateLimit,
+  type TrustLevel,
 } from "@solace/shared";
 import {
   clearAgentHistory,
   connectSocket,
   createAgent,
+  createChat,
+  deleteChat,
   fetchAgentDirectHistory,
   fetchAgents,
   fetchArchives,
-  fetchHistory,
+  fetchChatHistory,
+  fetchChats,
   fetchPermissionModes,
   fetchProviderModels,
+  linkProject,
   removeAgent,
   resolveApproval,
   retryAgent,
   sendAgentDirectMessage,
   sendChatMessage,
   stopAgent,
+  unlinkProject,
   updateAgent,
+  updateChat,
   type ChatArchive,
 } from "./api";
 import { AgentCard } from "./components/AgentCard";
@@ -34,19 +43,33 @@ import { AgentHubPage } from "./components/AgentHubPage";
 import { ApprovalPrompt } from "./components/ApprovalPrompt";
 import { ArchivesPage } from "./components/ArchivesPage";
 import { ChatPanel } from "./components/ChatPanel";
+import { ChatRail } from "./components/ChatRail";
 import { GithubPanel } from "./components/GithubPanel";
 import { ProvidersPanel, SavedConnections } from "./components/ProvidersPanel";
 import { SkillsPage } from "./components/SkillsPage";
+import { agentsInScope, chatsInScope } from "./lib/projectScope";
 
-type View = { type: "chat" } | { type: "hub"; agentId: string } | { type: "archives" } | { type: "skills" };
+type View =
+  /** chatId null means "whichever chat is first" - the hash carries no id on a cold start. */
+  | { type: "chat"; chatId: string | null }
+  | { type: "hub"; agentId: string }
+  | { type: "archives" }
+  | { type: "skills" };
 
 function parseHash(hash: string): View {
   const agentMatch = hash.match(/^#\/agent\/(.+)$/);
   if (agentMatch) return { type: "hub", agentId: agentMatch[1] };
+  const chatMatch = hash.match(/^#\/chat\/(.+)$/);
+  if (chatMatch) return { type: "chat", chatId: chatMatch[1] };
   if (hash === "#/archives") return { type: "archives" };
   if (hash === "#/skills") return { type: "skills" };
-  return { type: "chat" };
+  return { type: "chat", chatId: null };
 }
+
+/** Which project the sidebar is scoped to, remembered across reloads. Kept in localStorage
+ * rather than the hash: it is a view preference, not an address - a link someone pastes to a
+ * chat should open that chat, not silently re-scope their sidebar too. */
+const PROJECT_SCOPE_KEY = "solace.activeProjectId";
 
 export default function App() {
   // Keyed by id (not an array) so any event that's delivered more than once - e.g. two
@@ -57,7 +80,14 @@ export default function App() {
   /** Keyed by provider, not by agent: several agents can share one CLI and therefore one real
    * account and one real limit. */
   const [rateLimits, setRateLimits] = useState<Record<string, ProviderRateLimit>>({});
-  const [historyById, setHistoryById] = useState<Record<string, ChatMessage>>({});
+  /** Chat transcripts, keyed chatId -> messageId. Nested rather than flat so a chat can be
+   * emptied or dropped without walking every message the tab has ever seen. */
+  const [chatHistory, setChatHistory] = useState<Record<string, Record<string, ChatMessage>>>({});
+  const [chats, setChats] = useState<ChatMeta[]>([]);
+  const [projects, setProjects] = useState<ProjectMeta[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(
+    () => localStorage.getItem(PROJECT_SCOPE_KEY) || null,
+  );
   const [directById, setDirectById] = useState<Record<string, Record<string, ChatMessage>>>({});
   const [modelCatalog, setModelCatalog] = useState<ProviderModelInfo[]>([]);
   const [permissionCatalog, setPermissionCatalog] = useState<ProviderPermissionInfo[]>([]);
@@ -68,20 +98,70 @@ export default function App() {
   const [view, setView] = useState<View>(() => parseHash(location.hash));
 
   const agents = useMemo(() => Object.values(agentsById), [agentsById]);
-  const history = useMemo(
-    () => Object.values(historyById).sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
-    [historyById],
+  const activeProject = useMemo(
+    () => projects.find((p) => p.id === activeProjectId),
+    [projects, activeProjectId],
   );
+  const scopedChats = useMemo(() => chatsInScope(chats, activeProject), [chats, activeProject]);
+  const scopedAgents = useMemo(() => agentsInScope(agents, activeProject), [agents, activeProject]);
+
+  /** The chat actually on screen. A hash pointing at a chat that has since been archived falls
+   * back to the first in scope rather than rendering a blank page with no way out. */
+  const activeChatId = useMemo(() => {
+    if (view.type !== "chat") return null;
+    if (view.chatId && chats.some((c) => c.id === view.chatId)) return view.chatId;
+    return scopedChats[0]?.id ?? chats[0]?.id ?? null;
+  }, [view, chats, scopedChats]);
+
+  const activeChat = useMemo(() => chats.find((c) => c.id === activeChatId), [chats, activeChatId]);
+  /** The project the OPEN chat is filed under, which is not necessarily the one the sidebar is
+   * scoped to: "All projects" still shows a project's chat, and that chat still only reaches
+   * its own project's agents. */
+  const activeChatProject = useMemo(
+    () => projects.find((p) => p.id === activeChat?.projectId),
+    [projects, activeChat],
+  );
+  const activeChatAgents = useMemo(
+    () => (activeChat ? agentsInScope(agents, activeChatProject) : []),
+    [agents, activeChat, activeChatProject],
+  );
+
+  const history = useMemo(() => {
+    const bucket = activeChatId ? chatHistory[activeChatId] : undefined;
+    return bucket ? Object.values(bucket).sort((a, b) => a.createdAt.localeCompare(b.createdAt)) : [];
+  }, [chatHistory, activeChatId]);
+
+  const loadChatHistory = (chatId: string) => {
+    fetchChatHistory(chatId).then((list) => {
+      // Server rows first, this tab's live rows second: a message that arrived over the socket
+      // while the fetch was in flight must not be overwritten by the older snapshot.
+      setChatHistory((h) => ({ ...h, [chatId]: { ...Object.fromEntries(list.map((m) => [m.id, m])), ...h[chatId] } }));
+    });
+  };
 
   useEffect(() => {
     const onHashChange = () => {
       const next = parseHash(location.hash);
       setView(next);
       if (next.type === "archives") fetchArchives().then(setArchives);
+      if (next.type === "chat" && next.chatId) loadChatHistory(next.chatId);
     };
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
+
+  // Whichever chat resolves to "current" - including the fall-back on a cold start, where the
+  // hash carries no id at all - needs its transcript fetched exactly once.
+  const loadedChats = useRef(new Set<string>());
+  /** The socket callback is registered once and never re-created, so it cannot close over
+   * activeChatId - it reads the current value through this instead. */
+  const activeChatIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeChatIdRef.current = activeChatId;
+    if (!activeChatId || loadedChats.current.has(activeChatId)) return;
+    loadedChats.current.add(activeChatId);
+    loadChatHistory(activeChatId);
+  }, [activeChatId]);
 
   const goToHub = (agentId: string) => {
     location.hash = `#/agent/${agentId}`;
@@ -89,8 +169,8 @@ export default function App() {
       setDirectById((d) => ({ ...d, [agentId]: { ...Object.fromEntries(list.map((m) => [m.id, m])), ...d[agentId] } }));
     });
   };
-  const goToChat = () => {
-    location.hash = "";
+  const goToChat = (chatId?: string) => {
+    location.hash = chatId ? `#/chat/${chatId}` : "";
   };
   const goToArchives = () => {
     location.hash = "#/archives";
@@ -102,7 +182,10 @@ export default function App() {
 
   useEffect(() => {
     fetchAgents().then((list) => setAgentsById(Object.fromEntries(list.map((a) => [a.id, a]))));
-    fetchHistory().then((list) => setHistoryById(Object.fromEntries(list.map((m) => [m.id, m]))));
+    fetchChats().then(({ chats: list, projects: linked }) => {
+      setChats(list);
+      setProjects(linked);
+    });
     fetchProviderModels().then(setModelCatalog);
     fetchPermissionModes().then(setPermissionCatalog);
 
@@ -110,7 +193,13 @@ export default function App() {
       (event) => {
         if (event.type === "hello") {
           setAgentsById(Object.fromEntries(event.agents.map((a) => [a.id, a])));
-          setHistoryById(Object.fromEntries(event.history.map((m) => [m.id, m])));
+          setChats(event.chats ?? []);
+          setProjects(event.projects ?? []);
+          // A reconnect means this tab may have missed messages while it was away, so refetch
+          // the transcript it is actually showing. Cached rows are kept meanwhile, so the panel
+          // never blanks - the fetch merges under whatever the socket has already delivered.
+          loadedChats.current.clear();
+          if (activeChatIdRef.current) loadChatHistory(activeChatIdRef.current);
           setStatuses(Object.fromEntries(event.statuses.map((s) => [s.agentId, s])));
           // Replace, don't merge: the approval registry is in-memory only, so a server
           // restart (e.g. a dev-mode reload) wipes every pending approval it knew about. A
@@ -125,12 +214,19 @@ export default function App() {
           // entry is exactly what an update means, and a promotion (progress -> answer) can't
           // reorder the transcript or re-trigger the entrance animation: useEntranceTracker
           // memoises its decision per id, so a message already on screen stays as it is.
-          if (event.payload.channel === "group") {
-            setHistoryById((h) => ({ ...h, [event.payload.id]: event.payload }));
+          const channel = event.payload.channel;
+          if (isChatChannel(channel)) {
+            setChatHistory((h) => ({
+              ...h,
+              [channel.chatId]: { ...h[channel.chatId], [event.payload.id]: event.payload },
+            }));
           } else {
-            const agentId = event.payload.channel.agentId;
+            const agentId = channel.agentId;
             setDirectById((d) => ({ ...d, [agentId]: { ...d[agentId], [event.payload.id]: event.payload } }));
           }
+        } else if (event.type === "chats:updated") {
+          setChats(event.payload.chats);
+          setProjects(event.payload.projects);
         } else if (event.type === "usage:rate-limit") {
           setRateLimits((r) => ({ ...r, [event.payload.provider]: event.payload }));
         } else if (event.type === "agent:status") {
@@ -152,10 +248,11 @@ export default function App() {
             return next;
           });
         } else if (event.type === "chat:cleared") {
-          if (event.payload.channel === "group") {
-            setHistoryById({});
+          const channel = event.payload.channel;
+          if (isChatChannel(channel)) {
+            setChatHistory((h) => ({ ...h, [channel.chatId]: {} }));
           } else {
-            const agentId = event.payload.channel.agentId;
+            const agentId = channel.agentId;
             setDirectById((d) => ({ ...d, [agentId]: {} }));
           }
           fetchArchives().then(setArchives);
@@ -169,6 +266,46 @@ export default function App() {
   const handleTrustChange = (agentId: string, trustLevel: TrustLevel) => {
     setAgentsById((prev) => (prev[agentId] ? { ...prev, [agentId]: { ...prev[agentId], trustLevel } } : prev));
     void updateAgent(agentId, { trustLevel });
+  };
+
+  const handleSelectProject = (id: string | null) => {
+    setActiveProjectId(id);
+    if (id) localStorage.setItem(PROJECT_SCOPE_KEY, id);
+    else localStorage.removeItem(PROJECT_SCOPE_KEY);
+  };
+
+  const handleNewChat = async () => {
+    // A new chat inherits whatever project the sidebar is scoped to, so the one the user just
+    // made does not immediately vanish out of the list they made it in.
+    const chat = await createChat(undefined, activeProject?.id);
+    // Added by id, not appended: the server's own chats:updated broadcast is already on its way
+    // over this tab's socket, and whichever of the two lands second must not produce a second
+    // row for the same chat.
+    setChats((c) => (c.some((x) => x.id === chat.id) ? c : [...c, chat]));
+    goToChat(chat.id);
+  };
+
+  const handleDeleteChat = async (chat: ChatMeta) => {
+    // Named "Archive" here and everywhere else this is offered, because that is what it does:
+    // the transcript moves to Saved chats, only the room goes away.
+    if (!confirm(`Archive "${chat.title}"? Its messages move to Saved chats - nothing is deleted.`)) return;
+    await deleteChat(chat.id);
+    setChats((list) => list.filter((c) => c.id !== chat.id));
+    if (activeChatId === chat.id) goToChat();
+    fetchArchives().then(setArchives);
+  };
+
+  const handleUnlinkProject = async (project: ProjectMeta) => {
+    if (
+      !confirm(
+        `Unlink "${project.name}"? Its chats become unfiled and its agents keep working exactly as they are. ` +
+          `Nothing in ${project.path} is deleted or moved.`,
+      )
+    ) {
+      return;
+    }
+    await unlinkProject(project.id);
+    handleSelectProject(null);
   };
 
   const hubAgent = view.type === "hub" ? agentsById[view.agentId] : null;
@@ -202,15 +339,40 @@ export default function App() {
         </div>
 
         <div className="sidebar-scroll">
+          <ChatRail
+            chats={scopedChats}
+            projects={projects}
+            activeProjectId={activeProjectId}
+            activeChatId={view.type === "chat" ? activeChatId : null}
+            onSelectProject={handleSelectProject}
+            onAddProject={async (name) => {
+              const project = await linkProject(name);
+              setProjects((p) => (p.some((x) => x.id === project.id) ? p : [...p, project]));
+              handleSelectProject(project.id);
+            }}
+            onUnlinkProject={(project) => void handleUnlinkProject(project)}
+            onSelectChat={(id) => goToChat(id)}
+            onNewChat={() => void handleNewChat()}
+            onRenameChat={(id, title) => {
+              setChats((list) => list.map((c) => (c.id === id ? { ...c, title } : c)));
+              void updateChat(id, { title });
+            }}
+            onDeleteChat={(chat) => void handleDeleteChat(chat)}
+          />
+
           <section className="sidebar-group">
             <div className="sidebar-section-label">
               Agents
-              <span className="count">{agents.length}</span>
+              <span className="count">{scopedAgents.length}</span>
             </div>
-            {agents.length === 0 ? (
-              <div className="sidebar-empty">No agents yet. Add one to start a session.</div>
+            {scopedAgents.length === 0 ? (
+              <div className="sidebar-empty">
+                {activeProject
+                  ? `No agents working in ${activeProject.name}. An agent belongs to the project its working directory is in - add one pointed at this folder.`
+                  : "No agents yet. Add one to start a session."}
+              </div>
             ) : (
-              agents.map((agent) => (
+              scopedAgents.map((agent) => (
                 <AgentCard
                   key={agent.id}
                   agent={agent}
@@ -271,9 +433,9 @@ export default function App() {
       </aside>
 
       {view.type === "archives" ? (
-        <ArchivesPage archives={archives} agentsById={agentsById} onBack={goToChat} />
+        <ArchivesPage archives={archives} agentsById={agentsById} onBack={() => goToChat()} />
       ) : view.type === "skills" ? (
-        <SkillsPage onBack={goToChat} />
+        <SkillsPage onBack={() => goToChat()} />
       ) : hubAgent ? (
         <AgentHubPage
           agent={hubAgent}
@@ -281,7 +443,7 @@ export default function App() {
           modelInfo={modelCatalog.find((m) => m.provider === hubAgent.provider)}
           permissionInfo={permissionCatalog.find((p) => p.provider === hubAgent.provider)}
           directHistory={hubDirectHistory}
-          onBack={goToChat}
+          onBack={() => goToChat()}
           onSave={(patch) => {
             setAgentsById((a) => (a[hubAgent.id] ? { ...a, [hubAgent.id]: { ...a[hubAgent.id], ...patch } } : a));
             void updateAgent(hubAgent.id, patch);
@@ -294,13 +456,19 @@ export default function App() {
         />
       ) : (
         <ChatPanel
+          chat={activeChat}
+          project={activeChatProject}
           history={history}
-          agents={agents}
+          // The roster shown, the @mention autocomplete and the "n agents" count are all the
+          // agents this chat can actually reach - the same set the server routes to. Showing
+          // the whole roster here would offer @mentions that silently go nowhere.
+          agents={activeChatAgents}
           statuses={statuses}
           modelCatalog={modelCatalog}
           rateLimits={Object.values(rateLimits)}
           connected={connected}
-          onSend={(text) => sendChatMessage(text)}
+          onNewChat={() => void handleNewChat()}
+          onSend={(text) => (activeChatId ? sendChatMessage(activeChatId, text) : Promise.resolve())}
         />
       )}
 
@@ -308,6 +476,7 @@ export default function App() {
         <AddAgentModal
           modelCatalog={modelCatalog}
           permissionCatalog={permissionCatalog}
+          defaultProjectPath={activeProject?.path}
           onClose={() => setShowAddAgent(false)}
           onCreate={async (config) => {
             const created = await createAgent(config);

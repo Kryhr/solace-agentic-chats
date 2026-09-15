@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sanitizePersistedRateLimits } from "./rateLimits";
-import type { AgentConfig, ChatMessage, ProviderRateLimit } from "@solace/shared";
+import { LEGACY_CHAT_ID, type AgentConfig, type ChatMessage, type ChatMeta, type ProjectMeta, type ProviderRateLimit } from "@solace/shared";
 import type { ChatArchive } from "./archiveStore";
 import type { PersistedAgentQueue } from "./agentManager";
 
@@ -32,9 +32,24 @@ export interface PersistedState {
    * a turn: without this, a restart would leave the meter blank until the user spent a turn to
    * refill it. Always carries its own observedAt so a stale figure is shown as stale, not fresh. */
   rateLimits: ProviderRateLimit[];
+  /** Every chat room. Absent in any state file written before chats existed - see
+   * migrateChatChannels, which synthesises the one chat those files implicitly had. */
+  chats: ChatMeta[];
+  /** Projects the user has adopted. Absent on older state files, and legitimately empty: a
+   * project link is optional, and chats/agents work perfectly well unfiled. */
+  projects: ProjectMeta[];
 }
 
-const EMPTY_STATE: PersistedState = { agents: [], history: [], archives: [], queues: [], sessions: [], rateLimits: [] };
+const EMPTY_STATE: PersistedState = {
+  agents: [],
+  history: [],
+  archives: [],
+  queues: [],
+  sessions: [],
+  rateLimits: [],
+  chats: [],
+  projects: [],
+};
 
 function statePath(workspaceRoot: string): string {
   return join(workspaceRoot, ".solace-state.json");
@@ -61,22 +76,103 @@ function migrateAgent(agent: AgentConfig): AgentConfig {
   return mapped ? { ...agent, trustLevel: mapped as AgentConfig["trustLevel"] } : agent;
 }
 
+/** The one chat every pre-chats state file implicitly had. Titled honestly: it is not "a new
+ * chat", it is the group chat this app had exactly one of, carried forward whole.
+ *
+ * A factory, not a shared const: ChatStore renames a chat in place, and a module-level object
+ * handed to it would have that rename applied to every future load of this process. */
+function legacyChat(): ChatMeta {
+  return { id: LEGACY_CHAT_ID, title: "Group chat", createdAt: new Date(0).toISOString() };
+}
+
+/** Was this channel written before chats existed? Those files store the literal string
+ * "group"; everything since stores an object. */
+function isLegacyGroupChannel(channel: unknown): boolean {
+  return channel === "group";
+}
+
+function migrateChannel<T extends { channel?: unknown }>(item: T): T {
+  return isLegacyGroupChannel(item?.channel) ? { ...item, channel: { chatId: LEGACY_CHAT_ID } } : item;
+}
+
+/**
+ * Carry a state file written before chats existed onto the chat model, without losing a message.
+ *
+ * Everything that was in the single `"group"` channel - live history, archived transcripts, the
+ * messages inside those archives, and any still-queued turn whose reply was bound for it - moves
+ * into one chat with the fixed id LEGACY_CHAT_ID. Nothing is dropped and nothing is renamed.
+ *
+ * Idempotent by construction: the only thing it rewrites is the literal string "group", which no
+ * longer exists anywhere after the first pass, and it refuses to add a second legacy chat if one
+ * is already present. Running it on an already-migrated file is a no-op.
+ *
+ * Exported because this is the one piece of this change whose failure mode is "the user's entire
+ * conversation history silently vanishes on upgrade" - it is tested directly against a fixture
+ * of the old shape, not inferred from the server booting.
+ */
+export function migrateChatChannels(parsed: {
+  history?: unknown;
+  archives?: unknown;
+  queues?: unknown;
+  chats?: unknown;
+}): { history: ChatMessage[]; archives: ChatArchive[]; queues: PersistedAgentQueue[]; chats: ChatMeta[] } {
+  const history = (Array.isArray(parsed.history) ? parsed.history : []).map(migrateChannel) as ChatMessage[];
+  const archives = (Array.isArray(parsed.archives) ? parsed.archives : []).map((a: ChatArchive) => {
+    const moved = migrateChannel(a) as ChatArchive;
+    const messages = Array.isArray(moved.messages) ? moved.messages.map(migrateChannel) : [];
+    return { ...moved, messages } as ChatArchive;
+  });
+  const queues = (Array.isArray(parsed.queues) ? parsed.queues : []).map((q: PersistedAgentQueue) => ({
+    ...q,
+    inFlight: q.inFlight ? migrateTurn(q.inFlight) : undefined,
+    queued: Array.isArray(q.queued) ? q.queued.map(migrateTurn) : [],
+    pendingInbound: Array.isArray(q.pendingInbound) ? q.pendingInbound.map(migrateTurn) : undefined,
+  })) as PersistedAgentQueue[];
+
+  // A state file with no `chats` key predates chats entirely, so it had exactly one - even when
+  // that one was empty, which is still a chat the user will expect to find on restart.
+  const chats = Array.isArray(parsed.chats) ? (parsed.chats as ChatMeta[]) : [];
+  if (!Array.isArray(parsed.chats) || !chats.some((c) => c.id === LEGACY_CHAT_ID)) {
+    const needsLegacy = !Array.isArray(parsed.chats) || history.some((m) => channelChatId(m.channel) === LEGACY_CHAT_ID);
+    if (needsLegacy) chats.unshift(legacyChat());
+  }
+  return { history, archives, queues, chats };
+}
+
+function channelChatId(channel: unknown): string | undefined {
+  return channel && typeof channel === "object" && "chatId" in channel
+    ? (channel as { chatId: string }).chatId
+    : undefined;
+}
+
+function migrateTurn(turn: PersistedAgentQueue["inFlight"]): NonNullable<PersistedAgentQueue["inFlight"]> {
+  const t = turn as NonNullable<PersistedAgentQueue["inFlight"]>;
+  return isLegacyGroupChannel(t?.replyChannel) ? { ...t, replyChannel: { chatId: LEGACY_CHAT_ID } } : t;
+}
+
 export function loadState(workspaceRoot: string): PersistedState {
   const path = statePath(workspaceRoot);
-  if (!existsSync(path)) return EMPTY_STATE;
+  // A fresh install starts with one chat rather than an empty sidebar and a "New chat" button
+  // the user has to find before they can say anything.
+  if (!existsSync(path)) return { ...EMPTY_STATE, chats: [legacyChat()] };
   try {
     const parsed = JSON.parse(readFileSync(path, "utf-8"));
+    const migrated = migrateChatChannels(parsed);
     return {
       agents: Array.isArray(parsed.agents) ? parsed.agents.map(migrateAgent) : [],
-      history: Array.isArray(parsed.history) ? parsed.history : [],
-      archives: Array.isArray(parsed.archives) ? parsed.archives : [],
-      queues: Array.isArray(parsed.queues) ? parsed.queues : [],
+      history: migrated.history,
+      archives: migrated.archives,
+      queues: migrated.queues,
+      chats: migrated.chats,
+      projects: Array.isArray(parsed.projects) ? parsed.projects : [],
       sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
       // State files written before the usage meter existed simply have no rateLimits key.
       rateLimits: sanitizePersistedRateLimits(parsed.rateLimits),
     };
   } catch {
-    return EMPTY_STATE;
+    // An unreadable state file already means everything is gone; at least hand back a usable
+    // app rather than a sidebar with no chat in it and no obvious way forward.
+    return { ...EMPTY_STATE, chats: [legacyChat()] };
   }
 }
 

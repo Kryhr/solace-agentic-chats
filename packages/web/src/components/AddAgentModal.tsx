@@ -39,11 +39,14 @@ function isEndpointProvider(provider: ProviderId): boolean {
 export function AddAgentModal({
   modelCatalog,
   permissionCatalog,
+  defaultProjectPath,
   onClose,
   onCreate,
 }: {
   modelCatalog: ProviderModelInfo[];
   permissionCatalog: ProviderPermissionInfo[];
+  /** The path of the project the sidebar is scoped to, so a new agent lands in it by default. */
+  defaultProjectPath?: string;
   onClose: () => void;
   onCreate: (config: Omit<AgentConfig, "id">) => void;
 }) {
@@ -99,7 +102,13 @@ export function AddAgentModal({
     fetchProjects().then(({ root, projects }) => {
       setWorkspaceRoot(root);
       setProjects(projects);
-      if (projects.length > 0) setSelected(projects[0].path);
+      // Default to the project the sidebar is currently scoped to. An agent belongs to the
+      // project its cwd is in - there is no separate "which project is this agent in" field to
+      // set - so this picker IS the project assignment, and defaulting it to anything else
+      // silently creates an agent the chat the user is looking at cannot reach.
+      const preferred = defaultProjectPath && projects.find((p) => p.path === defaultProjectPath);
+      if (preferred) setSelected(preferred.path);
+      else if (projects.length > 0) setSelected(projects[0].path);
       else setSelected(NEW_PROJECT_VALUE);
     });
     fetchCredentials().then(setCredentials);
@@ -404,7 +413,8 @@ export function AddAgentModal({
           </label>
         )}
         <div className="field-note">
-          Projects live under <code>{workspaceRoot}</code>
+          Projects live under <code>{workspaceRoot}</code>. This is also which project the agent
+          belongs to - it is the folder its CLI will actually run in.
         </div>
         {error && (
           <div className="field-error" role="alert">
