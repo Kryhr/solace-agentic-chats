@@ -5,7 +5,7 @@ same project at the same time** — Claude Code, Codex CLI, Gemini CLI, Qwen Cod
 you've got — where they can see each other's work, task each other in a shared group chat,
 and you control how much they're allowed to do without asking first.
 
-## Quicc setup
+## Quick setup
 
 ```bash
 git clone https://github.com/Kryhr/solace-agentic-chats.git
