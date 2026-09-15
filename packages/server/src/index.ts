@@ -7,14 +7,15 @@ import { ChatBus } from "./core/chatBus";
 import { ChatStore } from "./core/chatStore";
 import { AgentManager } from "./core/agentManager";
 import { WORKSPACE_ROOT, createProject, ensureWorkspaceRoot, listProjects } from "./core/workspace";
-import { checkAllProviders, testProvider } from "./core/providerStatus";
+import { checkAllProviders, checkCliProvider, isCliProvider, testProvider } from "./core/providerStatus";
+import { checkCredential, NotCheckableError } from "./core/connectionChecks";
 import { getModelCatalog } from "./core/modelCatalog";
 import { getPermissionCatalog } from "./core/permissionCatalog";
 import { debounce, loadState, saveState } from "./core/persistence";
 import { ApprovalRegistry } from "./core/approvalRegistry";
 import { ArchiveStore } from "./core/archiveStore";
 import { tryHandleCommand } from "./core/commands";
-import { checkGithubAuth } from "./core/github";
+import { checkGithubAuth, checkGithubConnection } from "./core/github";
 import {
   canReadVaultAtTrustLevel,
   deleteCredential,
@@ -347,6 +348,42 @@ async function main() {
   });
 
   app.get("/api/github/status", async () => checkGithubAuth());
+
+  /**
+   * Everything Connections shows for GitHub, including `gh auth status`'s own text. GET
+   * rather than POST because it is read-only and changes nothing - it is two `gh` reads.
+   */
+  app.get("/api/github/connection", async () => checkGithubConnection());
+
+  /**
+   * The cheap per-row check for a CLI provider: does the binary resolve on PATH and does
+   * `--version` exit 0. Deliberately NOT the same thing as POST /api/providers/:provider/test
+   * below, which runs a real billed turn - that one stays a separate, explicitly-labelled
+   * action so nothing in the panel can spend the user's tokens by looking at it.
+   */
+  app.post<{ Params: { provider: ProviderId } }>("/api/connections/cli/:provider/check", async (req, reply) => {
+    if (!isCliProvider(req.params.provider)) {
+      reply.code(400);
+      return { error: `"${req.params.provider}" is not a CLI provider - it has no binary to check` };
+    }
+    return checkCliProvider(req.params.provider);
+  });
+
+  /**
+   * The real check behind one saved connection. POST because it makes an outbound request
+   * against a possibly-paid endpoint or reads the user's filesystem: never something a page
+   * load, a prefetch or a background poll may trigger. 422 for "there is genuinely nothing to
+   * check here" (a stored password), which is a different answer from a check that ran and
+   * failed - the UI must not paint the first as red.
+   */
+  app.post<{ Params: { id: string } }>("/api/credentials/:id/check", async (req, reply) => {
+    try {
+      return await checkCredential(WORKSPACE_ROOT, req.params.id);
+    } catch (err) {
+      reply.code(err instanceof NotCheckableError ? 422 : 500);
+      return { error: (err as Error).message };
+    }
+  });
 
   app.get("/api/credentials", async () => listCredentials(WORKSPACE_ROOT));
 

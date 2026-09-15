@@ -1342,8 +1342,19 @@ ${text}` : text;
     runtime.busy = true;
     runtime.currentTurn = turn;
     runtime.turnStartedAt = new Date().toISOString();
-    // Captured at the start, so it survives the turn ending and becomes "what it last did".
-    runtime.lastTaskLine = summarizeTaskLine(describeWork(turn));
+    // Written through to the persisted config, not just held in memory.
+    //
+    // Keeping it in memory alone still left the sidebar wrong: a server restart (which happens
+    // constantly in dev) dropped it and the row fell back to the stale /task label again -
+    // which is exactly the bug, reappearing every restart. Writing it through means the field
+    // now genuinely means "what this agent last worked on", survives restarts, and updates
+    // itself. /task still works, as a label that holds until the next turn supersedes it -
+    // which is the honest scope for a value nothing else can keep true.
+    const taskLine = summarizeTaskLine(describeWork(turn));
+    runtime.lastTaskLine = taskLine;
+    if (taskLine && runtime.config.currentTask !== taskLine) {
+      this.updateAgent(runtime.config.id, { currentTask: taskLine });
+    }
     runtime.abortKind = undefined; // a previous turn's reason must never leak into this one
     runtime.activeTurnToken = randomUUID();
     this.onChange?.(); // persist that this turn is now the one actually in flight
