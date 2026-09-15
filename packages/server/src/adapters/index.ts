@@ -5,7 +5,8 @@ import { codexCliAdapter } from "./codex-cli";
 import { claudeApiAdapter } from "./claude-api";
 import { openaiApiAdapter } from "./openai-api";
 import { customApiAdapter } from "./custom-api";
-import { geminiCliAdapter, qwenCodeAdapter } from "./stubs";
+import { geminiCliAdapter } from "./gemini-cli";
+import { qwenCodeAdapter } from "./qwen-code";
 
 const cliAdapters: Record<CliProviderId, ProviderAdapter> = {
   "claude-code": claudeCodeAdapter,
@@ -14,8 +15,11 @@ const cliAdapters: Record<CliProviderId, ProviderAdapter> = {
   "qwen-code": qwenCodeAdapter,
 };
 
-// Only claude-code and codex-cli have a direct-API-key alternative today - gemini/qwen's CLI
-// adapters aren't even implemented yet, so there's no API variant to offer for them either.
+// Only claude-code and codex-cli have a direct-API-key alternative today. Gemini and Qwen have
+// real CLI adapters now, but no API-key variant has been built or verified for either, and
+// offering one that has never been run would be claiming support this app doesn't have.
+// Keyed by CliProviderId, which already excludes both endpoint-backed ids ("custom", "local") -
+// those have no CLI to shell out to and reach customApiAdapter directly in getAdapter().
 const apiAdapters: Partial<Record<CliProviderId, ProviderAdapter>> = {
   "claude-code": claudeApiAdapter,
   "codex-cli": openaiApiAdapter,

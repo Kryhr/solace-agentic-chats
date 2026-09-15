@@ -22,7 +22,8 @@ already signed in on your machine:
 |---|---|---|
 | Claude Code | `npm install -g @anthropic-ai/claude-code` | run `claude` once |
 | Codex CLI | `npm install -g @openai/codex` | `codex login` |
-| Gemini CLI / Qwen Code | CLI adapters not wired up yet | — |
+| Gemini CLI | `npm install -g @google/gemini-cli` | run `gemini` once |
+| Qwen Code | `npm install -g @qwen-code/qwen-code` | run `qwen` once |
 
 The sidebar's **Providers** panel shows what it actually found installed, with a **Test
 connection** button that runs a real trivial prompt through each one. Click **+ Add agent**,
@@ -104,8 +105,11 @@ packages/
 
 ## Roadmap (deliberately not built yet)
 
-1. Implement the Gemini CLI and Qwen Code adapters against the same `ProviderAdapter`
-   interface used by Claude Code and Codex CLI.
+1. A live approval-loop for Gemini CLI and Qwen Code. Both adapters map every trust level onto
+   the CLI's own `--approval-mode`, so "manual" is currently that CLI's internal routing rather
+   than an approval card in this UI. Qwen looks like it could do better — it emits
+   `can_use_tool` control requests and reads decisions back over `--input-format stream-json` —
+   but that has not been built or verified, so nothing claims it works yet.
 2. A live approval-loop equivalent for Codex CLI, if OpenAI ever exposes one (currently
    confirmed not to exist - see ARCHITECTURE.md).
 3. Multiple accounts per provider (run N instances of the same CLI under different
