@@ -5,6 +5,8 @@ import type { ChatBus } from "./chatBus";
 import type { ChatStore } from "./chatStore";
 import type { ArchiveStore } from "./archiveStore";
 import { checkGithubAuth } from "./github";
+import { getPermissionCatalog } from "./permissionCatalog";
+import { TRUST_LEVELS } from "./validateAgentConfig";
 import { listCredentials, listSshCredentials } from "./credentials";
 import { WORKSPACE_ROOT } from "./workspace";
 import type { SshCredentialMeta } from "@solace/shared";
@@ -30,6 +32,7 @@ const HELP_TEXT = [
   "/clear - archive this channel's history (nothing is deleted - see Saved chats)",
   "/model <value> - (from an agent's own hub) switch its model",
   "/effort <value> - (from an agent's own hub) switch its thinking effort",
+  "/trust <level> [@handle] - set the permission mode for every agent at once, or just one",
   "/reset - (from an agent's own hub) forget its session so the next turn starts fresh",
   "/usage - real rate-limit usage each provider has actually reported",
   "/help - show this list",
@@ -222,6 +225,66 @@ export async function tryHandleCommand(text: string, ctx: CommandContext): Promi
       const label = channelLabel(ctx);
       const removed = ctx.bus.clearChannel(ctx.channel);
       ctx.archive.add(ctx.channel, removed, label);
+      return true;
+    }
+
+    case "trust":
+    case "permissions": {
+      // Bulk, because setting five agents to plan mode one dropdown at a time before a risky
+      // run is exactly the kind of chore people skip - and skipping it is the expensive
+      // outcome. A provider that does not support the requested mode is REPORTED, never
+      // quietly given a different one: silently downgrading "plan" to something permissive
+      // would be the worst possible failure of a permission command.
+      const [levelToken, handleToken] = rest;
+      const requested = TRUST_LEVELS.find((l) => l.toLowerCase() === (levelToken ?? "").toLowerCase());
+      if (!requested) {
+        post(
+          ctx.bus,
+          ctx.channel,
+          `usage: /trust <${TRUST_LEVELS.join("|")}> [@handle]
+Without a handle it applies to every agent.`,
+        );
+        return true;
+      }
+
+      const catalog = new Map(getPermissionCatalog().map((p) => [p.provider, p.availableModes]));
+      const all = ctx.agents.listAgents();
+      const targets = handleToken
+        ? all.filter((a) => a.handle.toLowerCase() === handleToken.replace(/^@/, "").toLowerCase())
+        : all;
+      if (targets.length === 0) {
+        post(ctx.bus, ctx.channel, handleToken ? `no agent called ${handleToken}` : "no agents configured yet");
+        return true;
+      }
+
+      const changed: string[] = [];
+      const unchanged: string[] = [];
+      const unsupported: string[] = [];
+      for (const agent of targets) {
+        const modes = catalog.get(agent.provider) ?? [];
+        // An empty list means that provider's real modes were never verified - treat it as
+        // "we don't know", which is not the same as "anything goes".
+        if (modes.length > 0 && !modes.includes(requested)) {
+          unsupported.push(`${agent.handle} (${agent.provider} has no "${requested}" mode)`);
+          continue;
+        }
+        if (agent.trustLevel === requested) {
+          unchanged.push(agent.handle);
+          continue;
+        }
+        ctx.agents.updateAgent(agent.id, { trustLevel: requested });
+        changed.push(agent.handle);
+      }
+
+      const lines = [
+        changed.length > 0 ? `Set to ${requested}: ${changed.join(", ")}` : undefined,
+        unchanged.length > 0 ? `Already ${requested}: ${unchanged.join(", ")}` : undefined,
+        unsupported.length > 0 ? `Left alone - ${unsupported.join("; ")}` : undefined,
+        requested === "bypassPermissions" && changed.length > 0
+          ? "Those agents can now edit files and run commands with no approval."
+          : undefined,
+      ].filter(Boolean);
+      post(ctx.bus, ctx.channel, lines.join("\n"));
       return true;
     }
 
