@@ -10,7 +10,8 @@
     "dev": "concurrently -n server,web -c blue,green \"npm:server\" \"npm:web\"",
     "build": "npm run build --workspace=packages/shared && npm run build --workspace=packages/server && npm run build --workspace=packages/web",
     "server": "npm run dev --workspace=packages/server",
-    "web": "npm run dev --workspace=packages/web"
+    "web": "npm run dev --workspace=packages/web",
+    "test": "npm run test --workspace=packages/server"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

@@ -1,9 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { nanoid } from "nanoid";
-import type { AgentConfig, AgentRunState, AgentStatus, ChatChannel, ChatMessage, TurnUsage } from "@solace/shared";
+import type {
+  AgentConfig,
+  AgentRunState,
+  AgentStatus,
+  ChatChannel,
+  ChatMessage,
+  ProviderRateLimit,
+  TurnUsage,
+} from "@solace/shared";
 import { getAdapter } from "../adapters";
 import { ChatBus } from "./chatBus";
 import { parseMentions } from "./mentions";
+import { RateLimitStore } from "./rateLimits";
 import type { ApprovalRegistry } from "./approvalRegistry";
 import { extractLiveClaims, findUnreachableClaims, unreachableClaimNotice } from "./claimCheck";
 import { getCredentialSecrets } from "./credentials";
@@ -115,6 +124,8 @@ interface AgentRuntime {
    * start) so a persistence snapshot taken mid-turn can still capture what was actually
    * running, not just what's still waiting. */
   currentTurn?: QueuedTurn;
+  /** The last rate-limit figure this agent's own turn heard from the provider. */
+  rateLimit?: ProviderRateLimit;
   /** The most recently failed turn, kept around so a "Retry" action (automatic or
    * user-triggered) can re-submit the exact same prompt without the caller needing to retype
    * it. Cleared on the next successful turn. */
@@ -395,13 +406,20 @@ export class AgentManager {
   /** Set by index.ts to persist state after every agent add/update/remove. */
   onChange: (() => void) | null = null;
 
+  /** Rate limits are held per provider, not per agent: two agents on the same CLI share one
+   * real account and one real limit, so whichever of them last heard from the provider holds
+   * the current truth for both. */
+  private rateLimits: RateLimitStore;
+
   constructor(
     private bus: ChatBus,
     initialAgents: AgentConfig[] = [],
     private approvals?: ApprovalRegistry,
     initialQueues: PersistedAgentQueue[] = [],
     initialSessions: PersistedAgentSession[] = [],
+    initialRateLimits: ProviderRateLimit[] = [],
   ) {
+    this.rateLimits = new RateLimitStore(initialRateLimits);
     for (const config of initialAgents) {
       this.agents.set(config.id, {
         config,
@@ -646,6 +664,11 @@ export class AgentManager {
     return [...this.agents.values()].map((a) => a.config);
   }
 
+  /** Latest real observation per provider - providers that have never reported are simply absent. */
+  listRateLimits(): ProviderRateLimit[] {
+    return this.rateLimits.list();
+  }
+
   listStatuses(): AgentStatus[] {
     return [...this.agents.values()].map((a) => this.statusFor(a));
   }
@@ -659,6 +682,7 @@ export class AgentManager {
       lastUsage: runtime.lastUsage,
       totalUsage: runtime.totalUsage,
       lastError: runtime.lastError,
+      rateLimit: runtime.rateLimit ?? this.rateLimits.get(runtime.config.provider),
       retryAt: runtime.scheduledRetryAt,
       canRetry: runtime.lastFailedTurn !== undefined,
     };
@@ -1188,6 +1212,13 @@ export class AgentManager {
           } else if (event.type === "usage") {
             runtime.lastUsage = event.usage;
             runtime.totalUsage = addUsage(runtime.totalUsage, event.usage);
+          } else if (event.type === "rate-limit") {
+            runtime.rateLimit = event.rateLimit;
+            if (this.rateLimits.record(event.rateLimit)) {
+              this.bus.emitEvent({ type: "usage:rate-limit", payload: event.rateLimit });
+              this.onChange?.();
+            }
+            this.emitStatus(agentId);
           } else if (event.type === "cancelled") {
             // Not a failure - see AdapterEvent.cancelled. Deliberately does NOT set hadError,
             // so an aborted turn never lands in lastFailedTurn or schedules a retry.

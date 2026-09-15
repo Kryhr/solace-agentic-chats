@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AgentConfig, AgentStatus, ChatMessage, ProviderModelInfo } from "@solace/shared";
+import type { AgentConfig, AgentStatus, ChatMessage, ProviderModelInfo, ProviderRateLimit } from "@solace/shared";
 import { ProviderIcon, UserAvatar } from "./ProviderIcon";
+import { UsageMeter } from "./UsageMeter";
 import { SendIcon } from "./SendIcon";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 import { useEntranceTracker } from "../lib/useEntranceTracker";
@@ -22,6 +23,8 @@ function findMentionQuery(text: string, cursor: number): { start: number; query:
 const SLASH_COMMANDS = [
   { name: "task", hint: "@handle <description>" },
   { name: "status", hint: "" },
+  { name: "usage", hint: "" },
+  { name: "reset", hint: "(from an agent's hub)" },
   { name: "github", hint: "status | init <repo-name>" },
   { name: "clear", hint: "" },
   { name: "model", hint: "<value> (from an agent's hub)" },
@@ -44,12 +47,14 @@ export function ChatPanel({
   agents,
   statuses,
   modelCatalog,
+  rateLimits,
   onSend,
 }: {
   history: ChatMessage[];
   agents: AgentConfig[];
   statuses: Record<string, AgentStatus>;
   modelCatalog: ProviderModelInfo[];
+  rateLimits: ProviderRateLimit[];
   onSend: (text: string) => Promise<void>;
 }) {
   const [draft, setDraft] = useState("");
@@ -312,6 +317,7 @@ export function ChatPanel({
               onClick={(e) => setCursor(e.currentTarget.selectionStart ?? 0)}
               onKeyDown={onKeyDown}
             />
+            <UsageMeter rateLimits={rateLimits} providersInUse={[...new Set(agents.map((a) => a.provider))]} />
             <button className="send-btn" onClick={submit} disabled={!draft.trim()} aria-label="Send message" title="Send · Enter">
               <SendIcon />
             </button>

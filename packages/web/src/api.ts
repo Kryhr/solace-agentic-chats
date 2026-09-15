@@ -8,6 +8,7 @@ import type {
   ProviderModelInfo,
   ProviderPermissionInfo,
   ProviderStatus,
+  ProviderRateLimit,
   ServerEvent,
 } from "@solace/shared";
 
@@ -204,6 +205,9 @@ type Hello = {
   history: ChatMessage[];
   agents: AgentConfig[];
   statuses: AgentStatus[];
+  /** Latest real rate-limit observation per provider, so a reconnecting tab shows the meter
+   * immediately instead of waiting for someone to spend a turn refilling it. */
+  rateLimits: ProviderRateLimit[];
   approvals: PendingApproval[];
 };
 

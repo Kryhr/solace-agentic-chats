@@ -1,9 +1,12 @@
-import type { ProviderId, TrustLevel, TurnUsage } from "@solace/shared";
+import type { ProviderId, ProviderRateLimit, TrustLevel, TurnUsage } from "@solace/shared";
 
 export type AdapterEvent =
   | { type: "text"; text: string }
   | { type: "tool-use"; description: string }
   | { type: "usage"; usage: TurnUsage }
+  /** Account-level rate-limit numbers the CLI volunteered mid-turn. Only emitted when the
+   * provider actually reported a usable figure - never synthesised at the start/end of a turn. */
+  | { type: "rate-limit"; rateLimit: ProviderRateLimit }
   /** The provider's own id for this agent's ongoing conversation, so the next turn can resume
    * it instead of starting cold. Emitted as soon as it is known. */
   | { type: "session"; sessionId: string }

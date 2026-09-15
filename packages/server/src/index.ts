@@ -40,7 +40,7 @@ async function main() {
   const bus = new ChatBus(persisted.history);
   const approvals = new ApprovalRegistry();
   const archive = new ArchiveStore(persisted.archives);
-  const agents = new AgentManager(bus, persisted.agents, approvals, persisted.queues, persisted.sessions);
+  const agents = new AgentManager(bus, persisted.agents, approvals, persisted.queues, persisted.sessions, persisted.rateLimits);
 
   const persist = debounce(
     () =>
@@ -50,6 +50,7 @@ async function main() {
         archives: archive.list(),
         queues: agents.getPersistableQueues(),
         sessions: agents.getPersistableSessions(),
+        rateLimits: agents.listRateLimits(),
       }),
     300,
   );
@@ -79,6 +80,7 @@ async function main() {
         history: bus.getHistoryFor("group"),
         agents: agents.listAgents(),
         statuses: agents.listStatuses(),
+        rateLimits: agents.listRateLimits(),
         approvals: approvals.listPending(),
       }),
     );
@@ -154,6 +156,8 @@ async function main() {
     }
     return { ok: true };
   });
+
+  app.get("/api/usage", async () => agents.listRateLimits());
 
   app.get("/api/providers/status", async () => checkAllProviders());
   app.get("/api/providers/models", async () => getModelCatalog());

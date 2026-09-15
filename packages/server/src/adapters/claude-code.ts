@@ -3,6 +3,7 @@ import * as readline from "node:readline";
 import { join } from "node:path";
 import type { TrustLevel } from "@solace/shared";
 import { killCliTree, spawnCli } from "../core/spawnCli";
+import { parseClaudeRateLimitEvent } from "../core/rateLimits";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 
 // Always re-anchor from the package root (two levels up from this compiled/ts-node file,
@@ -119,6 +120,12 @@ export const claudeCodeAdapter: ProviderAdapter = {
         if (!line.trim()) return;
         try {
           const event = JSON.parse(line);
+          // Claude Code interleaves {"type":"rate_limit_event"} lines into the same stream,
+          // carrying the real utilization of the account's 5-hour and 7-day windows. It is
+          // undocumented, so the parser returns null for anything it doesn't fully recognise
+          // and we simply emit nothing in that case.
+          const rateLimit = parseClaudeRateLimitEvent(event, new Date().toISOString());
+          if (rateLimit) onEvent({ type: "rate-limit", rateLimit });
           // The model the provider actually resolved the request to. "sonnet" is an alias, so
           // this is the only way to say which Sonnet a message really came from.
           // Belt and braces: if the CLI ever rejects our id or forks the session, the stream is

@@ -67,6 +67,39 @@ export interface TurnUsage {
   totalCostUsd?: number;
 }
 
+/**
+ * One rate-limit window exactly as the provider's own CLI reported it. Every field here comes
+ * verbatim out of a provider event - nothing is estimated, interpolated, or filled in with a
+ * default. If a provider didn't report a window, there is no entry for it at all (rather than
+ * an entry reading 0%), because "we don't know" and "0% used" are different facts.
+ */
+export interface RateLimitWindow {
+  /** The provider's own name for the window: Claude's "five_hour"/"seven_day", Codex's "primary"/"secondary". */
+  key: string;
+  /** Human label. Claude's windows are self-describing; Codex's is derived from its own window_minutes. */
+  label: string;
+  /** 0..100. Claude reports a 0..1 fraction and Codex a 0..100 percent - both are normalised here
+   * to percent, which is the only arithmetic ever applied to a provider's number. */
+  usedPercent: number;
+  /** Unix seconds, passed straight through. Undefined = the provider didn't say when it resets. */
+  resetsAt?: number;
+}
+
+/**
+ * The most recent rate-limit report from one provider, with when we saw it. Neither Claude Code
+ * nor Codex exposes a pollable quota endpoint or an on-disk cache, so this only ever arrives
+ * mid-turn - which is why an observation is worthless without its timestamp and why the UI
+ * always labels the figure with when it was observed rather than implying it is live.
+ */
+export interface ProviderRateLimit {
+  provider: ProviderId;
+  windows: RateLimitWindow[];
+  /** ISO time the provider's own event carrying these numbers was received. */
+  observedAt: string;
+  /** The provider's own plan label, if its event carried one (Codex's plan_type). */
+  planType?: string;
+}
+
 export interface AgentStatus {
   agentId: string;
   state: AgentRunState;
@@ -79,6 +112,8 @@ export interface AgentStatus {
   /** The literal last error/rate-limit message the provider CLI reported, if any - shown
    * verbatim rather than parsed/interpreted, since providers don't expose a queryable quota API. */
   lastError?: string;
+  /** The last rate-limit report seen on a turn run by this agent, if its provider ever sent one. */
+  rateLimit?: ProviderRateLimit;
   /** Set when a failed turn's error text yielded a real, parseable future reset time and a
    * retry has genuinely been scheduled for it (an ISO timestamp) - lets the UI show "retrying
    * at ..." instead of a dead-looking error. Absent doesn't mean nothing failed, just that
@@ -157,4 +192,5 @@ export type ServerEvent =
   | { type: "chat:message"; payload: ChatMessage }
   | { type: "chat:cleared"; payload: { channel: ChatChannel } }
   | { type: "approval:requested"; payload: PendingApproval }
-  | { type: "approval:resolved"; payload: { id: string; approved: boolean } };
+  | { type: "approval:resolved"; payload: { id: string; approved: boolean } }
+  | { type: "usage:rate-limit"; payload: ProviderRateLimit };

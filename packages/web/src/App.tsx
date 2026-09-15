@@ -6,6 +6,7 @@ import type {
   PendingApproval,
   ProviderModelInfo,
   ProviderPermissionInfo,
+  ProviderRateLimit,
   TrustLevel,
 } from "@solace/shared";
 import {
@@ -53,6 +54,9 @@ export default function App() {
   // effect invoke - is naturally idempotent instead of appending a visible duplicate.
   const [agentsById, setAgentsById] = useState<Record<string, AgentConfig>>({});
   const [statuses, setStatuses] = useState<Record<string, AgentStatus>>({});
+  /** Keyed by provider, not by agent: several agents can share one CLI and therefore one real
+   * account and one real limit. */
+  const [rateLimits, setRateLimits] = useState<Record<string, ProviderRateLimit>>({});
   const [historyById, setHistoryById] = useState<Record<string, ChatMessage>>({});
   const [directById, setDirectById] = useState<Record<string, Record<string, ChatMessage>>>({});
   const [modelCatalog, setModelCatalog] = useState<ProviderModelInfo[]>([]);
@@ -115,6 +119,7 @@ export default function App() {
           // server has never heard of - a fresh "hello" is this tab's one chance to notice
           // the server's approval state has moved on and drop anything it no longer knows.
           setPendingApprovals(Object.fromEntries(event.approvals.map((a) => [a.id, a])));
+          setRateLimits(Object.fromEntries((event.rateLimits ?? []).map((r) => [r.provider, r])));
         } else if (event.type === "chat:message") {
           if (event.payload.channel === "group") {
             setHistoryById((h) => ({ ...h, [event.payload.id]: event.payload }));
@@ -122,6 +127,8 @@ export default function App() {
             const agentId = event.payload.channel.agentId;
             setDirectById((d) => ({ ...d, [agentId]: { ...d[agentId], [event.payload.id]: event.payload } }));
           }
+        } else if (event.type === "usage:rate-limit") {
+          setRateLimits((r) => ({ ...r, [event.payload.provider]: event.payload }));
         } else if (event.type === "agent:status") {
           setStatuses((s) => ({ ...s, [event.payload.agentId]: event.payload }));
         } else if (event.type === "agent:added" || event.type === "agent:updated") {
@@ -289,6 +296,7 @@ export default function App() {
           agents={agents}
           statuses={statuses}
           modelCatalog={modelCatalog}
+          rateLimits={Object.values(rateLimits)}
           onSend={(text) => sendChatMessage(text)}
         />
       )}

@@ -2,6 +2,7 @@ import * as readline from "node:readline";
 import { join } from "node:path";
 import type { TrustLevel } from "@solace/shared";
 import { killCliTree, spawnCli } from "../core/spawnCli";
+import { parseCodexRateLimitEvent } from "../core/rateLimits";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 
 /** The group-chat MCP bridge, re-anchored to the *source* copy from the package root exactly as
@@ -139,6 +140,11 @@ export const codexCliAdapter: ProviderAdapter = {
         sawStreamEvent = true;
         try {
           const event = JSON.parse(line);
+          // codex exec also emits {"type":"token_count", ... "rate_limits":{...}} several times
+          // per turn; its rate_limits block is the source of Codex's own "you have X% left".
+          // The first one of a turn often has a null primary window, which parses to null here.
+          const rateLimit = parseCodexRateLimitEvent(event, new Date().toISOString());
+          if (rateLimit) onEvent({ type: "rate-limit", rateLimit });
           // Codex does not document its JSONL event schema, and the field carrying the session
           // id is not published - so rather than hardcode a guess, take the first plausible id
           // we see from any of the shapes observed on disk and stop looking.

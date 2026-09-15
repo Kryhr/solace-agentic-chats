@@ -21,6 +21,7 @@ const HELP_TEXT = [
   "/model <value> - (from an agent's own hub) switch its model",
   "/effort <value> - (from an agent's own hub) switch its thinking effort",
   "/reset - (from an agent's own hub) forget its session so the next turn starts fresh",
+  "/usage - real rate-limit usage each provider has actually reported",
   "/help - show this list",
 ].join("\n");
 
@@ -75,6 +76,34 @@ export async function tryHandleCommand(text: string, ctx: CommandContext): Promi
       }
       ctx.agents.updateAgent(agentId, { currentTask: description });
       post(ctx.bus, ctx.channel, `task updated for ${handleToken}: ${description}`);
+      return true;
+    }
+
+    case "usage": {
+      // Only ever prints what a provider's own CLI volunteered mid-turn. A provider that has
+      // never reported gets a plain sentence saying so - never a fabricated 0%, which would
+      // read as "you've used nothing" when the truth is "we don't know".
+      const limits = ctx.agents.listRateLimits();
+      const providers = [...new Set(ctx.agents.listAgents().map((a) => a.provider))];
+      if (providers.length === 0) {
+        post(ctx.bus, ctx.channel, "no agents configured yet");
+        return true;
+      }
+      const lines = providers.map((provider) => {
+        const limit = limits.find((l) => l.provider === provider);
+        if (!limit || limit.windows.length === 0) {
+          return `${provider} - no usage reported yet (providers only report during a turn)`;
+        }
+        const windows = limit.windows
+          .map((w) => {
+            const resets = w.resetsAt ? `, resets ${new Date(w.resetsAt * 1000).toLocaleTimeString()}` : "";
+            return `${w.label} ${w.usedPercent.toFixed(1)}% used${resets}`;
+          })
+          .join(" · ");
+        const plan = limit.planType ? ` (${limit.planType})` : "";
+        return `${provider}${plan} - ${windows} — as of ${new Date(limit.observedAt).toLocaleTimeString()}`;
+      });
+      post(ctx.bus, ctx.channel, lines.join("\n"));
       return true;
     }
 

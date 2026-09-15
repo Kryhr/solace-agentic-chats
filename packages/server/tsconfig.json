@@ -9,5 +9,9 @@
     "skipLibCheck": true,
     "resolveJsonModule": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // Tests run straight from source via `node --import tsx --test` and are never imported by
+  // anything shipped, so compiling them into dist/ only produces dead output - and it forces
+  // test files to obey the build's import rules (no .ts extensions) for no benefit.
+  "exclude": ["src/**/*.test.ts"]
 }

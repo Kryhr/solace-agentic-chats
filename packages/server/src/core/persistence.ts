@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AgentConfig, ChatMessage } from "@solace/shared";
+import { sanitizePersistedRateLimits } from "./rateLimits";
+import type { AgentConfig, ChatMessage, ProviderRateLimit } from "@solace/shared";
 import type { ChatArchive } from "./archiveStore";
 import type { PersistedAgentQueue } from "./agentManager";
 
@@ -27,9 +28,13 @@ export interface PersistedState {
    * server restart rather than silently starting cold. Optional on load: state files written
    * before this existed simply have no sessions. */
   sessions: PersistedAgentSession[];
+  /** Last rate-limit observation per provider. Persisted because providers only report during
+   * a turn: without this, a restart would leave the meter blank until the user spent a turn to
+   * refill it. Always carries its own observedAt so a stale figure is shown as stale, not fresh. */
+  rateLimits: ProviderRateLimit[];
 }
 
-const EMPTY_STATE: PersistedState = { agents: [], history: [], archives: [], queues: [], sessions: [] };
+const EMPTY_STATE: PersistedState = { agents: [], history: [], archives: [], queues: [], sessions: [], rateLimits: [] };
 
 function statePath(workspaceRoot: string): string {
   return join(workspaceRoot, ".solace-state.json");
@@ -67,6 +72,8 @@ export function loadState(workspaceRoot: string): PersistedState {
       archives: Array.isArray(parsed.archives) ? parsed.archives : [],
       queues: Array.isArray(parsed.queues) ? parsed.queues : [],
       sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+      // State files written before the usage meter existed simply have no rateLimits key.
+      rateLimits: sanitizePersistedRateLimits(parsed.rateLimits),
     };
   } catch {
     return EMPTY_STATE;
