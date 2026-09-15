@@ -100,8 +100,13 @@ export function AgentCard({
       </div>
 
       <div className="agent-row-bottom">
-        <span className={`task-line ${task ? "" : "empty"}`} title={task ?? undefined}>
-          {task ?? (state === "offline" ? "Not started" : (STATE_LABELS[state] ?? state))}
+        {/* `||`, not `??`. An agent that has never been given a task carries an empty STRING
+            rather than undefined, and `?? fallback` only substitutes for null/undefined - so
+            the row rendered blank instead of saying "Idle", while an agent whose field was
+            genuinely undefined showed the state label correctly. Same symptom, two different
+            causes, which is why only some agents looked broken. */}
+        <span className={`task-line ${task ? "" : "empty"}`} title={task || undefined}>
+          {task || (state === "offline" ? "Not started" : (STATE_LABELS[state] ?? state))}
         </span>
         {elapsed && (
           <span className="agent-elapsed" title={`Working for ${elapsed}`}>
