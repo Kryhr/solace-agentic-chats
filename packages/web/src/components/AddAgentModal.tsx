@@ -1,5 +1,13 @@
 import { useEffect, useState } from "react";
-import type { AgentConfig, CredentialMeta, ProviderId, ProviderModelInfo, ProviderPermissionInfo, TrustLevel } from "@solace/shared";
+import type {
+  AgentConfig,
+  ApiKeyCredentialMeta,
+  CredentialMeta,
+  ProviderId,
+  ProviderModelInfo,
+  ProviderPermissionInfo,
+  TrustLevel,
+} from "@solace/shared";
 import { createProject, fetchCredentials, fetchProjects, saveCredential, type ProjectInfo } from "../api";
 import { effortOptionsFor, modelOptionsFor } from "../lib/modelOptions";
 import { permissionOptionsFor, TRUST_LABELS } from "../lib/permissionOptions";
@@ -48,7 +56,11 @@ export function AddAgentModal({
   const effortOptions = effortOptionsFor(info);
   const permissionInfo = permissionCatalog.find((p) => p.provider === provider);
   const trustOptions = permissionOptionsFor(permissionInfo);
-  const providerCredentials = credentials.filter((c) => c.provider === provider);
+  // SSH deploy targets share the credentials store but can never back an agent's sign-in -
+  // the `kind` check is what keeps them out of this dropdown.
+  const providerCredentials = credentials.filter(
+    (c): c is ApiKeyCredentialMeta => c.kind !== "ssh" && c.provider === provider,
+  );
 
   // Escape closes the dialog. It read as broken without this: the backdrop was
   // already click-to-dismiss, so the modal was dismissible by mouse but not by
@@ -109,7 +121,7 @@ export function AddAgentModal({
   const isCreatingNewKey = credentialId === NEW_KEY_VALUE;
   /** A custom connection is identified by the service it points at, not by "custom" - several
    * saved custom keys would otherwise be indistinguishable in this dropdown. */
-  const credentialOptionLabel = (c: CredentialMeta) =>
+  const credentialOptionLabel = (c: ApiKeyCredentialMeta) =>
     c.provider === "custom" ? (c.connectionName || c.baseUrl || "custom endpoint") : c.label;
 
   const handleAdd = async () => {

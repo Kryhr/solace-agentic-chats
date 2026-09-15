@@ -14,7 +14,14 @@ import { ApprovalRegistry } from "./core/approvalRegistry";
 import { ArchiveStore } from "./core/archiveStore";
 import { tryHandleCommand } from "./core/commands";
 import { checkGithubAuth } from "./core/github";
-import { deleteCredential, listCredentials, saveCredential } from "./core/credentials";
+import {
+  deleteCredential,
+  getCredentialsFileProtection,
+  listCredentials,
+  saveCredential,
+  saveSshCredential,
+  type SshCredentialInput,
+} from "./core/credentials";
 import { validateAgentPatch, validateNewAgentConfig } from "./core/validateAgentConfig";
 import {
   importSkillsFromRepo,
@@ -238,26 +245,49 @@ async function main() {
 
   app.get("/api/credentials", async () => listCredentials(WORKSPACE_ROOT));
 
-  app.post<{ Body: { provider: ProviderId; label: string; apiKey: string; baseUrl?: string; connectionName?: string } }>(
-    "/api/credentials",
-    async (req, reply) => {
-      // baseUrl/connectionName only mean anything for provider "custom" (an arbitrary
-      // OpenAI-compatible endpoint); they're harmless but meaningless on the built-in ones.
-      if (req.body.provider === "custom" && !req.body.baseUrl?.trim()) {
+  app.post<{
+    Body: {
+      kind?: "api-key" | "ssh";
+      provider: ProviderId;
+      label: string;
+      apiKey: string;
+      baseUrl?: string;
+      connectionName?: string;
+    } & SshCredentialInput;
+  }>("/api/credentials", async (req, reply) => {
+    if (req.body.kind === "ssh") {
+      try {
+        const saved = saveSshCredential(WORKSPACE_ROOT, req.body);
+        reply.code(201);
+        return saved;
+      } catch (err) {
         reply.code(400);
-        return { error: "a custom connection needs a base URL" };
+        // saveSshCredential's messages are built from named fields only - the request body,
+        // which may carry pasted key material, is never echoed back here or logged.
+        return { error: (err as Error).message };
       }
-      reply.code(201);
-      return saveCredential(
-        WORKSPACE_ROOT,
-        req.body.provider,
-        req.body.label,
-        req.body.apiKey,
-        req.body.baseUrl,
-        req.body.connectionName,
-      );
-    },
-  );
+    }
+    // baseUrl/connectionName only mean anything for provider "custom" (an arbitrary
+    // OpenAI-compatible endpoint); they're harmless but meaningless on the built-in ones.
+    if (req.body.provider === "custom" && !req.body.baseUrl?.trim()) {
+      reply.code(400);
+      return { error: "a custom connection needs a base URL" };
+    }
+    reply.code(201);
+    return saveCredential(
+      WORKSPACE_ROOT,
+      req.body.provider,
+      req.body.label,
+      req.body.apiKey,
+      req.body.baseUrl,
+      req.body.connectionName,
+    );
+  });
+
+  /** Whether the plaintext credentials file is actually protected on this machine, so the UI
+   * can say so honestly rather than implying POSIX 0600 semantics on Windows. Reports only the
+   * result of the last write - undefined until something has been saved this run. */
+  app.get("/api/credentials/protection", async () => getCredentialsFileProtection() ?? { unknown: true });
 
   app.delete<{ Params: { id: string } }>("/api/credentials/:id", async (req, reply) => {
     const ok = deleteCredential(WORKSPACE_ROOT, req.params.id);
