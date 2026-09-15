@@ -60,8 +60,13 @@ export interface AgentConfig {
 /** What kind of secret a saved credential holds. An SSH deploy target has no legal
  * ProviderId and no single `key` field, so the two shapes can't share one flat record -
  * hence the discriminator. Records written before SSH credentials existed have no `kind`
- * at all; core/credentials.ts reads those as "api-key". */
-export type CredentialKind = "api-key" | "ssh";
+ * at all; core/credentials.ts reads those as "api-key".
+ *
+ * "login" and "secret" exist because the store's real job is "anything an agent needs to
+ * sign into something later", and most of that is neither an API key nor an SSH target: a
+ * service password, a session token, a recovery code. Forcing those into the api-key shape
+ * would mean storing them under a fake ProviderId and showing them in the provider list. */
+export type CredentialKind = "api-key" | "ssh" | "login" | "secret";
 
 /** Everything about an SSH deploy target that is deliberately NOT secret: enough for an
  * agent to build its own `ssh`/`scp`/`rsync` command line, and nothing more. */
@@ -79,15 +84,26 @@ export interface SshTargetMeta {
   knownHostsPath?: string;
   /** True when the user pasted private key material into Solace rather than referencing a
    * key file. This is a flag, never the material: the key itself stays server-side and is
-   * not exposed through any route, prompt or chat message. */
+   * only ever returned by the deliberate per-entry reveal, never by a list. */
   hasStoredKeyMaterial?: boolean;
+  /** True when Solace is holding the passphrase for this key. It has to be surfaced: a
+   * passphrase sitting in the same plaintext file as the path to the key it protects hands
+   * both halves to anyone who can read that file, and until this flag existed the UI gave
+   * the user no way at all to know Solace had kept it. Never the passphrase itself. */
+  hasPassphrase?: boolean;
 }
 
 interface CredentialMetaBase {
   id: string;
-  /** A short label to tell saved credentials apart, e.g. "personal" - not the secret itself. */
+  /** A short label to tell saved credentials apart, e.g. "personal" - not the secret itself.
+   * Also how an agent addresses one entry in the vault, so it has to stay non-secret. */
   label: string;
   createdAt: string;
+  /** Free text the user typed about this entry ("the 2FA device is my old phone", "rotate
+   * in March"). Deliberately NOT secret and deliberately not redacted: it is shown in the
+   * list, so anything that must stay hidden belongs in the entry's secret field instead.
+   * The UI says so where it is typed. */
+  notes?: string;
 }
 
 /** Metadata only - the raw API key is never sent to the client, before or after saving.
@@ -152,7 +168,60 @@ export interface SshCredentialMeta extends CredentialMetaBase {
   ssh: SshTargetMeta;
 }
 
-export type CredentialMeta = ApiKeyCredentialMeta | SshCredentialMeta;
+/** A username/password sign-in for some service - the commonest thing an agent is actually
+ * asked to do ("log into the dashboard and pull the numbers") and the one thing the store
+ * could not hold at all before. Metadata only: the password and TOTP secret are absent from
+ * this shape by construction. */
+export interface LoginCredentialMeta extends CredentialMetaBase {
+  kind: "login";
+  /** What is being signed into, as the user wrote it: a URL or a plain service name. Not a
+   * secret - it is the thing that makes one login row distinguishable from another. */
+  service: string;
+  username: string;
+  /** Whether a password was actually stored. A login row with no password is legitimate
+   * (some sign-ins are a magic link) but is otherwise indistinguishable from one that has
+   * a password the reveal simply failed to return. */
+  hasPassword: boolean;
+  /** Whether a TOTP seed / backup codes blob was stored alongside it. Flag, never the seed. */
+  hasTotp: boolean;
+}
+
+/** Anything that doesn't fit the shapes above: a bearer token, a licence key, a recovery
+ * code, a bare note the user wants kept under the same protection as the rest. */
+export interface SecretCredentialMeta extends CredentialMetaBase {
+  kind: "secret";
+  /** Whether a value was actually stored, so an empty entry can't masquerade as a full one. */
+  hasValue: boolean;
+}
+
+export type CredentialMeta =
+  | ApiKeyCredentialMeta
+  | SshCredentialMeta
+  | LoginCredentialMeta
+  | SecretCredentialMeta;
+
+/** One secret field of one entry, as returned by the deliberate per-entry reveal. */
+export interface RevealedField {
+  /** Which secret this is, e.g. "password", "API key". Shown as the row's label. */
+  name: string;
+  value: string;
+  /** Extra context the user needs to judge what they are looking at - e.g. that a passphrase
+   * unlocks the key file whose path is listed right above it. */
+  note?: string;
+}
+
+/**
+ * The response of POST /api/credentials/:id/reveal, and the ONLY shape in this file that
+ * carries real secret values. It is deliberately not part of CredentialMeta and is never
+ * returned by any list route: reveal is a separate, single-id, POST-only action so that no
+ * page load, prefetch or background poll can ever produce one.
+ */
+export interface CredentialReveal {
+  id: string;
+  kind: CredentialKind;
+  label: string;
+  fields: RevealedField[];
+}
 
 /**
  * Real per-turn usage as reported by the provider's own CLI output (Claude Code's final

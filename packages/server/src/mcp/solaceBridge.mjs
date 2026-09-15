@@ -61,6 +61,24 @@ const LIST_DESCRIPTION = [
   "until its current turn ends.",
 ].join(" ");
 
+const GET_SECRET_DESCRIPTION = [
+  "Get ONE saved credential out of the user's vault, by the label they gave it, so you can sign",
+  "into something during this turn. Use it when a task actually requires signing in - a password",
+  "for a site, a token for an API, the passphrase for an SSH key.",
+  "",
+  "You must name the entry you want. There is no way to ask for everything, on purpose. If you",
+  "do not know what is saved, guess the label from the task and the error will list the labels",
+  "that do exist.",
+  "",
+  "The user is shown a message in this agent's hub saying which entry you read and when, every",
+  "single time, before the value reaches you. That is deliberate and not something to work",
+  "around: do not fetch a secret 'just in case', and do not fetch one to check whether it exists.",
+  "",
+  "NEVER write the value you get back into a message, a file, a commit, a log, or your final",
+  "answer. Use it in the command that needs it and nowhere else. If a command would echo it,",
+  "pass it in a way that does not (a prompt, an env var, a file you delete afterwards).",
+].join("\n");
+
 const server = new Server({ name: "solace", version: "0.0.1" }, { capabilities: { tools: {} } });
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -85,6 +103,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: "list_agents",
       description: LIST_DESCRIPTION,
       inputSchema: { type: "object", properties: {} },
+    },
+    {
+      name: "get_secret",
+      description: GET_SECRET_DESCRIPTION,
+      inputSchema: {
+        type: "object",
+        properties: {
+          label: {
+            type: "string",
+            description:
+              'The label of the ONE saved entry you need, exactly as the user named it (e.g. "prod-web" or "grafana login"). Required - there is no all-secrets form.',
+          },
+        },
+        required: ["label"],
+      },
     },
   ],
 }));
@@ -142,6 +175,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { status, json } = await callServer("/internal/solace/agents", {});
       if (status === 403) return toolError("This turn is no longer the agent's in-flight turn.");
       return withInbound(JSON.stringify(json?.agents ?? []), json);
+    }
+
+    if (name === "get_secret") {
+      const label = typeof args.label === "string" ? args.label.trim() : "";
+      if (!label) return toolError("get_secret needs the `label` of the one entry you want.");
+      const { status, json } = await callServer("/internal/solace/secret", { label });
+      if (status === 403) {
+        // Covers both "your turn ended" and "you are in plan mode" - the server's own message
+        // says which, and neither is something to retry blindly.
+        return toolError(json?.error ?? "This turn may not read saved credentials.");
+      }
+      if (json?.ok !== true) return toolError(json?.error ?? "That entry could not be read.");
+      // The value goes into this tool result, which reaches the model and nothing else. It is
+      // deliberately NOT routed through post_to_group and never touches the chat log: the
+      // user's visible record of this is the system message the server already posted into
+      // this agent's hub, which names the entry and not the value.
+      const fields = Array.isArray(json.fields) ? json.fields : [];
+      const body = fields.map((f) => `${f.name}: ${f.value}`).join("\n");
+      return withInbound(
+        `Saved entry "${json.label}". The user has been shown that you read it.\n\n${body}\n\nUse this in the command that needs it. Do not repeat it in any message, file or final answer.`,
+        json,
+      );
     }
 
     return toolError(`Unknown tool "${name}".`);

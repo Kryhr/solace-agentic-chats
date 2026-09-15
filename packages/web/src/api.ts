@@ -3,6 +3,7 @@ import type {
   AgentStatus,
   ChatMessage,
   CredentialMeta,
+  CredentialReveal,
   LocalServerFinding,
   ModelDiscoveryResult,
   PendingApproval,
@@ -165,9 +166,12 @@ export interface SshCredentialDraft {
    * stores a reference rather than a second copy of the user's private key. */
   privateKeyPath?: string;
   knownHostsPath?: string;
-  /** Only sent when the user deliberately chose to paste key material instead of a path. */
+  /** Only sent when the user deliberately chose to paste key material instead of a path.
+   * The UI sends exactly one of this and privateKeyPath; the server refuses both together
+   * rather than silently picking one, which is how pasted keys used to vanish. */
   privateKey?: string;
   passphrase?: string;
+  notes?: string;
 }
 
 export async function saveSshCredential(draft: SshCredentialDraft): Promise<CredentialMeta> {
@@ -178,6 +182,58 @@ export async function saveSshCredential(draft: SshCredentialDraft): Promise<Cred
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? `Failed to save deploy target (${res.status})`);
+  return data;
+}
+
+export interface LoginCredentialDraft {
+  label: string;
+  service: string;
+  username: string;
+  password?: string;
+  totpSecret?: string;
+  notes?: string;
+}
+
+export async function saveLoginCredential(draft: LoginCredentialDraft): Promise<CredentialMeta> {
+  const res = await fetch("/api/credentials", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind: "login", ...draft }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? `Failed to save login (${res.status})`);
+  return data;
+}
+
+export interface SecretCredentialDraft {
+  label: string;
+  value: string;
+  notes?: string;
+}
+
+export async function saveSecretCredential(draft: SecretCredentialDraft): Promise<CredentialMeta> {
+  const res = await fetch("/api/credentials", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind: "secret", ...draft }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? `Failed to save secret (${res.status})`);
+  return data;
+}
+
+/**
+ * Fetches ONE entry's actual secret values. Separate from fetchCredentials on purpose and
+ * POST on purpose: nothing that happens on its own - a mount, a refetch, a poll - can call
+ * this, so a secret only ever appears because the user pressed Reveal on that one row.
+ *
+ * The result is held in component state and dropped as soon as the row is re-hidden; it is
+ * never merged into the credential list, so a re-render of the list cannot resurrect it.
+ */
+export async function revealCredential(id: string): Promise<CredentialReveal> {
+  const res = await fetch(`/api/credentials/${id}/reveal`, { method: "POST" });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? `Could not reveal this entry (${res.status})`);
   return data;
 }
 

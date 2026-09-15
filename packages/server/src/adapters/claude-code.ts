@@ -29,6 +29,11 @@ const SOLACE_TOOLS = ["mcp__solace__post_to_group", "mcp__solace__list_agents"];
  * it on trust level would mean most agents silently kept the old behaviour of only ever
  * reaching the group after their turn already ended. --strict-mcp-config still means these are
  * the only MCP servers in play.
+ *
+ * That bridge also carries get_secret, which IS privileged - so it is gated where the decision
+ * can actually be trusted, in the server's /internal/solace/secret route, rather than by which
+ * tools this flag list happens to expose. A tool list is a suggestion to the model; the route
+ * check is the thing an agent cannot talk its way past.
  */
 function flagsForTrustLevel(trustLevel: TrustLevel): string[] {
   const manual = trustLevel === "manual";

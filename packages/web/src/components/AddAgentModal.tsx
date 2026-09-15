@@ -74,10 +74,12 @@ export function AddAgentModal({
   const effortOptions = effortOptionsFor(info);
   const permissionInfo = permissionCatalog.find((p) => p.provider === provider);
   const trustOptions = permissionOptionsFor(permissionInfo);
-  // SSH deploy targets share the credentials store but can never back an agent's sign-in -
-  // the `kind` check is what keeps them out of this dropdown.
+  // The vault holds deploy targets, logins and free-form secrets too, none of which can back
+  // an agent's sign-in. Matched as an allowlist on "api-key" rather than excluding "ssh":
+  // the exclusion silently stopped covering everything the moment other kinds existed, and a
+  // saved password would have appeared here as a selectable API credential.
   const providerCredentials = credentials.filter(
-    (c): c is ApiKeyCredentialMeta => c.kind !== "ssh" && c.provider === provider,
+    (c): c is ApiKeyCredentialMeta => c.kind === "api-key" && c.provider === provider,
   );
 
   // Escape closes the dialog. It read as broken without this: the backdrop was
