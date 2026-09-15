@@ -17,7 +17,8 @@ import {
   saveCredential,
   type ProjectInfo,
 } from "../api";
-import { effortOptionsFor, modelOptionsFor } from "../lib/modelOptions";
+import { effortOptionsFor, initialModelFor } from "../lib/modelOptions";
+import { ModelPicker, ModelSourceNote } from "./ModelPicker";
 import { permissionOptionsFor, TRUST_LABELS } from "../lib/permissionOptions";
 
 const PROVIDERS: ProviderId[] = ["claude-code", "codex-cli", "gemini-cli", "qwen-code", "custom", "local"];
@@ -70,8 +71,9 @@ export function AddAgentModal({
   const [discoveryState, setDiscoveryState] = useState<"idle" | "loading" | "failed">("idle");
 
   const info = modelCatalog.find((m) => m.provider === provider);
-  const modelOptions = modelOptionsFor(info);
-  const effortOptions = effortOptionsFor(info);
+  // Effort is looked up for the model actually chosen: Codex states its levels per model and
+  // they genuinely differ between them, so a provider-wide list would offer one that fails.
+  const effortOptions = effortOptionsFor(info, model);
   const permissionInfo = permissionCatalog.find((p) => p.provider === provider);
   const trustOptions = permissionOptionsFor(permissionInfo);
   // The vault holds deploy targets, logins and free-form secrets too, none of which can back
@@ -105,8 +107,8 @@ export function AddAgentModal({
 
   // Whenever the provider changes, snap model/effort/trust to that provider's own real options.
   useEffect(() => {
-    setModel(modelOptions[0] ?? "");
-    setEffort(effortOptions[0] ?? "");
+    setModel(initialModelFor(info));
+    setEffort(effortOptionsFor(info, initialModelFor(info))[0] ?? "");
     setTrustLevel(trustOptions.includes("bypassPermissions") ? "bypassPermissions" : (trustOptions[0] ?? "bypassPermissions"));
     // Custom endpoints are API-key-only; every other provider goes back to its CLI default
     // rather than silently inheriting "API key" from a provider that was only ever one.
@@ -122,6 +124,14 @@ export function AddAgentModal({
     setCredentialId(isEndpointProvider(provider) ? (providerCredentials[0]?.id ?? "") : NEW_KEY_VALUE);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider]);
+
+  // Effort levels are per-model for Codex, so switching model can strand the chosen effort on
+  // a level this model doesn't accept - which the CLI would only reject mid-turn. Snap to a
+  // level the selected model actually declares instead of passing on a value we know is wrong.
+  useEffect(() => {
+    if (effort && !effortOptions.includes(effort)) setEffort(effortOptions[0] ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [model]);
 
   // fetchCredentials() (mount effect above) is async - if the user switches to "custom"
   // before it resolves, the effect above runs with providerCredentials still empty and
@@ -196,8 +206,15 @@ export function AddAgentModal({
     }
     if (!handle || !cwd) return;
 
-    if (isEndpointProvider(provider) && !model.trim()) {
-      setError("Enter the model id this endpoint expects - there's no default to fall back to");
+    if (!model.trim()) {
+      // Asked for rather than filled in: see initialModelFor. Now that the list is the whole
+      // set of models the installed CLI knows, quietly defaulting to whichever happened to be
+      // first would be choosing for the user with no basis.
+      setError(
+        isEndpointProvider(provider)
+          ? "Enter the model id this endpoint expects - there's no default to fall back to"
+          : "Choose a model for this agent",
+      );
       return;
     }
 
@@ -346,17 +363,11 @@ export function AddAgentModal({
               `${discovered.models.length} model${discovered.models.length === 1 ? "" : "s"} reported by this endpoint at ${new Date(discovered.fetchedAt).toLocaleTimeString()}.`}
           </div>
         )}
-        {modelOptions.length > 0 && (
-          <label>
-            Model
-            <select className="select" value={model} onChange={(e) => setModel(e.target.value)}>
-              {modelOptions.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-          </label>
+        {!isEndpointProvider(provider) && (
+          <>
+            <ModelPicker info={info} value={model} onChange={setModel} />
+            <ModelSourceNote info={info} />
+          </>
         )}
         {effortOptions.length > 0 && authMode === "cli" && (
           <label>

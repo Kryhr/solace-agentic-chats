@@ -5,7 +5,8 @@ import { Composer } from "./Composer";
 import { ToolRun } from "./ToolRun";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 import { useEntranceTracker } from "../lib/useEntranceTracker";
-import { effortOptionsFor, modelOptionsFor } from "../lib/modelOptions";
+import { effortOptionsFor } from "../lib/modelOptions";
+import { ModelPicker, ModelSourceNote, ResolvedModelNote } from "./ModelPicker";
 import { permissionOptionsFor, TRUST_LABELS } from "../lib/permissionOptions";
 import { formatProviderError } from "../lib/errorFormat";
 import { buildTranscript, displayText, isErrorLine } from "../lib/messageKind";
@@ -45,8 +46,7 @@ export function AgentHubPage({
   const historyRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const state = status?.state ?? "offline";
-  const modelOptions = modelOptionsFor(modelInfo);
-  const effortOptions = effortOptionsFor(modelInfo);
+  const effortOptions = effortOptionsFor(modelInfo, agent.model);
   const trustOptions = permissionOptionsFor(permissionInfo);
   const error = status?.lastError ? formatProviderError(status.lastError) : null;
   const totalIn = status?.totalUsage?.inputTokens ?? 0;
@@ -85,27 +85,26 @@ export function AgentHubPage({
             <span className="hub-subtitle">
               <span className={`status-dot status-${state}`} /> {providerLabel(agent.provider)}
               <span className="sep">·</span> {state}
+              {/* Which concrete model answered - the question an alias raises. Only rendered
+                  when the provider itself reported one, and only when it differs from the
+                  alias that was asked for. */}
+              <ResolvedModelNote configured={agent.model} resolved={status?.resolvedModel} />
             </span>
           </div>
         </div>
 
         <div className="hub-page-settings">
-          {modelOptions.length > 0 && (
-            <label>
-              Model
-              <select className="select" value={agent.model ?? modelOptions[0]} onChange={(e) => onSave({ model: e.target.value })}>
-                {modelOptions.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
+          {/* Model picking belongs here as much as at creation: switching an existing agent
+              between two Opus variants is the whole point of listing them separately. */}
+          <ModelPicker info={modelInfo} value={agent.model ?? ""} onChange={(model) => onSave({ model })} />
           {effortOptions.length > 0 && (
             <label>
               Effort
-              <select className="select" value={agent.effort ?? effortOptions[0]} onChange={(e) => onSave({ effort: e.target.value })}>
+              <select
+                className="select"
+                value={agent.effort && effortOptions.includes(agent.effort) ? agent.effort : effortOptions[0]}
+                onChange={(e) => onSave({ effort: e.target.value })}
+              >
                 {effortOptions.map((level) => (
                   <option key={level} value={level}>
                     {level}
@@ -124,6 +123,10 @@ export function AgentHubPage({
               ))}
             </select>
           </label>
+        </div>
+
+        <div className="hub-page-sources">
+          <ModelSourceNote info={modelInfo} />
         </div>
 
         <div className="hub-page-actions">

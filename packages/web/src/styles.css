@@ -2805,3 +2805,106 @@ body {
     max-width: 120px;
   }
 }
+
+/* =========================================================================
+   APPENDED â€” model selection (ModelPicker.tsx, AgentHubPage, AddAgentModal)
+
+   Owned by the model-selection work; kept in one block so the visual-language
+   pass can move or fold it wholesale. Every value is an existing token.
+   ========================================================================= */
+
+/* Provenance under the picker. Deliberately quiet: it must be readable when
+   someone goes looking for it and never compete with the control itself. */
+.model-source-note {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.model-source-note p {
+  margin: 0;
+}
+.model-source-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  word-break: break-all;
+}
+
+/* The tag carries the one distinction that matters: whether the list was asked
+   for live, read off disk, or came from this account's own cache. */
+.model-source-tag {
+  flex: none;
+  font-family: var(--font-sans);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.model-source-cli-live {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 32%, transparent);
+}
+.model-source-account-cache {
+  color: var(--accent);
+  border-color: var(--accent-border);
+  background: var(--accent-wash);
+}
+.model-source-error {
+  color: var(--warn);
+}
+
+/* A note about the currently-selected model: an alias's real target, or the
+   knowledge cutoff the source actually stated. */
+.model-note {
+  font-size: var(--text-2xs);
+  line-height: var(--lh-snug);
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+}
+.model-note code {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
+/* "Last turn ran <id>" in the hub subtitle. */
+.resolved-model {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  margin-left: var(--space-2);
+  padding-left: var(--space-2);
+  border-left: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.resolved-model code {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+.resolved-model-source {
+  color: var(--text-faint);
+}
+
+.hub-page-sources {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+
+/* Provenance is collapsed by default: it must be findable, not dominant. */
+.model-source-details > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+}
+.model-source-details[open] > summary {
+  margin-bottom: var(--space-1);
+}
+.model-source-details p {
+  margin: 0 0 var(--space-1);
+}
