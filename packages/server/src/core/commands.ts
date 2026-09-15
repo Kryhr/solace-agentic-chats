@@ -4,6 +4,9 @@ import type { AgentManager } from "./agentManager";
 import type { ChatBus } from "./chatBus";
 import type { ArchiveStore } from "./archiveStore";
 import { checkGithubAuth } from "./github";
+import { listSshCredentials } from "./credentials";
+import { WORKSPACE_ROOT } from "./workspace";
+import type { SshCredentialMeta } from "@solace/shared";
 
 export interface CommandContext {
   channel: ChatChannel;
@@ -17,6 +20,8 @@ const HELP_TEXT = [
   "/status - summarize every agent's state, model, and task",
   "/github status - check gh auth on this machine",
   "/github init <repo-name> - (from an agent's own hub) ask it to init + push a GitHub repo",
+  "/deploy list - show the SSH deploy targets saved under Connections",
+  "/deploy <target> [what to do] - (from an agent's own hub) hand it a target's connection details",
   "/clear - archive this channel's history (nothing is deleted - see Saved chats)",
   "/model <value> - (from an agent's own hub) switch its model",
   "/effort <value> - (from an agent's own hub) switch its thinking effort",
@@ -39,6 +44,53 @@ function post(bus: ChatBus, channel: ChatChannel, text: string) {
 function findAgentIdByHandle(agents: AgentManager, handle: string): string | undefined {
   const clean = handle.replace(/^@/, "").toLowerCase();
   return agents.listAgents().find((a) => a.handle.toLowerCase() === clean)?.id;
+}
+
+/** How a saved SSH target is written everywhere the user sees it. */
+function sshSummary(c: SshCredentialMeta): string {
+  const where = `${c.ssh.username}@${c.ssh.host}:${c.ssh.port}`;
+  const key = c.ssh.privateKeyPath ?? (c.ssh.hasStoredKeyMaterial ? "key pasted into Solace (no file on disk)" : "no key");
+  return `${c.label} - ${where} · ${key}`;
+}
+
+function findSshTarget(name: string): SshCredentialMeta | undefined {
+  const wanted = name.trim().toLowerCase();
+  const all = listSshCredentials(WORKSPACE_ROOT);
+  return all.find(
+    (c) =>
+      c.label.toLowerCase() === wanted ||
+      c.ssh.host.toLowerCase() === wanted ||
+      `${c.ssh.username}@${c.ssh.host}`.toLowerCase() === wanted,
+  );
+}
+
+/**
+ * The agent is told where the deploy target is and which key file to use, and then builds and
+ * runs its own ssh/scp/rsync through the shell access its trust level already grants it -
+ * exactly like /github init hands it a `gh` task rather than shelling out here. This command
+ * deliberately adds no second execution path of its own, and carries no secret: a private key
+ * path is a path, and a key the user pasted into Solace stays on the server (see the warning
+ * below), so nothing here can put key material into a prompt or the chat log.
+ */
+function deployPrompt(target: SshCredentialMeta, instruction: string): string {
+  const { username, host, port, privateKeyPath, knownHostsPath, hasStoredKeyMaterial } = target.ssh;
+  const lines = [
+    `There is a saved SSH deploy target called "${target.label}":`,
+    `  host: ${host}`,
+    `  port: ${port}`,
+    `  user: ${username}`,
+  ];
+  if (privateKeyPath) lines.push(`  private key file: ${privateKeyPath}`);
+  if (knownHostsPath) lines.push(`  known_hosts file: ${knownHostsPath}`);
+  lines.push(
+    "",
+    hasStoredKeyMaterial
+      ? "The private key for this target was pasted into Solace rather than saved as a file, so there is no key file you can point ssh at. Tell me that, and ask me to write the key to a file and re-save the target with its path."
+      : `Use your own shell to run ssh/scp/rsync against it, e.g. \`ssh -i "${privateKeyPath}" -p ${port} ${username}@${host}\`${knownHostsPath ? ` with \`-o UserKnownHostsFile="${knownHostsPath}"\`` : ""}. Never disable host key checking to get a connection working - ask me instead.`,
+    "",
+    instruction || "Check that you can reach it, and report exactly what happened - do not change anything on the server yet.",
+  );
+  return lines.join("\n");
 }
 
 /** Only meaningful inside one agent's own hub channel - group chat has no single "current agent". */
@@ -136,6 +188,37 @@ export async function tryHandleCommand(text: string, ctx: CommandContext): Promi
       }
       ctx.agents.updateAgent(agentId, { [name]: argText });
       post(ctx.bus, ctx.channel, `${name} set to ${argText}`);
+      return true;
+    }
+
+    case "deploy": {
+      const targets = listSshCredentials(WORKSPACE_ROOT);
+      const [first, ...instructionParts] = rest;
+      if (!first || first.toLowerCase() === "list") {
+        post(
+          ctx.bus,
+          ctx.channel,
+          targets.length === 0
+            ? "No SSH deploy targets saved yet - add one under Connections in the sidebar."
+            : ["Saved deploy targets:", ...targets.map((t) => `  ${sshSummary(t)}`)].join("\n"),
+        );
+        return true;
+      }
+      const agentId = requireAgentChannel(ctx.channel);
+      if (!agentId) {
+        post(ctx.bus, ctx.channel, "/deploy <target> only works from an agent's own hub - try /deploy list here instead");
+        return true;
+      }
+      const target = findSshTarget(first);
+      if (!target) {
+        post(
+          ctx.bus,
+          ctx.channel,
+          `no saved deploy target called "${first}" - /deploy list shows the saved ones`,
+        );
+        return true;
+      }
+      ctx.agents.submitDirectMessage(agentId, deployPrompt(target, instructionParts.join(" ").trim()));
       return true;
     }
 

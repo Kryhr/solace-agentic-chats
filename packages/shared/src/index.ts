@@ -38,14 +38,44 @@ export interface AgentConfig {
   credentialId?: string;
 }
 
-/** Metadata only - the raw API key is never sent to the client, before or after saving.
- * See core/credentials.ts for where the actual key lives (a local file outside the repo). */
-export interface CredentialMeta {
+/** What kind of secret a saved credential holds. An SSH deploy target has no legal
+ * ProviderId and no single `key` field, so the two shapes can't share one flat record -
+ * hence the discriminator. Records written before SSH credentials existed have no `kind`
+ * at all; core/credentials.ts reads those as "api-key". */
+export type CredentialKind = "api-key" | "ssh";
+
+/** Everything about an SSH deploy target that is deliberately NOT secret: enough for an
+ * agent to build its own `ssh`/`scp`/`rsync` command line, and nothing more. */
+export interface SshTargetMeta {
+  host: string;
+  port: number;
+  username: string;
+  /** Path to a private key that already exists on this machine, with whatever permissions
+   * the user already set on it. Copying key material into an app-owned plaintext JSON file
+   * is strictly worse than pointing at the original, so this is the default and preferred
+   * shape. Absent only when the user chose to paste key material instead. */
+  privateKeyPath?: string;
+  /** Optional known_hosts file to verify the server against, so an agent doesn't have to
+   * reach for StrictHostKeyChecking=no. */
+  knownHostsPath?: string;
+  /** True when the user pasted private key material into Solace rather than referencing a
+   * key file. This is a flag, never the material: the key itself stays server-side and is
+   * not exposed through any route, prompt or chat message. */
+  hasStoredKeyMaterial?: boolean;
+}
+
+interface CredentialMetaBase {
   id: string;
-  provider: ProviderId;
-  /** A short label to tell saved keys apart, e.g. "personal" - not the key itself. */
+  /** A short label to tell saved credentials apart, e.g. "personal" - not the secret itself. */
   label: string;
   createdAt: string;
+}
+
+/** Metadata only - the raw API key is never sent to the client, before or after saving.
+ * See core/credentials.ts for where the actual key lives (a local file outside the repo). */
+export interface ApiKeyCredentialMeta extends CredentialMetaBase {
+  kind: "api-key";
+  provider: ProviderId;
   /** Only meaningful when provider === "custom": the OpenAI-compatible API root this key
    * belongs to, e.g. "https://api.deepseek.com/v1". Chat completions are POSTed to
    * `${baseUrl}/chat/completions` - see adapters/custom-api.ts. */
@@ -55,6 +85,15 @@ export interface CredentialMeta {
    * UI, and several of them would be indistinguishable from each other. */
   connectionName?: string;
 }
+
+/** Metadata only - a stored passphrase or pasted private key is never part of this shape,
+ * so it cannot reach a client, a prompt or a chat message by accident. */
+export interface SshCredentialMeta extends CredentialMetaBase {
+  kind: "ssh";
+  ssh: SshTargetMeta;
+}
+
+export type CredentialMeta = ApiKeyCredentialMeta | SshCredentialMeta;
 
 /**
  * Real per-turn usage as reported by the provider's own CLI output (Claude Code's final

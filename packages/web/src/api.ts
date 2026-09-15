@@ -145,10 +145,35 @@ export async function saveCredential(
   const res = await fetch("/api/credentials", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ provider, label, apiKey, baseUrl, connectionName }),
+    body: JSON.stringify({ kind: "api-key", provider, label, apiKey, baseUrl, connectionName }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? `Failed to save connection (${res.status})`);
+  return data;
+}
+
+export interface SshCredentialDraft {
+  label: string;
+  host: string;
+  username: string;
+  port: number;
+  /** Path to a key file already on this machine - the preferred shape, since Solace then
+   * stores a reference rather than a second copy of the user's private key. */
+  privateKeyPath?: string;
+  knownHostsPath?: string;
+  /** Only sent when the user deliberately chose to paste key material instead of a path. */
+  privateKey?: string;
+  passphrase?: string;
+}
+
+export async function saveSshCredential(draft: SshCredentialDraft): Promise<CredentialMeta> {
+  const res = await fetch("/api/credentials", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind: "ssh", ...draft }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? `Failed to save deploy target (${res.status})`);
   return data;
 }
 
