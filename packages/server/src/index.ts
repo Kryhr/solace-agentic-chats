@@ -10,6 +10,7 @@ import { checkAllProviders, testProvider } from "./core/providerStatus";
 import { getModelCatalog } from "./core/modelCatalog";
 import { getPermissionCatalog } from "./core/permissionCatalog";
 import { debounce, loadState, saveState } from "./core/persistence";
+import { ApprovalRegistry } from "./core/approvalRegistry";
 import type { ProviderId } from "@solace/shared";
 
 const PORT = Number(process.env.PORT ?? 4310);
@@ -23,7 +24,8 @@ async function main() {
 
   const persisted = loadState(WORKSPACE_ROOT);
   const bus = new ChatBus(persisted.history);
-  const agents = new AgentManager(bus, persisted.agents);
+  const approvals = new ApprovalRegistry();
+  const agents = new AgentManager(bus, persisted.agents, approvals);
 
   const persist = debounce(() => saveState(WORKSPACE_ROOT, { agents: agents.listAgents(), history: bus.getHistory() }), 300);
   bus.onChange = persist;
@@ -96,6 +98,26 @@ async function main() {
 
   app.post<{ Params: { id: string }; Body: { text: string } }>("/api/agents/:id/chat", async (req) => {
     agents.submitDirectMessage(req.params.id, req.body.text);
+    return { ok: true };
+  });
+
+  // Internal only - called by the per-turn approval bridge script (approval/bridgeScript.mjs),
+  // never by the browser. Blocks (from the bridge script's perspective) until a human resolves
+  // the approval via POST /api/approvals/:id/resolve below.
+  app.post<{ Body: { agentId: string; description: string } }>("/internal/approvals", async (req) => {
+    const { id, wait } = approvals.create(req.body.agentId, req.body.description);
+    bus.emitEvent({ type: "approval:requested", payload: approvals.get(id)! });
+    const approved = await wait;
+    bus.emitEvent({ type: "approval:resolved", payload: { id, approved } });
+    return { approved };
+  });
+
+  app.post<{ Params: { id: string }; Body: { approved: boolean } }>("/api/approvals/:id/resolve", async (req, reply) => {
+    const ok = approvals.resolve(req.params.id, req.body.approved);
+    if (!ok) {
+      reply.code(404);
+      return { error: "already resolved or expired" };
+    }
     return { ok: true };
   });
 

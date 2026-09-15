@@ -3,6 +3,7 @@ import type { AgentConfig, AgentRunState, AgentStatus, ChatChannel, ChatMessage,
 import { getAdapter } from "../adapters";
 import { ChatBus } from "./chatBus";
 import { parseMentions } from "./mentions";
+import type { ApprovalRegistry } from "./approvalRegistry";
 
 interface QueuedTurn {
   prompt: string;
@@ -57,6 +58,7 @@ export class AgentManager {
   constructor(
     private bus: ChatBus,
     initialAgents: AgentConfig[] = [],
+    private approvals?: ApprovalRegistry,
   ) {
     for (const config of initialAgents) {
       this.agents.set(config.id, { config, status: "idle", busy: false, queue: [], totalUsage: {} });
@@ -194,11 +196,17 @@ export class AgentManager {
 
     const adapter = getAdapter(runtime.config.provider);
     const controller = new AbortController();
-    const turnTimeout = setTimeout(() => controller.abort(), MAX_TURN_MS);
+    const turnTimeout = setTimeout(() => {
+      controller.abort();
+      // A killed turn shouldn't leave a live approval card in the UI for it.
+      this.approvals?.expireForAgent(agentId);
+    }, MAX_TURN_MS);
     await adapter.runTurn({
       cwd: runtime.config.cwd,
       prompt,
       trustLevel: runtime.config.trustLevel,
+      agentId: runtime.config.id,
+      agentHandle: runtime.config.handle,
       model: runtime.config.model,
       effort: runtime.config.effort,
       signal: controller.signal,

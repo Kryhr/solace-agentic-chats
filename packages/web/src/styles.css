@@ -937,3 +937,57 @@ body {
 .message-row.hub-message {
   max-width: 720px;
 }
+
+/* ---------- live approval prompts ---------- */
+
+.approval-stack {
+  position: fixed;
+  top: var(--space-4);
+  right: var(--space-4);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: 360px;
+}
+
+.approval-card {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  background: var(--panel-raised);
+  border: 1px solid var(--warn);
+  box-shadow: var(--shadow-2);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+}
+
+.approval-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.approval-title {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  text-transform: capitalize;
+  margin-bottom: 2px;
+}
+
+.approval-description {
+  font-size: var(--text-sm);
+  font-family: var(--font-mono);
+  color: var(--text);
+  word-break: break-word;
+}
+
+.approval-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.approval-actions button {
+  padding: 4px 10px;
+  font-size: var(--text-xs);
+}

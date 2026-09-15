@@ -84,6 +84,14 @@ export async function testProviderConnection(provider: ProviderId): Promise<{ ok
   return fetch(`/api/providers/${provider}/test`, { method: "POST" }).then((r) => r.json());
 }
 
+export async function resolveApproval(id: string, approved: boolean): Promise<void> {
+  await fetch(`/api/approvals/${id}/resolve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ approved }),
+  });
+}
+
 export async function sendChatMessage(text: string): Promise<void> {
   await fetch("/api/chat", {
     method: "POST",

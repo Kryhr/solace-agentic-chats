@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import type { AgentConfig, AgentStatus, ChatMessage, ProviderModelInfo, ProviderPermissionInfo, TrustLevel } from "@solace/shared";
+import type {
+  AgentConfig,
+  AgentStatus,
+  ChatMessage,
+  PendingApproval,
+  ProviderModelInfo,
+  ProviderPermissionInfo,
+  TrustLevel,
+} from "@solace/shared";
 import {
   connectSocket,
   createAgent,
@@ -8,6 +16,7 @@ import {
   fetchHistory,
   fetchPermissionModes,
   fetchProviderModels,
+  resolveApproval,
   sendAgentDirectMessage,
   sendChatMessage,
   updateAgent,
@@ -15,6 +24,7 @@ import {
 import { AgentCard } from "./components/AgentCard";
 import { AddAgentModal } from "./components/AddAgentModal";
 import { AgentHubPage } from "./components/AgentHubPage";
+import { ApprovalPrompt } from "./components/ApprovalPrompt";
 import { ChatPanel } from "./components/ChatPanel";
 import { ProvidersPanel } from "./components/ProvidersPanel";
 
@@ -37,6 +47,7 @@ export default function App() {
   const [permissionCatalog, setPermissionCatalog] = useState<ProviderPermissionInfo[]>([]);
   const [showAddAgent, setShowAddAgent] = useState(false);
   const [connected, setConnected] = useState(true);
+  const [pendingApprovals, setPendingApprovals] = useState<Record<string, PendingApproval>>({});
   const [view, setView] = useState<View>(() => parseHash(location.hash));
 
   const agents = useMemo(() => Object.values(agentsById), [agentsById]);
@@ -90,6 +101,14 @@ export default function App() {
             delete next[event.payload.agentId];
             return next;
           });
+        } else if (event.type === "approval:requested") {
+          setPendingApprovals((a) => ({ ...a, [event.payload.id]: event.payload }));
+        } else if (event.type === "approval:resolved") {
+          setPendingApprovals((a) => {
+            const next = { ...a };
+            delete next[event.payload.id];
+            return next;
+          });
         }
       },
       (isConnected) => setConnected(isConnected),
@@ -114,6 +133,18 @@ export default function App() {
   return (
     <div className="app">
       {!connected && <div className="reconnect-banner">Reconnecting to server…</div>}
+      {Object.keys(pendingApprovals).length > 0 && (
+        <div className="approval-stack">
+          {Object.values(pendingApprovals).map((approval) => (
+            <ApprovalPrompt
+              key={approval.id}
+              approval={approval}
+              agent={agentsById[approval.agentId]}
+              onResolve={(approved) => void resolveApproval(approval.id, approved)}
+            />
+          ))}
+        </div>
+      )}
       <aside className="sidebar">
         <div className="sidebar-header">
           <h1>solace-agentic-chats</h1>

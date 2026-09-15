@@ -12,6 +12,10 @@ export interface RunTurnOptions {
   /** The prompt for this turn: the triggering chat message, plus any context the caller wants included. */
   prompt: string;
   trustLevel: TrustLevel;
+  /** Which agent this turn belongs to - needed by claude-code.ts's "manual" mode to attribute
+   * live approval requests to the right agent. */
+  agentId: string;
+  agentHandle: string;
   /** Model alias/id and reasoning effort to pass to the CLI's own flags - undefined means provider default. */
   model?: string;
   effort?: string;

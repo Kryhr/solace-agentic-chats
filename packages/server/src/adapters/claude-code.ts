@@ -1,22 +1,45 @@
 import * as readline from "node:readline";
+import { join } from "node:path";
 import type { TrustLevel } from "@solace/shared";
 import { spawnCli } from "../core/spawnCli";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 
+// Always re-anchor from the package root (two levels up from this compiled/ts-node file,
+// whether that's dist/adapters/ in a production build or src/adapters/ under tsx) to the
+// *source* copy of the bridge script - it's plain JS with no compile step, so referencing it
+// directly works identically in both dev and prod.
+const BRIDGE_SCRIPT = join(__dirname, "..", "..", "src", "approval", "bridgeScript.mjs");
+
 /**
  * Trust level -> Claude Code's own --permission-mode flag. Our TrustLevel enum now IS Claude
  * Code's real enum (verified via `claude --help`), so this is a direct 1:1 pass-through
- * rather than an approximation. "manual" additionally needs the live approval-bridge flags
- * (--permission-prompt-tool / --mcp-config / --strict-mcp-config) - see buildManualModeFlags
- * below, wired in by runTurn when trustLevel is "manual".
+ * rather than an approximation. "manual" additionally gets the live approval-bridge flags
+ * wiring Claude's own --permission-prompt-tool to our approval/bridgeScript.mjs (see
+ * ARCHITECTURE.md#trust-levels for the full mechanism, verified empirically 2026-09-15).
  */
 function flagsForTrustLevel(trustLevel: TrustLevel): string[] {
-  return ["--permission-mode", trustLevel];
+  const base = ["--permission-mode", trustLevel];
+  if (trustLevel !== "manual") return base;
+
+  const mcpConfig = JSON.stringify({
+    mcpServers: { "approval-bridge": { command: "node", args: [BRIDGE_SCRIPT] } },
+  });
+  return [
+    ...base,
+    "--permission-prompt-tool",
+    "mcp__approval-bridge__permission",
+    "--permission-prompts",
+    "host",
+    "--mcp-config",
+    mcpConfig,
+    "--strict-mcp-config",
+  ];
 }
 
 export const claudeCodeAdapter: ProviderAdapter = {
   id: "claude-code",
-  async runTurn({ cwd, prompt, trustLevel, model, effort, onEvent, signal }: RunTurnOptions): Promise<void> {
+  async runTurn({ cwd, prompt, trustLevel, model, effort, agentId, onEvent, signal }: RunTurnOptions): Promise<void> {
+    const serverPort = Number(process.env.PORT ?? 4310);
     const args = [
       "-p",
       prompt,
@@ -29,7 +52,11 @@ export const claudeCodeAdapter: ProviderAdapter = {
     ];
 
     await new Promise<void>((resolve) => {
-      const child = spawnCli("claude", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawnCli("claude", args, {
+        cwd,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, SOLACE_AGENT_ID: agentId, SOLACE_SERVER_PORT: String(serverPort) },
+      });
       const rl = readline.createInterface({ input: child.stdout! });
 
       let timedOut = false;
