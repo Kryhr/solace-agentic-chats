@@ -13,9 +13,10 @@ import {
 } from "@solace/shared";
 import { getAdapter } from "../adapters";
 import { ChatBus } from "./chatBus";
-import type { ChatStore } from "./chatStore";
+import { sameWorkingDirectory, type ChatStore } from "./chatStore";
 import { parseMentions } from "./mentions";
 import { RateLimitStore } from "./rateLimits";
+import { SettingsStore } from "./settingsStore";
 import type { ApprovalRegistry } from "./approvalRegistry";
 import { extractLiveClaims, findUnreachableClaims, unreachableClaimNotice } from "./claimCheck";
 import { getCredentialSecrets, listSecretValues } from "./credentials";
@@ -65,6 +66,12 @@ export interface QueuedTurn {
    * how many times this can happen and how long the work may run in total - without the elapsed
    * carry-over, an agent interrupted every 10 minutes would never hit MAX_TURN_MS at all. */
   resume?: { ofTurnId: string; count: number; elapsedMs: number };
+  /** Set only on a turn that another agent could not run because its provider was out of usage,
+   * and which has been passed to this one. `ofTurnId` is the ORIGINAL turn so a chain stays
+   * correlated; `count` is how many hand-offs this work has already been through (capped by
+   * MAX_HANDOVERS); `agentIds` is every agent that has already had it, INCLUDING the original,
+   * so it can never be handed back to somebody who already failed at it. */
+  handover?: { ofTurnId: string; count: number; agentIds: string[] };
 }
 
 /** A snapshot of one agent's still-outstanding work, for persistence.ts - see
@@ -288,6 +295,31 @@ export function insertResumeTurn(queue: QueuedTurn[], resumeTurn: QueuedTurn): Q
  * inside another until the real task is buried. */
 const RESUME_WORK_MARKER = "[the work you were doing]\n";
 
+/** The same idea for a turn passed to a different agent - see buildHandoverPrompt. Distinct
+ * text because the reader is a different agent who was not doing this work a moment ago. */
+const HANDOVER_WORK_MARKER = "[the work being handed to you]\n";
+
+/**
+ * The real request buried inside a turn's prompt, with any re-statement preamble (resume,
+ * handover, or a resume of a handover) stripped back off.
+ *
+ * Reads the LAST marker present, not the first: work that was handed over and then interrupted
+ * carries both, and the innermost one is the one wrapping the actual request. Without this, each
+ * re-statement would nest inside the previous one until the real task was buried.
+ */
+function originalWorkText(turn: QueuedTurn): string {
+  let at = -1;
+  let markerLength = 0;
+  for (const marker of [RESUME_WORK_MARKER, HANDOVER_WORK_MARKER]) {
+    const index = turn.prompt.lastIndexOf(marker);
+    if (index > at) {
+      at = index;
+      markerLength = marker.length;
+    }
+  }
+  return at >= 0 ? turn.prompt.slice(at + markerLength) : stripPromptWrapper(turn.prompt).trim();
+}
+
 /** Whitespace/case-insensitive comparison key, so "the same message" posted mid-turn and then
  * repeated in the final answer with different wrapping still counts as the same message - see
  * the duplicate check in drainQueue. */
@@ -329,8 +361,7 @@ function summarizeTaskLine(work: string): string {
 }
 
 function describeWork(turn: QueuedTurn): string {
-  const markerAt = turn.prompt.indexOf(RESUME_WORK_MARKER);
-  return summarizePrompt(markerAt >= 0 ? turn.prompt.slice(markerAt + RESUME_WORK_MARKER.length) : turn.prompt);
+  return summarizePrompt(originalWorkText(turn));
 }
 
 /** Who a queued turn came from, for the mid-turn delivery note - read back out of the prompt
@@ -356,9 +387,7 @@ function promptAuthorHandle(turn: QueuedTurn): string {
  * agent nor we can predict. Telling it to check rather than assume is the only honest option.
  */
 export function buildResumePrompt(turn: QueuedTurn): string {
-  const markerAt = turn.prompt.indexOf(RESUME_WORK_MARKER);
-  const work =
-    markerAt >= 0 ? turn.prompt.slice(markerAt + RESUME_WORK_MARKER.length) : stripPromptWrapper(turn.prompt).trim();
+  const work = originalWorkText(turn);
   return [
     "[solace] Your previous turn was stopped part-way through so another agent's question could",
     "be answered first. That has now been handled. Pick this work back up.",
@@ -380,8 +409,21 @@ export function buildResumePrompt(turn: QueuedTurn): string {
  * schedule a retry, not just show a headline). Returns undefined - never a guess - when the
  * message isn't clearly a rate limit, or doesn't contain a time this can confidently parse.
  */
+/**
+ * Is this failure the provider saying the account is out of usage, rather than any other kind
+ * of error?
+ *
+ * This is deliberately the SAME test parseResetTime has always gated on - extracted, not
+ * reinvented. A second heuristic would eventually disagree with the first, and the direction it
+ * would disagree in is "treat a syntax error or a bad prompt as a quota problem", which would
+ * spend a second agent's tokens reproducing the first agent's failure.
+ */
+export function looksLikeUsageExhausted(message: string | undefined): boolean {
+  return /usage limit|rate limit/i.test(message ?? "");
+}
+
 function parseResetTime(message: string, now: Date): Date | undefined {
-  if (!/usage limit|rate limit/i.test(message)) return undefined;
+  if (!looksLikeUsageExhausted(message)) return undefined;
   // JS's Date constructor can't reliably parse a bare time-of-day string ("10:50 PM" alone is
   // Invalid Date in Node, with no timezone attached either) - pull the hour/minute/meridiem
   // out explicitly and build the Date by hand against today's date instead of trusting
@@ -411,6 +453,63 @@ function looksLikeStaleSession(message: string): boolean {
   );
 }
 
+/**
+ * How many times one piece of work may be passed to a different agent before this stops.
+ *
+ * Two is enough to get past "the one agent I was using ran out" without the work being able to
+ * tour the roster. Every hop is a real billed turn on a fresh agent that has to re-read the
+ * files first, and a chain with no cap has no natural end: agents on the same account share one
+ * real limit, so "everybody is exhausted" is the normal case, not the exotic one.
+ */
+export const MAX_HANDOVERS = 2;
+
+/**
+ * Which agents could actually take over this work.
+ *
+ * The working-directory rule is the whole design constraint, not a nicety. An agent's cwd is
+ * where its CLI genuinely runs, so handing "fix the build in landing-page-test" to an agent
+ * pointed at another project does not produce a slower answer - it produces confident, wrong
+ * work in somebody else's repository, which is worse than the task simply waiting.
+ *
+ * Also excluded: the failing agent itself, and anyone this work has already been through (an
+ * agent that just ran out of usage will still be out of usage), so a chain cannot cycle.
+ *
+ * Order is roster order, which is stable, and puts agents that can actually change files ahead
+ * of ones that cannot - a `plan` agent is a legal recipient (it may be all there is), but it is
+ * the last resort rather than the first pick.
+ */
+export function eligibleHandoverAgents(from: AgentConfig, roster: AgentConfig[], turn: QueuedTurn): AgentConfig[] {
+  const alreadyTried = new Set(turn.handover?.agentIds ?? [from.id]);
+  alreadyTried.add(from.id);
+  const eligible = roster.filter((a) => !alreadyTried.has(a.id) && sameWorkingDirectory(a.cwd, from.cwd));
+  const canWrite = (a: AgentConfig) => (a.trustLevel === "plan" ? 1 : 0);
+  return eligible.sort((a, b) => canWrite(a) - canWrite(b));
+}
+
+/**
+ * The prompt the receiving agent gets.
+ *
+ * It says plainly that this is somebody else's unfinished work, because the alternative - a
+ * prompt that reads like a fresh request - would have the new agent silently redo whatever the
+ * first one had already done. The re-read instruction is there for the same reason it is in
+ * buildResumePrompt: the original agent may have got part-way through real edits before its
+ * provider cut it off, and whether any of that reached disk is genuinely unknown to us.
+ */
+export function buildHandoverPrompt(turn: QueuedTurn, fromHandle: string): string {
+  return [
+    `[solace] @${fromHandle} was given this work but its provider ran out of usage before it could`,
+    "finish, so it has been handed to you. You work in the same directory, which is why you and not",
+    "somebody else.",
+    "",
+    `IMPORTANT: @${fromHandle} may have already started. Whether any of its edits reached disk is`,
+    "unknown to us. Before you change anything, read the current state of the files involved and",
+    "carry on from what is actually there - do not assume nothing was done, and do not assume it",
+    "was finished. You are running at your OWN permission level, not the one that agent had.",
+    "",
+    HANDOVER_WORK_MARKER + originalWorkText(turn),
+  ].join("\n");
+}
+
 interface EnqueueOptions {
   mentionChainDepth?: number;
   addressedBy?: { id: string; handle: string };
@@ -419,6 +518,7 @@ interface EnqueueOptions {
   kind?: IncomingKind;
   sessionRetryDone?: boolean;
   resume?: QueuedTurn["resume"];
+  handover?: QueuedTurn["handover"];
   /** Preserve a turn's identity/arrival time across a restart or a retry, so ordering and the
    * queue<->pendingInbound pairing survive rather than being silently re-generated. */
   id?: string;
@@ -438,6 +538,7 @@ function restoredTurnOptions(turn: QueuedTurn): EnqueueOptions {
     kind: turn.kind,
     sessionRetryDone: turn.sessionRetryDone,
     resume: turn.resume,
+    handover: turn.handover,
     id: turn.id,
     receivedAt: turn.receivedAt,
   };
@@ -519,6 +620,11 @@ export class AgentManager {
     initialQueues: PersistedAgentQueue[] = [],
     initialSessions: PersistedAgentSession[] = [],
     initialRateLimits: ProviderRateLimit[] = [],
+    /** Read live on every failure, never cached: a setting toggled in a browser tab has to
+     * apply to the turn that fails five seconds later. Defaults to a store holding the
+     * documented defaults, so every existing caller (and every test) keeps working with
+     * handover off, which is what off-by-default means. */
+    private settings: SettingsStore = new SettingsStore(),
   ) {
     this.rateLimits = new RateLimitStore(initialRateLimits);
     for (const config of initialAgents) {
@@ -1158,6 +1264,7 @@ ${text}` : text;
       kind: opts.kind ?? "work",
       receivedAt: opts.receivedAt ?? new Date().toISOString(),
       resume: opts.resume,
+      handover: opts.handover,
     };
     runtime.queue.push(turn);
     // A message that arrives while the agent is ALREADY mid-turn is the only kind that can be
@@ -1323,6 +1430,127 @@ ${text}` : text;
       createdAt: new Date().toISOString(),
     });
     this.onChange?.();
+  }
+
+  /**
+   * Pass a turn that died on a usage limit to another agent working in the same directory.
+   *
+   * Returns what actually happened, because the caller has to behave differently for each:
+   *  - "handed-over"    somebody else now owns this work. The original agent must NOT also
+   *                     schedule its own retry for it, or the same task runs twice.
+   *  - "declined"       this IS a usage limit and handover IS on, but nobody could take it. An
+   *                     explanation naming the working directory (and the reset time, when the
+   *                     provider gave one) has already been posted, so the caller suppresses its
+   *                     own generic rate-limit line and just arms the retry.
+   *  - "not-applicable" handover is off, or this was some other kind of failure. Nothing was
+   *                     posted and nothing changed; the caller behaves exactly as it always did.
+   *
+   * Double execution is prevented in three places at once: the failed turn is never re-queued on
+   * the original agent (it is handed over instead), any retry already scheduled for that agent is
+   * cancelled before the hand-off, and the receiving agent gets a NEW turn id, so the original
+   * turn object exists in exactly one queue.
+   */
+  private attemptHandover(
+    runtime: AgentRuntime,
+    turn: QueuedTurn,
+    resetAt: Date | undefined,
+  ): "handed-over" | "declined" | "not-applicable" {
+    if (!this.settings.get().handoverOnUsageExhausted) return "not-applicable";
+    // Only genuine exhaustion. A syntax error or a bad prompt would fail the same way on a
+    // second agent, so handing it on would just burn somebody else's quota on it.
+    if (!looksLikeUsageExhausted(runtime.lastError)) return "not-applicable";
+
+    const from = runtime.config;
+    // Two different true statements, not one hedged one. A parseable reset time is also exactly
+    // what arms the automatic retry in drainQueue, so when we have it, the work really will run
+    // again on its own; when we don't, it really will sit there until someone presses Retry.
+    const resetNote = resetAt
+      ? ` @${from.handle}'s limit resets at ${resetAt.toLocaleTimeString()}, and this will run again automatically then.`
+      : ` The provider did not say when @${from.handle}'s limit resets, so this will not run again on its own - use Retry once it has.`;
+    const say = (text: string) => {
+      this.bus.postMessage({
+        id: nanoid(),
+        channel: turn.replyChannel,
+        authorId: "system",
+        authorHandle: "system",
+        mentions: [],
+        text,
+        createdAt: new Date().toISOString(),
+      });
+    };
+
+    const count = (turn.handover?.count ?? 0) + 1;
+    if (count > MAX_HANDOVERS) {
+      say(
+        `This work has already been handed over ${MAX_HANDOVERS} times and every agent that has had it ran ` +
+          `out of usage, so it is not being passed on again. It was NOT finished: "${describeWork(turn)}".` +
+          resetNote,
+      );
+      return "declined";
+    }
+
+    // Candidates are filtered by working directory first, then by whether they can even be
+    // addressed in the chat this turn replies into - a chat filed under a project must not
+    // suddenly acquire an agent it never reaches.
+    const roster = this.listAgents();
+    const reachable = isChatChannel(turn.replyChannel)
+      ? this.chats.agentsForChat(turn.replyChannel.chatId, roster)
+      : roster;
+    const candidates = eligibleHandoverAgents(from, reachable, turn);
+
+    if (candidates.length === 0) {
+      say(
+        `@${from.handle} is out of usage and no other agent works in ${from.cwd}, so this work is waiting ` +
+          `rather than being handed to an agent pointed at a different project - that would mean confident ` +
+          `changes in the wrong codebase.${resetNote} Waiting: "${describeWork(turn)}"`,
+      );
+      return "declined";
+    }
+
+    const to = candidates[0];
+    // Cancel anything already armed for this turn on the original agent BEFORE handing it on.
+    // The scheduled single retry and a handover are both real re-runs of the same work; exactly
+    // one of them may exist.
+    if (runtime.scheduledRetryTimeout) clearTimeout(runtime.scheduledRetryTimeout);
+    runtime.scheduledRetryTimeout = undefined;
+    runtime.scheduledRetryAt = undefined;
+    // The work now belongs to somebody else, so the original agent must not also offer Retry
+    // for it - that button is the manual version of the same double execution.
+    runtime.lastFailedTurn = undefined;
+
+    const trustNote =
+      to.trustLevel === "plan"
+        ? ` @${to.handle} runs in plan mode, so it can read and plan but cannot change any files - it may not be able to finish this.`
+        : ` @${to.handle} runs at its own permission level (${to.trustLevel}), not @${from.handle}'s.`;
+    // Not `resetNote`: that one promises an automatic re-run, and the re-run was just cancelled
+    // in favour of this hand-off. The reset time is still stated, because it is the thing the
+    // user most wants to know about the agent that dropped out.
+    const whenResets = resetAt ? ` (its limit resets at ${resetAt.toLocaleTimeString()})` : "";
+    say(
+      `@${to.handle} is picking up @${from.handle}'s work because @${from.handle}'s provider is out of ` +
+        `usage${whenResets}. Both agents work in ${from.cwd}.${trustNote} @${from.handle} will NOT also ` +
+        `re-run this. Handed over: "${describeWork(turn)}"`,
+    );
+
+    this.enqueueTurn(to.id, buildHandoverPrompt(turn, from.handle), turn.replyChannel, {
+      mentionChainDepth: turn.mentionChainDepth,
+      // Preserved so the answer still lands back with whoever actually asked, rather than the
+      // thread dying because a different agent answered it.
+      addressedBy: turn.addressedBy,
+      kind: turn.kind,
+      // `resume` is deliberately dropped: its elapsed-time budget belongs to the run that was
+      // interrupted on the OTHER agent, and inheriting it would hand this fresh attempt a
+      // near-expired clock for reasons that have nothing to do with it.
+      handover: {
+        ofTurnId: turn.handover?.ofTurnId ?? turn.id,
+        count,
+        // De-duplicated: on the second hop the failing agent is already in this list, and a
+        // doubled id would make the chain's own record of who has had this work misleading.
+        agentIds: [...new Set([...(turn.handover?.agentIds ?? []), from.id, to.id])],
+      },
+    });
+    this.emitStatus(runtime.config.id);
+    return "handed-over";
   }
 
   private async drainQueue(agentId: string) {
@@ -1635,7 +1863,13 @@ ${text}` : text;
       // reset time) or via the manual "Retry" action, which is always available regardless.
       runtime.lastFailedTurn = turn;
       const resetAt = parseResetTime(runtime.lastError ?? "", new Date());
-      if (resetAt) {
+      // Handover is decided first, because it is the one outcome that must REPLACE the
+      // scheduled retry rather than sit alongside it - two re-runs of the same turn is the
+      // failure mode this whole feature has to avoid. "declined" means handover was on and this
+      // really was a usage limit, but nobody could take it: it has already said so, naming the
+      // reset time, so the generic rate-limit line below would only repeat it.
+      const handover = this.attemptHandover(runtime, turn, resetAt);
+      if (resetAt && handover !== "handed-over") {
         runtime.scheduledRetryAt = resetAt.toISOString();
         this.emitStatus(agentId);
         runtime.scheduledRetryTimeout = setTimeout(() => {
@@ -1649,9 +1883,10 @@ ${text}` : text;
             addressedBy: turn.addressedBy,
             kind: turn.kind,
             resume: turn.resume,
+            handover: turn.handover,
           });
         }, Math.max(0, resetAt.getTime() - Date.now()));
-        if (this.agents.has(runtime.config.id)) {
+        if (handover !== "declined" && this.agents.has(runtime.config.id)) {
           this.bus.postMessage({
             id: nanoid(),
             channel: replyChannel,

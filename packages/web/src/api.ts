@@ -1,6 +1,8 @@
 import type {
   AgentConfig,
   AgentStatus,
+  AppSettings,
+  SettingDefinition,
   ChatChannel,
   ChatMessage,
   ChatMeta,
@@ -140,6 +142,27 @@ export interface ChatArchive {
 
 export async function fetchArchives(): Promise<ChatArchive[]> {
   return fetch("/api/archives").then((r) => r.json());
+}
+
+/**
+ * App settings and the schema to render them from, fetched together. The definitions come from
+ * the server rather than being duplicated here so a control can never exist for a setting the
+ * running server does not actually have.
+ */
+export async function fetchSettings(): Promise<{ settings: AppSettings; definitions: SettingDefinition[] }> {
+  return fetch("/api/settings").then((r) => r.json());
+}
+
+/** Returns the settings the server now holds, which is the authority - not the patch we sent. */
+export async function updateSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
+  const res = await fetch("/api/settings", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? "Failed to save settings");
+  return data;
 }
 
 export async function sendAgentDirectMessage(agentId: string, text: string): Promise<void> {
@@ -401,6 +424,9 @@ type Hello = {
    * immediately instead of waiting for someone to spend a turn refilling it. */
   rateLimits: ProviderRateLimit[];
   approvals: PendingApproval[];
+  /** App settings as the server currently holds them, so a tab that connects (or reconnects
+   * after a restart) shows what is actually in force rather than a stale or default copy. */
+  settings: AppSettings;
 };
 
 /**

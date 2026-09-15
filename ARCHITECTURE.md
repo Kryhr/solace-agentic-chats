@@ -53,6 +53,40 @@ already has a working directory, which is where its CLI genuinely runs; a second
 editable "which project is this agent in" could disagree with it, and one of the two would then
 be lying. Membership is derived (`ChatStore.agentInProject`), so it cannot drift.
 
+## App settings, and handover on usage exhaustion
+
+App settings live **on the server**, in `.solace-state.json` alongside agents/history/queues
+(`PersistedState.settings`, owned by `core/settingsStore.ts`). They change what the server does
+with an agent's work when no browser is open at all, so localStorage would be the wrong home:
+they have to survive a restart and apply regardless of which tab is looking.
+
+`SETTING_DEFINITIONS` in `shared/src/settings.ts` is the single definition of what a setting is
+— key, default, label, description. The server validates against it (`sanitizeAppSettings`, which
+drops unknown keys and refuses to half-believe a wrong-typed value) and the Settings page renders
+from it. Adding a setting is one entry in that array.
+
+**Handover on usage exhaustion** (off by default) is the first one. When a turn fails and the
+error text is a usage/rate limit, `AgentManager.attemptHandover()` passes that exact turn to
+another agent instead of leaving it to wait.
+
+- *Detection* reuses `looksLikeUsageExhausted()` — the same test `parseResetTime()` has always
+  gated on, extracted rather than reinvented. A syntax error or a bad prompt would fail the same
+  way on a second agent, so only genuine exhaustion qualifies.
+- *Eligibility* is **same working directory** (`ChatStore.sameWorkingDirectory`, the same
+  case- and separator-insensitive normalisation `agentInProject` uses, but equality rather than
+  containment). An agent's cwd is where its CLI actually runs; handing "fix the build in X" to an
+  agent pointed elsewhere produces confident work on the wrong codebase, which is worse than the
+  task waiting. Agents that have already had this work are excluded, and an agent that can change
+  files is preferred over a `plan` one.
+- *When nobody qualifies*, nothing is handed over and a system message says so, naming the
+  directory and the reset time when the provider gave one.
+- *Looping* is capped at `MAX_HANDOVERS` hops, tracked on `QueuedTurn.handover`.
+- *Double execution* cannot happen: the scheduled single retry and a handover are mutually
+  exclusive for one turn. Handing over cancels any armed retry, clears `lastFailedTurn` (so
+  manual Retry offers nothing either), and gives the receiving agent a new turn id.
+- Every outcome is a system message in the chat the turn replies into, at the moment it happens.
+  The receiving agent runs at its OWN trust level, which the message states.
+
 ## Chat routing
 
 Implemented in `AgentManager.submitMessage()` -> `routeChatMessage()`, per chat. An unfiled chat
