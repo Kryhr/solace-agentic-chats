@@ -40,9 +40,19 @@ export const claudeCodeAdapter: ProviderAdapter = {
   id: "claude-code",
   async runTurn({ cwd, prompt, trustLevel, model, effort, agentId, onEvent, signal }: RunTurnOptions): Promise<void> {
     const serverPort = Number(process.env.PORT ?? 4310);
+    // The prompt goes in on STDIN, never as an argv element. On Windows `claude` resolves to
+    // an npm .cmd shim, so cross-spawn has to route it through `cmd.exe /d /s /c` - and a
+    // cmd.exe command line is TERMINATED by a literal newline, with everything after it
+    // silently discarded. Every group-chat prompt is multi-line (buildGroupPrompt puts the
+    // roster/identity block, then a blank line, then the actual message), so Claude Code was
+    // receiving ONLY the context header and none of the real task - which is exactly what it
+    // reported live: "I don't see an actual message or task in this turn, just system
+    // context." Codex was unaffected purely because it installs as a native codex.exe that
+    // bypasses cmd.exe entirely. Reproduced through a .cmd shim and re-verified against the
+    // real CLI via stdin on 2026-09-15. `claude -p` with no positional prompt reads stdin,
+    // which has no length or newline limits at all.
     const args = [
       "-p",
-      prompt,
       "--output-format",
       "stream-json",
       "--verbose",
@@ -54,9 +64,14 @@ export const claudeCodeAdapter: ProviderAdapter = {
     await new Promise<void>((resolve) => {
       const child = spawnCli("claude", args, {
         cwd,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe"],
         env: { ...process.env, SOLACE_AGENT_ID: agentId, SOLACE_SERVER_PORT: String(serverPort) },
       });
+      // Claude Code only starts the turn once stdin reaches EOF, so this must always end().
+      // An EPIPE here (child died before reading) is not worth crashing the server over - the
+      // close/error handlers below already report the real failure.
+      child.stdin!.on("error", () => {});
+      child.stdin!.end(prompt);
       const rl = readline.createInterface({ input: child.stdout! });
 
       let timedOut = false;

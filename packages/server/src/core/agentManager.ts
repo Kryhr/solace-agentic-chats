@@ -14,6 +14,12 @@ export interface QueuedTurn {
    * Two agents can legitimately keep mentioning each other back and forth; this caps that
    * chain instead of letting it run forever - see MAX_MENTION_CHAIN_DEPTH. */
   mentionChainDepth: number;
+  /** The *agent* whose message triggered this turn, if it was an agent rather than the human
+   * operator. This is what makes a reply land back with whoever actually asked: requiring an
+   * agent to re-@mention someone who just addressed it directly is not how a conversation
+   * works, and in practice they don't - one agent wrote "Claude, one audit item..." with no
+   * "@", so the reply reached nobody and the thread died silently. See routeGroupMessage. */
+  addressedBy?: { id: string; handle: string };
 }
 
 /** A snapshot of one agent's still-outstanding work, for persistence.ts - see
@@ -72,6 +78,11 @@ const MAX_TURN_MS = 15 * 60 * 1000;
  * cap at all, it has no natural stopping point either. */
 const MAX_MENTION_CHAIN_DEPTH = 6;
 
+/** How an agent says "I'm done, don't hand this back to me" - see routeGroupMessage. Matched
+ * anywhere in the reply (agents reliably put it on its own last line, but pinning it to the
+ * very end would make a single trailing period silently disable the off-ramp). */
+const END_THREAD_MARKER = /\[no-reply\]/i;
+
 /** For display only (the interrupted-turn restart notice) - a prompt built by buildGroupPrompt
  * has a "[group context: ...]" block and a "[group chat message from X]: " prefix wrapped
  * around the actual message; showing that raw wrapper to the user would bury what they
@@ -128,10 +139,12 @@ function addUsage(total: TurnUsage, delta: TurnUsage): TurnUsage {
  *   - A human message with @mentions only triggers a turn for the mentioned agent(s).
  *   - A human message with no @mentions triggers every agent - each gets its own turn and
  *     decides for itself whether it's relevant to them.
- *   - An agent's own reply only triggers another agent when it explicitly @mentions them -
- *     never on no-mention, so two agents replying-with-no-mention can't cascade into everyone
- *     replying to everyone forever. A capped mention-chain depth guards the explicit-mention
- *     case too, since two agents can otherwise keep mentioning each other indefinitely.
+ *   - An agent's own reply triggers another agent when it explicitly @mentions them, and
+ *     additionally always goes back to whichever *agent* addressed it, if any, with no
+ *     @mention needed - answering whoever just asked you something is the whole point of a
+ *     thread. It still never fans out to everyone on no-mention, so agents can't cascade into
+ *     everyone replying to everyone forever. A capped chain depth bounds both cases, since
+ *     two agents can otherwise keep replying to each other indefinitely.
  * A direct message to one agent's own channel always triggers a turn for just that agent,
  * with no @mention parsing needed, and its reply goes back to that same direct channel.
  */
@@ -168,10 +181,10 @@ export class AgentManager {
           text: `This was interrupted by a restart before finishing - retrying now: "${summarizePrompt(saved.inFlight.prompt)}"`,
           createdAt: new Date().toISOString(),
         });
-        this.enqueueTurn(saved.agentId, saved.inFlight.prompt, saved.inFlight.replyChannel, saved.inFlight.mentionChainDepth);
+        this.enqueueTurn(saved.agentId, saved.inFlight.prompt, saved.inFlight.replyChannel, saved.inFlight.mentionChainDepth, saved.inFlight.addressedBy);
       }
       for (const turn of saved.queued) {
-        this.enqueueTurn(saved.agentId, turn.prompt, turn.replyChannel, turn.mentionChainDepth);
+        this.enqueueTurn(saved.agentId, turn.prompt, turn.replyChannel, turn.mentionChainDepth, turn.addressedBy);
       }
     }
   }
@@ -231,7 +244,7 @@ export class AgentManager {
     if (runtime.scheduledRetryTimeout) clearTimeout(runtime.scheduledRetryTimeout);
     runtime.scheduledRetryAt = undefined;
     runtime.lastFailedTurn = undefined;
-    this.enqueueTurn(id, turn.prompt, turn.replyChannel, turn.mentionChainDepth);
+    this.enqueueTurn(id, turn.prompt, turn.replyChannel, turn.mentionChainDepth, turn.addressedBy);
     return true;
   }
 
@@ -310,10 +323,20 @@ export class AgentManager {
     authorId: string,
     authorHandle: string,
     text: string,
-    opts: { broadcastIfUnmentioned: boolean; mentionChainDepth: number; model?: string },
+    opts: {
+      broadcastIfUnmentioned: boolean;
+      mentionChainDepth: number;
+      model?: string;
+      /** The agent this message is an answer to, when this is an agent's reply to another
+       * agent - treated as a target even with no @mention (see `targets` below). */
+      replyTo?: { id: string; handle: string };
+    },
   ) {
     const knownHandles = [...this.agents.values()].map((a) => a.config.handle);
     const mentions = parseMentions(text, knownHandles);
+    // The end-of-thread marker is routing metadata, not something the human should have to
+    // read - strip it from what gets displayed, but keep the raw text for the check below.
+    const displayText = text.replace(END_THREAD_MARKER, "").trim() || text.trim();
 
     const message: ChatMessage = {
       id: nanoid(),
@@ -321,13 +344,28 @@ export class AgentManager {
       authorId,
       authorHandle,
       mentions,
-      text,
+      text: displayText,
       model: opts.model,
       createdAt: new Date().toISOString(),
     };
     this.bus.postMessage(message);
 
-    if (mentions.length === 0 && !opts.broadcastIfUnmentioned) return; // agent-authored, unmentioned: visible only
+    // Who this message actually reaches. An explicit @mention is still the way to pull in
+    // someone new, but an agent answering the agent that just addressed it doesn't have to
+    // re-@mention them - that reply is the continuation of an existing thread, not a new
+    // summons. Without this, a perfectly reasonable "Claude, one audit item: ..." from Codex
+    // reached nobody, and the collaboration stalled with neither agent doing anything wrong.
+    // An agent with nothing further to add needs a way to actually end a thread. Auto-replying
+    // to whoever addressed you means "thanks, looks good" would otherwise trigger another turn,
+    // and that one another, all the way to the depth cap - real billed turns spent on
+    // pleasantries. The marker is an explicit opt-out the agent controls, checked only for the
+    // implicit reply path: an explicit @mention is a deliberate act and always goes through.
+    const endsThread = END_THREAD_MARKER.test(text);
+    const replyTarget =
+      opts.replyTo && this.agents.has(opts.replyTo.id) && !endsThread ? opts.replyTo.handle : undefined;
+    const targets = mentions.length > 0 ? mentions : replyTarget ? [replyTarget] : [];
+
+    if (targets.length === 0 && !opts.broadcastIfUnmentioned) return; // agent-authored, unaddressed: visible only
 
     if (opts.mentionChainDepth > MAX_MENTION_CHAIN_DEPTH) {
       if (opts.mentionChainDepth === MAX_MENTION_CHAIN_DEPTH + 1) {
@@ -337,22 +375,25 @@ export class AgentManager {
           authorId: "system",
           authorHandle: "system",
           mentions: [],
-          text: `Stopped an agent-to-agent @mention chain after ${MAX_MENTION_CHAIN_DEPTH} hops to avoid a runaway loop - reply directly to continue.`,
+          text: `Stopped an agent-to-agent reply chain after ${MAX_MENTION_CHAIN_DEPTH} hops to avoid a runaway loop - reply directly to continue.`,
           createdAt: new Date().toISOString(),
         });
       }
       return;
     }
 
+    const isAgentAuthor = this.agents.has(authorId);
     for (const runtime of this.agents.values()) {
       if (runtime.config.id === authorId) continue; // an agent doesn't reply to itself
-      const targeted = mentions.length === 0 || mentions.includes(runtime.config.handle);
-      if (mentions.length > 0 && !targeted) continue; // explicit @mentions: only those agents get a turn
+      // targets empty here means an unaddressed *human* message (the broadcast case above) -
+      // everyone gets a turn and decides relevance for themselves.
+      if (targets.length > 0 && !targets.includes(runtime.config.handle)) continue;
       this.enqueueTurn(
         runtime.config.id,
-        this.buildGroupPrompt(authorHandle, text, runtime.config.id),
+        this.buildGroupPrompt(authorHandle, displayText, runtime.config.id),
         "group",
         opts.mentionChainDepth + 1,
+        isAgentAuthor ? { id: authorId, handle: authorHandle } : undefined,
       );
     }
   }
@@ -404,16 +445,26 @@ export class AgentManager {
       others.length > 0
         ? ` Other agents here: ${others
             .map((a) => `"${a.handle}" (${a.provider})${a.currentTask ? ` - currently: ${a.currentTask}` : ""}`)
-            .join("; ")}. Mention an agent by handle (e.g. "@${others[0].handle} ...") to bring them into this ` +
-          `specific thread - otherwise your reply only reaches whoever already mentioned you.`
+            .join("; ")}. Your reply automatically goes back to whoever just addressed you, so you don't need to ` +
+          `mention them again to answer. To reach a DIFFERENT agent, you must write their handle with a literal ` +
+          `"@" (e.g. "@${others[0].handle} ..."): writing their name without the "@" is just text and will not ` +
+          `reach them, so if you have a question or a handoff for someone, @mention them explicitly in this reply ` +
+          `rather than waiting for them to notice. When the exchange is finished and you don't need an answer back, ` +
+          `end your reply with "[no-reply]" so the thread stops there instead of bouncing back and forth.`
         : "";
     return `${identity}${roster}]\n\n[group chat message from ${fromHandle}]: ${text}`;
   }
 
-  private enqueueTurn(agentId: string, prompt: string, replyChannel: ChatChannel, mentionChainDepth = 0) {
+  private enqueueTurn(
+    agentId: string,
+    prompt: string,
+    replyChannel: ChatChannel,
+    mentionChainDepth = 0,
+    addressedBy?: { id: string; handle: string },
+  ) {
     const runtime = this.agents.get(agentId);
     if (!runtime) return;
-    runtime.queue.push({ prompt, replyChannel, mentionChainDepth });
+    runtime.queue.push({ prompt, replyChannel, mentionChainDepth, addressedBy });
     this.onChange?.(); // so a restart before this turn even starts still finds it queued
     void this.drainQueue(agentId);
   }
@@ -423,7 +474,7 @@ export class AgentManager {
     if (!runtime || runtime.busy) return;
     const turn = runtime.queue.shift();
     if (turn === undefined) return;
-    const { prompt, replyChannel, mentionChainDepth } = turn;
+    const { prompt, replyChannel, mentionChainDepth, addressedBy } = turn;
 
     runtime.busy = true;
     runtime.currentTurn = turn;
@@ -536,7 +587,7 @@ export class AgentManager {
           stillHere.scheduledRetryAt = undefined;
           stillHere.scheduledRetryTimeout = undefined;
           stillHere.lastFailedTurn = undefined;
-          this.enqueueTurn(agentId, turn.prompt, turn.replyChannel, turn.mentionChainDepth);
+          this.enqueueTurn(agentId, turn.prompt, turn.replyChannel, turn.mentionChainDepth, turn.addressedBy);
         }, Math.max(0, resetAt.getTime() - Date.now()));
         if (this.agents.has(runtime.config.id)) {
           this.bus.postMessage({
@@ -562,6 +613,7 @@ export class AgentManager {
           broadcastIfUnmentioned: false,
           mentionChainDepth: mentionChainDepth + 1,
           model: runtime.config.model,
+          replyTo: addressedBy,
         });
       }
     }
