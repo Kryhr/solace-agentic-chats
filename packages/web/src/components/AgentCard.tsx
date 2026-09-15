@@ -1,6 +1,33 @@
+import { useEffect, useState } from "react";
 import type { AgentConfig, AgentStatus, ProviderModelInfo, ProviderPermissionInfo, TrustLevel } from "@solace/shared";
 import { ProviderIcon } from "./ProviderIcon";
 import { permissionOptionsFor, TRUST_DESCRIPTIONS, TRUST_LABELS } from "../lib/permissionOptions";
+
+/** "4s", "2m 10s", "1h 04m" - short enough for a sidebar row, and it keeps seconds while they
+ * still mean something. Wall-clock since the turn started, not an estimate of anything. */
+function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const sec = total % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
+  if (m > 0) return `${m}m ${String(sec).padStart(2, "0")}s`;
+  return `${sec}s`;
+}
+
+/** Ticks once a second only while a turn is actually running, so an idle sidebar does no work. */
+function useElapsed(startedAt: string | undefined): string | null {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!startedAt) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [startedAt]);
+  if (!startedAt) return null;
+  const started = new Date(startedAt).getTime();
+  if (!Number.isFinite(started)) return null;
+  return formatElapsed(now - started);
+}
 
 const STATE_LABELS: Record<string, string> = {
   idle: "Idle",
@@ -32,7 +59,13 @@ export function AgentCard({
   onOpen: () => void;
 }) {
   const state = status?.state ?? "offline";
-  const task = agent.currentTask ?? status?.currentTask;
+  // Status first, config second. The config value is a label someone typed once via /task and
+  // never updates itself, so preferring it meant an agent mid-build still advertised whatever
+  // it had been asked to do hours earlier. The server derives the status value from the turn
+  // actually running and falls back to the config label when idle, so it is always the more
+  // truthful of the two.
+  const task = status?.currentTask || agent.currentTask;
+  const elapsed = useElapsed(status?.turnStartedAt);
   const modelLabel = agent.model || modelInfo?.currentDefaultModel;
   const modes = permissionOptionsFor(permissionInfo);
 
@@ -70,6 +103,11 @@ export function AgentCard({
         <span className={`task-line ${task ? "" : "empty"}`} title={task ?? undefined}>
           {task ?? (state === "offline" ? "Not started" : (STATE_LABELS[state] ?? state))}
         </span>
+        {elapsed && (
+          <span className="agent-elapsed" title={`Working for ${elapsed}`}>
+            {elapsed}
+          </span>
+        )}
         {modes.length > 0 && (
           <select
             className="trust-select"

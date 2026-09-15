@@ -3574,3 +3574,110 @@ body {
     flex-wrap: wrap;
   }
 }
+
+/* =========================================================================
+   MESSAGE SIDES AND SEND FEEDBACK
+
+   Two problems, same root cause: a sent message looked identical to everything
+   around it. Your own message rendered in the same column, same alignment and
+   same colour as every agent reply, entering with the same 4px rise as history
+   - so pressing Enter looked like nothing had happened, and in an agent hub it
+   was genuinely hard to tell a message had been sent at all.
+
+   Sides carry authorship, which frees the entrance animation to be about the
+   ACT of sending rather than having to signal "this is yours" as well.
+   ========================================================================= */
+
+.message-row.from-user {
+  /* Right-aligned, and the row shrinks to its content instead of spanning the
+     column - a full-width row cannot read as "a side" no matter how it is
+     aligned. margin-left:auto is what actually pushes it over. */
+  flex-direction: row-reverse;
+  margin-left: auto;
+  width: fit-content;
+  max-width: min(80%, 60ch);
+  text-align: left;
+}
+
+/* A quiet surface, not a bubble. Enough to separate your words from the
+   agent's at a glance while staying inside the same calm palette - the earlier
+   bordered card was the thing that read as "a bunch of boxes". */
+.message-row.from-user .message {
+  background: var(--surface-2);
+  border-radius: var(--radius-lg);
+  padding: var(--space-2) var(--space-4);
+  min-width: 0;
+}
+
+/* Meta reads right-to-left on a right-aligned row so the handle sits nearest
+   the avatar, mirroring the agent side rather than drifting away from it. */
+.message-row.from-user .meta {
+  flex-direction: row-reverse;
+}
+
+.message-row.from-user .body {
+  /* The 70ch reading measure is for long agent prose; a right-aligned message
+     is short and already capped by the row. */
+  max-width: none;
+}
+
+/* Sent messages arrive from the side they belong to, so the motion itself says
+   "this went out". History still never animates - useEntranceTracker only marks
+   genuinely new rows - so this only ever fires on something that just happened. */
+@keyframes enter-from-right {
+  from {
+    opacity: 0;
+    transform: translate3d(12px, 2px, 0) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.message-row.from-user.message-enter {
+  animation: enter-from-right var(--dur-3) var(--ease-out) both;
+}
+
+/* Agent replies settle in from their own side, which makes a back-and-forth
+   read as a conversation rather than as a list that grew. */
+@keyframes enter-from-left {
+  from {
+    opacity: 0;
+    transform: translate3d(-10px, 2px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.message-row:not(.from-user).message-enter {
+  animation: enter-from-left var(--dur-3) var(--ease-out) both;
+}
+
+/* The hub had the weakest feedback of anywhere in the app, because it has no
+   roster or thinking row to change - the same treatment applies there. */
+.hub-message.from-user .message {
+  background: var(--surface-2);
+}
+
+@media (max-width: 600px) {
+  .message-row.from-user {
+    max-width: 88%;
+  }
+}
+
+/* How long the current turn has been running. Tabular numerals so the row does not jitter
+   as the seconds tick, and mono because it is a measurement, not prose. */
+.agent-elapsed {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--lh-tight);
+  color: var(--text-faint);
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-xs);
+  background: var(--surface-2);
+}

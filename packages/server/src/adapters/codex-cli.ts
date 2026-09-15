@@ -2,7 +2,7 @@ import * as readline from "node:readline";
 import { join } from "node:path";
 import type { TrustLevel } from "@solace/shared";
 import { killCliTree, spawnCli } from "../core/spawnCli";
-import { parseCodexRateLimitEvent } from "../core/rateLimits";
+import { parseCodexRateLimitEvent, readCodexRateLimitFromRollout } from "../core/rateLimits";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 
 /** The group-chat MCP bridge, re-anchored to the *source* copy from the package root exactly as
@@ -214,6 +214,16 @@ export const codexCliAdapter: ProviderAdapter = {
       });
 
       child.on("close", (code) => {
+        // codex exec --json does not emit token_count on this build, so the usage meter had
+        // nothing to show for Codex while working fine for Claude. The CLI writes the same
+        // numbers to its session rollout file, keyed by the session id we already track - so
+        // read the provider's own figure from disk rather than leaving the meter blank or,
+        // worse, inventing one. Best-effort: a miss simply reports nothing.
+        const sid = seenSessionId ?? sessionId;
+        if (sid) {
+          const fromDisk = readCodexRateLimitFromRollout(sid, new Date().toISOString());
+          if (fromDisk) onEvent({ type: "rate-limit", rateLimit: fromDisk });
+        }
         signal?.removeEventListener("abort", onAbort);
         if (!aborted && code !== 0 && !sawStreamEvent && canFallBack) {
           // Codex died before producing a single line of its own stream, with an argument set

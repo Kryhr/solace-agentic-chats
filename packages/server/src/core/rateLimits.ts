@@ -1,3 +1,6 @@
+import { closeSync, existsSync, openSync, readSync, readdirSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { ProviderId, ProviderRateLimit, RateLimitWindow } from "@solace/shared";
 
 /**
@@ -68,7 +71,11 @@ export function parseClaudeRateLimitEvent(event: unknown, observedAt: string): P
     windows.push({
       key,
       label: claudeWindowLabel(key),
-      usedPercent: utilization * 100,
+      // Rounded to two decimals purely to kill the float artifact: 0.56 * 100 is
+      // 56.00000000000001 in IEEE 754, and shipping that through the API made a real provider
+      // figure look made up. This is display precision on the provider's own number, not a
+      // adjustment to it - nothing is inferred, added or smoothed.
+      usedPercent: Math.round(utilization * 100 * 100) / 100,
       resetsAt: finiteNumber(window?.resetsAt),
     });
   }
@@ -174,4 +181,91 @@ export function sanitizePersistedRateLimits(value: unknown): ProviderRateLimit[]
     });
   }
   return out;
+}
+
+/**
+ * Codex's rate limits, read from the CLI's own session rollout file.
+ *
+ * `codex exec --json` does not emit `token_count` at all on the installed build, so the
+ * stream carries nothing to parse and the usage meter simply stayed empty for Codex while
+ * working fine for Claude. But the CLI *writes* the same data to disk: every session has a
+ * rollout JSONL under CODEX_HOME/sessions/YYYY/MM/DD/, named with the session id we already
+ * capture for resume, and its `token_count` events carry a real `rate_limits` block.
+ *
+ * Reading it is the same "read real data off disk rather than guess" pattern this project
+ * already uses for model defaults - it is the provider's own number, not an estimate.
+ * Returns null for anything it cannot confidently read; the meter then shows nothing, which
+ * is the honest outcome rather than a fabricated zero.
+ */
+export function readCodexRateLimitFromRollout(sessionId: string, now: string): ProviderRateLimit | null {
+  if (!sessionId) return null;
+  const home = process.env.CODEX_HOME ?? join(homedir(), ".codex");
+  const file = findRolloutFile(join(home, "sessions"), sessionId);
+  if (!file) return null;
+  try {
+    // Read the tail only. These grow to megabytes over a long session and the newest
+    // rate_limits block is always at the end; parsing the whole file every turn would be
+    // real work for no extra information.
+    const size = statSync(file).size;
+    const start = Math.max(0, size - TAIL_BYTES);
+    const fd = openSync(file, "r");
+    const buf = Buffer.alloc(size - start);
+    try {
+      readSync(fd, buf, 0, buf.length, start);
+    } finally {
+      closeSync(fd);
+    }
+    const lines = buf.toString("utf-8").split("\n");
+    // Backwards: the last block written is the current one.
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line || !line.includes("rate_limits")) continue;
+      try {
+        // A rollout line wraps the event: {timestamp, ordinal, type:"event_msg", payload:{...}}.
+        // The stream parser expects the event itself, so unwrap before handing it over rather
+        // than teaching the parser about a file format it never sees.
+        const raw = JSON.parse(line) as { payload?: unknown };
+        const parsed =
+          parseCodexRateLimitEvent(raw, now) ?? (raw.payload ? parseCodexRateLimitEvent(raw.payload, now) : null);
+        if (parsed) return parsed;
+      } catch {
+        // A truncated first line is expected when reading from an offset - skip it.
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+const TAIL_BYTES = 256 * 1024;
+
+/** The rollout file whose name ends with this session id. Codex files them by date, so this
+ * walks the year/month/day tree rather than assuming today - a session started before
+ * midnight is still the current one. */
+function findRolloutFile(root: string, sessionId: string): string | undefined {
+  if (!existsSync(root)) return undefined;
+  const stack = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry);
+      if (entry.endsWith(".jsonl")) {
+        if (entry.includes(sessionId)) return full;
+        continue;
+      }
+      try {
+        if (statSync(full).isDirectory()) stack.push(full);
+      } catch {
+        // Unreadable entry - skip rather than fail the whole lookup.
+      }
+    }
+  }
+  return undefined;
 }

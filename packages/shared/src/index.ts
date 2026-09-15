@@ -279,6 +279,14 @@ export interface AgentStatus {
   /** The literal last error/rate-limit message the provider CLI reported, if any - shown
    * verbatim rather than parsed/interpreted, since providers don't expose a queryable quota API. */
   lastError?: string;
+  /** ISO time the in-flight turn started, so the UI can show how long it has been working
+   * rather than only that it is. Absent when idle. */
+  turnStartedAt?: string;
+  /** The chat whose turn this agent is currently running, when it is running one in a chat
+   * rather than in its own hub. Without this the UI could only ask "is this agent busy?",
+   * which is not the same question as "is this agent busy HERE" - so every open chat showed
+   * every working agent, including chats that had nothing to do with the turn. */
+  activeChatId?: string;
   /** The last rate-limit report seen on a turn run by this agent, if its provider ever sent one. */
   rateLimit?: ProviderRateLimit;
   /** Set when a failed turn's error text yielded a real, parseable future reset time and a

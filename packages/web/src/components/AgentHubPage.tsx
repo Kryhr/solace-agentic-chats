@@ -23,6 +23,7 @@ export function AgentHubPage({
   permissionInfo,
   directHistory,
   onBack,
+  backLabel,
   onSave,
   onSendDirect,
   onClearHistory,
@@ -36,6 +37,9 @@ export function AgentHubPage({
   permissionInfo?: ProviderPermissionInfo;
   directHistory: ChatMessage[];
   onBack: () => void;
+  /** The chat this returns to. Hardcoding "Group chat" was fine when there was only one; with
+   * several it named a chat you were often not going back to. */
+  backLabel: string;
   onSave: (patch: Partial<Pick<AgentConfig, "trustLevel" | "model" | "effort">>) => void;
   onSendDirect: (text: string) => Promise<void>;
   onClearHistory: () => void;
@@ -79,7 +83,7 @@ export function AgentHubPage({
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M15 18l-6-6 6-6" />
           </svg>
-          Group chat
+          {backLabel}
         </button>
         <div className="hub-page-identity">
           <ProviderIcon provider={agent.provider} size={30} />

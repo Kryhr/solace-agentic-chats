@@ -128,6 +128,17 @@ interface AgentRuntime {
    * start) so a persistence snapshot taken mid-turn can still capture what was actually
    * running, not just what's still waiting. */
   currentTurn?: QueuedTurn;
+  /** What this agent most recently actually worked on, derived from a real turn.
+   *
+   * Deriving the line only while busy was not enough: the moment a turn ended it fell back to
+   * config.currentTask, which is a label someone typed into /task once and which nothing keeps
+   * true. An agent sat there advertising "build the checkout flow" for hours after finishing
+   * it, which is the state it is in most of the time anyone looks at the sidebar. Real work
+   * supersedes the manual label permanently. */
+  lastTaskLine?: string;
+  /** When the in-flight turn started, so the UI can say how long it has been working rather
+   * than just that it is. Cleared when the turn ends. */
+  turnStartedAt?: string;
   /** The last rate-limit figure this agent's own turn heard from the provider. */
   rateLimit?: ProviderRateLimit;
   /** The most recently failed turn, kept around so a "Retry" action (automatic or
@@ -182,6 +193,31 @@ export const MAX_TURN_IDLE_MS = 5 * 60 * 1000;
  * mentioning each other back and forth is legitimate collaboration, not a bug - but with no
  * cap at all, it has no natural stopping point either. */
 const MAX_MENTION_CHAIN_DEPTH = 6;
+
+/**
+ * One house style for every agent, whatever provider it is.
+ *
+ * Each CLI has its own default voice: one narrates constantly, another goes silent for minutes
+ * and then emits a wall of bullet points. Reading a chat with both in it is jarring, and the
+ * quieter one reads as though it is doing nothing when it is working hard.
+ *
+ * Every line here is about being MORE informative or MORE honest. None of it asks for polish
+ * for its own sake, and the verification clauses exist because this project has already caught
+ * an agent announcing a site was live at a URL where nothing was listening.
+ */
+const HOUSE_STYLE = [
+  "Write like a careful engineer briefing a colleague who will act on what you say:",
+  "- Lead with the outcome. What changed, what you found, or what is blocked - not a restatement of the request.",
+  "- Separate what you VERIFIED from what you assume. Say how you verified it (ran it, read the file, curled the URL). If you did not check, say you did not check.",
+  "- Be concrete: real file paths, real commands, real numbers. Never describe a result you did not observe.",
+  "- Say what you did NOT do, and anything you left broken or unfinished. A gap you name is useful; a gap you omit is a trap.",
+  "- Flag uncertainty in one clear sentence rather than hedging through a whole paragraph.",
+  "- Prose over bullet soup. Use a list when the content is genuinely a list, not as a default layout.",
+  "- No preamble, no filler, no restating instructions back. Start with the substance.",
+  "- Keep it proportionate: a one-line change deserves a one-line report.",
+  "If you have post_to_group, send a short update when you start something substantial, when you",
+  "commit to a direction, and when you hand work off - so the others are not waiting in the dark.",
+].join("\n");
 
 /** How an agent says "I'm done, don't hand this back to me" - see routeChatMessage. Matched
  * anywhere in the reply (agents reliably put it on its own last line, but pinning it to the
@@ -277,6 +313,21 @@ function summarizePrompt(prompt: string): string {
  * a resume turn's own prompt starts with a long re-read preamble, so summarizing it raw showed
  * the user "Your previous turn was stopped part-way through so another agent's..." where they
  * needed to see which piece of work was paused or abandoned. */
+/**
+ * A sidebar-sized version of what a turn is working on.
+ *
+ * describeWork() returns up to 200 characters, which is right for a system message but wrong
+ * for a two-line row under an agent's name - the first live task rendered there was a whole
+ * paragraph of explanation about a bug. Takes the first sentence or line, drops a leading
+ * @handle (the row already says who it is), and caps it.
+ */
+function summarizeTaskLine(work: string): string {
+  const firstLine = work.split("\n")[0].trim();
+  const withoutMention = firstLine.replace(/^@[a-zA-Z0-9_-]+[,:]?\s*/, "");
+  const firstSentence = withoutMention.split(/(?<=[.!?])\s/)[0].trim() || withoutMention;
+  return firstSentence.length > 80 ? `${firstSentence.slice(0, 80).trimEnd()}…` : firstSentence;
+}
+
 function describeWork(turn: QueuedTurn): string {
   const markerAt = turn.prompt.indexOf(RESUME_WORK_MARKER);
   return summarizePrompt(markerAt >= 0 ? turn.prompt.slice(markerAt + RESUME_WORK_MARKER.length) : turn.prompt);
@@ -727,11 +778,33 @@ export class AgentManager {
     return {
       agentId: runtime.config.id,
       state: runtime.status,
-      currentTask: runtime.config.currentTask,
+      // What the agent is ACTUALLY doing wins over the label someone typed once.
+      //
+      // currentTask was only ever written by /task, so it went stale the moment the work
+      // moved on: one agent sat there reading "build the checkout flow" for hours after
+      // finishing it, while another that was genuinely mid-build showed nothing at all,
+      // because no one had ever run /task on it. A field that only a slash command can
+      // update cannot stay true on its own.
+      //
+      // While a turn is running this is derived from that turn's own triggering message, so
+      // it updates itself and cannot lie. The manual label is the fallback for an idle
+      // agent, where it is what it always was: a note the user chose to leave.
+      // Live while working, then the last thing it really did, and only a manual /task label
+      // if it has never run a turn. That ordering is the whole fix: the manual label is the
+      // least trustworthy of the three because nothing updates it.
+      currentTask:
+        runtime.currentTurn && runtime.busy
+          ? summarizeTaskLine(describeWork(runtime.currentTurn))
+          : (runtime.lastTaskLine ?? runtime.config.currentTask),
+      turnStartedAt: runtime.busy ? runtime.turnStartedAt : undefined,
       lastActivityAt: new Date().toISOString(),
       lastUsage: runtime.lastUsage,
       totalUsage: runtime.totalUsage,
       lastError: runtime.lastError,
+      activeChatId:
+        runtime.busy && runtime.currentTurn && isChatChannel(runtime.currentTurn.replyChannel)
+          ? runtime.currentTurn.replyChannel.chatId
+          : undefined,
       rateLimit: runtime.rateLimit ?? this.rateLimits.get(runtime.config.provider),
       retryAt: runtime.scheduledRetryAt,
       canRetry: runtime.lastFailedTurn !== undefined,
@@ -994,7 +1067,15 @@ export class AgentManager {
       createdAt: new Date().toISOString(),
     };
     this.bus.postMessage(message);
-    this.enqueueTurn(agentId, text, channel, { kind: classifyIncoming(text), inbound: true });
+    // A hub message used to go through with no wrapper at all, so the same agent answered in
+    // one voice in a chat and its provider's default voice here. Sent once per session, on the
+    // same rule as the chat context block.
+    const needsStyle = !runtime.sessionId;
+    const prompt = needsStyle ? `[how to answer here]
+${HOUSE_STYLE}
+
+${text}` : text;
+    this.enqueueTurn(agentId, prompt, channel, { kind: classifyIncoming(text), inbound: true });
   }
 
   /**
@@ -1056,7 +1137,9 @@ export class AgentManager {
           `have already received it, and repeating it makes them run a second turn answering the same question. ` +
           `"list_agents" tells you who is here and whether they are mid-turn.`
         : "";
-    return `${identity}${roster}]\n\n[group chat message from ${fromHandle}]: ${text}`;
+    // The house style rides along with the context block, so it follows the same
+    // send-once-per-session rule and costs nothing on every later turn.
+    return `${identity}${roster}\n\n${HOUSE_STYLE}]\n\n[group chat message from ${fromHandle}]: ${text}`;
   }
 
   /** Options object rather than a growing positional tail: this had already reached five
@@ -1258,6 +1341,9 @@ export class AgentManager {
 
     runtime.busy = true;
     runtime.currentTurn = turn;
+    runtime.turnStartedAt = new Date().toISOString();
+    // Captured at the start, so it survives the turn ending and becomes "what it last did".
+    runtime.lastTaskLine = summarizeTaskLine(describeWork(turn));
     runtime.abortKind = undefined; // a previous turn's reason must never leak into this one
     runtime.activeTurnToken = randomUUID();
     this.onChange?.(); // persist that this turn is now the one actually in flight
@@ -1599,6 +1685,7 @@ export class AgentManager {
       void this.checkLocalUrlClaims(runtime.config.id, lastText, replyChannel);
     }
 
+    runtime.turnStartedAt = undefined;
     runtime.activeController = undefined;
     runtime.activeTurnToken = undefined; // a child that outlived its turn can no longer post as this agent
     runtime.abortKind = undefined;

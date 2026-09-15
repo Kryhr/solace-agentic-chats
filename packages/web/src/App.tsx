@@ -114,6 +114,15 @@ export default function App() {
   }, [view, chats, scopedChats]);
 
   const activeChat = useMemo(() => chats.find((c) => c.id === activeChatId), [chats, activeChatId]);
+
+  /** The last chat actually on screen, so leaving for an agent hub (or Saved chats, or Skills)
+   * and coming back returns you where you were. goToChat() with no id used to clear the hash
+   * entirely, and the fallback then picked the FIRST chat in scope - so with more than one chat
+   * open, "back" reliably landed you in the wrong conversation. */
+  const lastChatIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (activeChatId) lastChatIdRef.current = activeChatId;
+  }, [activeChatId]);
   /** The project the OPEN chat is filed under, which is not necessarily the one the sidebar is
    * scoped to: "All projects" still shows a project's chat, and that chat still only reaches
    * its own project's agents. */
@@ -180,7 +189,8 @@ export default function App() {
     location.hash = `#/agent/${agentId}`;
   };
   const goToChat = (chatId?: string) => {
-    location.hash = chatId ? `#/chat/${chatId}` : "";
+    const target = chatId ?? lastChatIdRef.current;
+    location.hash = target ? `#/chat/${target}` : "";
   };
   const goToArchives = () => {
     location.hash = "#/archives";
@@ -454,6 +464,7 @@ export default function App() {
           permissionInfo={permissionCatalog.find((p) => p.provider === hubAgent.provider)}
           directHistory={hubDirectHistory}
           onBack={() => goToChat()}
+          backLabel={chats.find((c) => c.id === lastChatIdRef.current)?.title ?? "Chats"}
           onSave={(patch) => {
             setAgentsById((a) => (a[hubAgent.id] ? { ...a, [hubAgent.id]: { ...a[hubAgent.id], ...patch } } : a));
             void updateAgent(hubAgent.id, patch);

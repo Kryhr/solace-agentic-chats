@@ -47,7 +47,12 @@ export function ChatPanel({
   const stickToBottom = useRef(true);
 
   const agentById = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
-  const thinkingAgents = agents.filter((a) => statuses[a.id]?.state === "thinking");
+  // Scoped to THIS chat. "Is this agent busy?" and "is this agent busy here?" are different
+  // questions, and answering the first one meant a second open chat showed both agents as
+  // working on a turn that had nothing to do with it.
+  const thinkingAgents = agents.filter(
+    (a) => statuses[a.id]?.state === "thinking" && statuses[a.id]?.activeChatId === chat?.id,
+  );
   const erroredAgents = agents.filter((a) => statuses[a.id]?.state === "error");
   const trackEntrance = useEntranceTracker();
 
