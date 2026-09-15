@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ProviderId, ProviderModelInfo } from "@solace/shared";
+import type { CliProviderId, ProviderModelInfo } from "@solace/shared";
 
 /**
  * What each provider's CLI actually supports, verified against its own --help output rather
@@ -47,7 +47,7 @@ export function getModelCatalog(): ProviderModelInfo[] {
   const claudeDefault = detectClaudeDefault();
   const codexDefault = detectCodexDefault();
 
-  const catalog: Record<Exclude<ProviderId, "custom">, ProviderModelInfo> = {
+  const catalog: Record<CliProviderId, ProviderModelInfo> = {
     "claude-code": {
       provider: "claude-code",
       // "fable" deliberately left out: which model aliases actually resolve to something

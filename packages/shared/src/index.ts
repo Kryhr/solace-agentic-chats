@@ -1,7 +1,26 @@
 // Shared types used by both the server and the web UI.
 // Keep this package dependency-free so it can be imported from either side.
 
-export type ProviderId = "claude-code" | "codex-cli" | "gemini-cli" | "qwen-code" | "custom";
+// Re-bound to real consts rather than `export { ... } from "./providerCatalog"`: this package
+// compiles to CommonJS, and a re-export becomes a lazy getter that Rollup can't trace when
+// Vite bundles the web app - importing searchCatalog through it fails the build with
+// "not exported by shared/dist/index.js". A plain const assignment compiles to
+// `exports.X = ...`, which it can.
+import { PROVIDER_CATALOG as CATALOG, searchCatalog as search } from "./providerCatalog";
+export type { CatalogProvider } from "./providerCatalog";
+export const PROVIDER_CATALOG = CATALOG;
+export const searchCatalog = search;
+
+export type ProviderId = "claude-code" | "codex-cli" | "gemini-cli" | "qwen-code" | "custom" | "local";
+
+/**
+ * The providers that are actually a CLI binary on this machine. "custom" (a hosted
+ * OpenAI-compatible endpoint) and "local" (an OpenAI-compatible server running on this
+ * machine) are both HTTP-only, so every per-CLI lookup table excludes them. Named once here
+ * rather than spelled out as Exclude<...> at each of the seven call sites, so adding a
+ * non-CLI provider is a one-line change instead of seven.
+ */
+export type CliProviderId = Exclude<ProviderId, "custom" | "local">;
 
 /**
  * How much an agent is allowed to do without a human clicking "approve" first.
@@ -46,14 +65,54 @@ export interface CredentialMeta {
   /** A short label to tell saved keys apart, e.g. "personal" - not the key itself. */
   label: string;
   createdAt: string;
-  /** Only meaningful when provider === "custom": the OpenAI-compatible API root this key
-   * belongs to, e.g. "https://api.deepseek.com/v1". Chat completions are POSTed to
-   * `${baseUrl}/chat/completions` - see adapters/custom-api.ts. */
+  /** Only meaningful when provider is "custom" or "local": the OpenAI-compatible API root
+   * this key belongs to, e.g. "https://api.deepseek.com" or "http://127.0.0.1:11434/v1".
+   * Chat completions are POSTed to `${baseUrl}/chat/completions` - see adapters/custom-api.ts. */
   baseUrl?: string;
-  /** Only meaningful when provider === "custom": which service this actually is, e.g.
-   * "DeepSeek" or "Groq". Without it every custom connection reads as just "custom" in the
-   * UI, and several of them would be indistinguishable from each other. */
+  /** Only meaningful when provider is "custom" or "local": which service this actually is,
+   * e.g. "DeepSeek" or "Ollama". Without it every custom connection reads as just "custom"
+   * in the UI, and several of them would be indistinguishable from each other. */
   connectionName?: string;
+  /** Whether a key was actually stored. The key itself never leaves the server, but whether
+   * one exists at all has to: a local server usually needs none, and a connection that
+   * silently has no key is otherwise indistinguishable from one that does, right up until a
+   * turn fails with a 401. Absent on entries saved before keyless connections existed - all
+   * of which did have a key. */
+  hasKey?: boolean;
+}
+
+/**
+ * The real model list an endpoint reported from its own GET /models, plus when we asked.
+ * Never persisted and never merged into a hardcoded list: an endpoint's catalog depends on
+ * what the user has pulled or subscribed to and changes without notice, so the only honest
+ * source is the endpoint itself and the only honest shelf life is "as of this timestamp".
+ */
+export interface ModelDiscoveryResult {
+  models: string[];
+  /** ISO timestamp of the response these ids actually came from. */
+  fetchedAt: string;
+}
+
+/** One OpenAI-compatible server found running on this machine by a scan the user pressed a
+ * button to start. See core/localDiscovery.ts for why "found" means more than "port open". */
+export interface LocalServerFinding {
+  /** Runtime id from core/localDiscovery.ts's table, e.g. "ollama". */
+  runtime: string;
+  /** Human name for that runtime, e.g. "Ollama". */
+  name: string;
+  /** The origin that answered - always literal 127.0.0.1, see localDiscovery.ts. */
+  origin: string;
+  /** The OpenAI-compatible API root to save as a connection's base URL. */
+  baseUrl: string;
+  /** "running" = the response body positively identified this runtime. "authenticated" = it
+   * answered 401/403, so something is listening and wants a key, but we can't confirm what. */
+  state: "running" | "authenticated";
+  /** Models the server itself listed, when it answered a keyless GET /models. Absent means
+   * we didn't get a list back, never that the server has no models. */
+  models?: string[];
+  /** When this was verified. Shown rather than cached across sessions: a local server that
+   * was up five minutes ago is not evidence that it is up now. */
+  verifiedAt: string;
 }
 
 /**

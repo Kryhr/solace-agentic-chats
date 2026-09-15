@@ -1,15 +1,15 @@
-import type { ProviderId, ProviderStatus } from "@solace/shared";
+import type { CliProviderId, ProviderId, ProviderStatus } from "@solace/shared";
 import { getAdapter } from "../adapters";
 import { spawnCli } from "./spawnCli";
 
-const CLI_BIN: Record<Exclude<ProviderId, "custom">, string> = {
+const CLI_BIN: Record<CliProviderId, string> = {
   "claude-code": "claude",
   "codex-cli": "codex",
   "gemini-cli": "gemini",
   "qwen-code": "qwen",
 };
 
-const INSTALL_HINT: Record<Exclude<ProviderId, "custom">, string> = {
+const INSTALL_HINT: Record<CliProviderId, string> = {
   "claude-code": "npm install -g @anthropic-ai/claude-code, then run `claude` once to log in",
   "codex-cli": "npm install -g @openai/codex, then run `codex login` to sign in",
   "gemini-cli": "npm install -g @google/gemini-cli, then run `gemini` once to log in",
@@ -46,7 +46,7 @@ function isInstalled(bin: string): Promise<boolean> {
 }
 
 export async function checkAllProviders(): Promise<ProviderStatus[]> {
-  const providers = Object.keys(CLI_BIN) as Exclude<ProviderId, "custom">[];
+  const providers = Object.keys(CLI_BIN) as CliProviderId[];
   const installedFlags = await Promise.all(providers.map((provider) => isInstalled(CLI_BIN[provider])));
   return providers.map((provider, i) => ({
     provider,

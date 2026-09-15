@@ -4,8 +4,10 @@ import { nanoid } from "nanoid";
 import type { CredentialMeta, ProviderId } from "@solace/shared";
 
 interface StoredCredential extends CredentialMeta {
-  /** The actual API key. Never returned from listCredentials() or any GET route - only
-   * getRawKey() (server-internal, used right before an API call) can see it. */
+  /** The actual API key, or "" for a keyless connection (a local model server usually has no
+   * key at all - see adapters/custom-api.ts, which sends no Authorization header when this is
+   * empty). Never returned from listCredentials() or any GET route - only
+   * getCredentialSecrets() (server-internal, used right before an API call) can see it. */
   key: string;
 }
 
@@ -44,6 +46,7 @@ function toMeta(c: StoredCredential): CredentialMeta {
     createdAt: c.createdAt,
     baseUrl: c.baseUrl,
     connectionName: c.connectionName,
+    hasKey: Boolean(c.key),
   };
 }
 
@@ -55,8 +58,9 @@ export function saveCredential(
   workspaceRoot: string,
   provider: ProviderId,
   label: string,
+  /** Empty for a keyless connection - see StoredCredential.key. */
   rawKey: string,
-  /** Both only meaningful for provider "custom" - see CredentialMeta in @solace/shared. */
+  /** Both only meaningful for providers "custom" and "local" - see CredentialMeta in @solace/shared. */
   baseUrl?: string,
   connectionName?: string,
 ): CredentialMeta {
@@ -66,7 +70,7 @@ export function saveCredential(
     provider,
     label: label || "unlabeled",
     createdAt: new Date().toISOString(),
-    key: rawKey,
+    key: rawKey?.trim() ?? "",
     // Trailing slashes would produce "https://host/v1//chat/completions"; normalise once here
     // rather than at every call site.
     baseUrl: baseUrl?.trim().replace(/\/+$/, "") || undefined,

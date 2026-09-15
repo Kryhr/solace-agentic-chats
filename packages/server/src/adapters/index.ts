@@ -1,4 +1,4 @@
-import type { ProviderId } from "@solace/shared";
+import type { CliProviderId, ProviderId } from "@solace/shared";
 import type { ProviderAdapter } from "./types";
 import { claudeCodeAdapter } from "./claude-code";
 import { codexCliAdapter } from "./codex-cli";
@@ -7,7 +7,7 @@ import { openaiApiAdapter } from "./openai-api";
 import { customApiAdapter } from "./custom-api";
 import { geminiCliAdapter, qwenCodeAdapter } from "./stubs";
 
-const cliAdapters: Record<Exclude<ProviderId, "custom">, ProviderAdapter> = {
+const cliAdapters: Record<CliProviderId, ProviderAdapter> = {
   "claude-code": claudeCodeAdapter,
   "codex-cli": codexCliAdapter,
   "gemini-cli": geminiCliAdapter,
@@ -16,16 +16,19 @@ const cliAdapters: Record<Exclude<ProviderId, "custom">, ProviderAdapter> = {
 
 // Only claude-code and codex-cli have a direct-API-key alternative today - gemini/qwen's CLI
 // adapters aren't even implemented yet, so there's no API variant to offer for them either.
-const apiAdapters: Partial<Record<Exclude<ProviderId, "custom">, ProviderAdapter>> = {
+const apiAdapters: Partial<Record<CliProviderId, ProviderAdapter>> = {
   "claude-code": claudeApiAdapter,
   "codex-cli": openaiApiAdapter,
 };
 
 export function getAdapter(provider: ProviderId, authMode: "cli" | "api-key" = "cli"): ProviderAdapter {
-  // "custom" is any OpenAI-compatible endpoint the user saved a connection for (DeepSeek,
-  // Groq, ...). There's no CLI to shell out to for those - an API key is the only way in.
-  if (provider === "custom") {
-    if (authMode !== "api-key") throw new Error("custom endpoints only support API-key auth");
+  // "custom" is any hosted OpenAI-compatible endpoint the user saved a connection for
+  // (DeepSeek, Groq, ...); "local" is one running on this machine (Ollama, llama.cpp, ...).
+  // Same wire format, so the same adapter - they're separate ids because everything *around*
+  // the request differs (a local one is keyless and can be positively detected, a hosted one
+  // is neither). Neither has a CLI to shell out to, so the saved connection is the only way in.
+  if (provider === "custom" || provider === "local") {
+    if (authMode !== "api-key") throw new Error(`${provider} endpoints only support saved-connection auth`);
     return customApiAdapter;
   }
   if (authMode === "api-key") {

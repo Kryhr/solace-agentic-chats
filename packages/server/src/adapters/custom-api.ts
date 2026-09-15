@@ -16,11 +16,9 @@ import type { ProviderAdapter, RunTurnOptions } from "./types";
 export const customApiAdapter: ProviderAdapter = {
   id: "custom",
   async runTurn({ prompt, model, apiKey, baseUrl, onEvent, signal }: RunTurnOptions): Promise<void> {
-    if (!apiKey) {
-      onEvent({ type: "error", message: "no API key configured for this agent" });
-      onEvent({ type: "done" });
-      return;
-    }
+    // No key check. A local server (Ollama, llama.cpp, LM Studio, ...) genuinely has no key
+    // to configure, and bailing before the request made every one of them unreachable. The
+    // base URL below is the requirement instead: without it there's nothing to call at all.
     if (!baseUrl) {
       onEvent({
         type: "error",
@@ -44,7 +42,12 @@ export const customApiAdapter: ProviderAdapter = {
     try {
       response = await fetch(endpoint, {
         method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+        // Only send the auth header when there's actually a key. Sending `Bearer undefined`
+        // to a keyless local server is not harmless - llama.cpp's server rejects a malformed
+        // Authorization header outright rather than ignoring it.
+        headers: apiKey
+          ? { Authorization: `Bearer ${apiKey}`, "content-type": "application/json" }
+          : { "content-type": "application/json" },
         body: JSON.stringify({
           model,
           stream: true,

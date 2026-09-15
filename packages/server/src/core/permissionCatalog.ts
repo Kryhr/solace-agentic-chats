@@ -1,4 +1,4 @@
-import type { ProviderId, ProviderPermissionInfo, TrustLevel } from "@solace/shared";
+import type { CliProviderId, ProviderPermissionInfo, TrustLevel } from "@solace/shared";
 
 /**
  * Which permission modes each provider's adapter actually supports - verified against real
@@ -13,7 +13,7 @@ import type { ProviderId, ProviderPermissionInfo, TrustLevel } from "@solace/sha
 const CLAUDE_MODES: TrustLevel[] = ["plan", "manual", "acceptEdits", "bypassPermissions", "auto"];
 const CODEX_MODES: TrustLevel[] = ["manual", "acceptEdits", "bypassPermissions", "auto"];
 
-const CATALOG: Record<Exclude<ProviderId, "custom">, ProviderPermissionInfo> = {
+const CATALOG: Record<CliProviderId, ProviderPermissionInfo> = {
   "claude-code": { provider: "claude-code", availableModes: CLAUDE_MODES },
   "codex-cli": { provider: "codex-cli", availableModes: CODEX_MODES },
   "gemini-cli": { provider: "gemini-cli", availableModes: [] },

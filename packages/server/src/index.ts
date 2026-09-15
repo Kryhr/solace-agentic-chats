@@ -14,7 +14,9 @@ import { ApprovalRegistry } from "./core/approvalRegistry";
 import { ArchiveStore } from "./core/archiveStore";
 import { tryHandleCommand } from "./core/commands";
 import { checkGithubAuth } from "./core/github";
-import { deleteCredential, listCredentials, saveCredential } from "./core/credentials";
+import { deleteCredential, getCredentialSecrets, listCredentials, saveCredential } from "./core/credentials";
+import { discoverModels, ModelDiscoveryError } from "./core/modelDiscovery";
+import { LOCAL_RUNTIMES, probeNamedRuntime, scanForLocalServers } from "./core/localDiscovery";
 import { validateAgentPatch, validateNewAgentConfig } from "./core/validateAgentConfig";
 import {
   importSkillsFromRepo,
@@ -234,14 +236,65 @@ async function main() {
 
   app.get("/api/credentials", async () => listCredentials(WORKSPACE_ROOT));
 
+  /**
+   * The real model list this connection's endpoint reports for itself. Takes a credentialId
+   * rather than a base URL + key from the client, so the raw key still never leaves the
+   * server (see core/credentials.ts) - the client asks "what can THIS saved connection do".
+   */
+  app.get<{ Params: { id: string } }>("/api/credentials/:id/models", async (req, reply) => {
+    const { key, baseUrl } = getCredentialSecrets(WORKSPACE_ROOT, req.params.id);
+    if (!baseUrl) {
+      reply.code(400);
+      return { error: "this connection has no base URL to ask for a model list" };
+    }
+    try {
+      return await discoverModels(baseUrl, key || undefined);
+    } catch (err) {
+      // 502, not 500: the failure is the upstream endpoint's, and the UI falls back to a
+      // free-text model field rather than pretending discovery is mandatory.
+      reply.code(err instanceof ModelDiscoveryError ? 502 : 500);
+      return { error: (err as Error).message };
+    }
+  });
+
+  /** The runtimes core/localDiscovery.ts knows how to positively identify, so the UI can
+   * offer them by name for the ports the automatic scan deliberately won't touch. */
+  app.get("/api/local/runtimes", async () =>
+    LOCAL_RUNTIMES.map((r) => ({ id: r.id, name: r.name, defaultPort: r.defaultPort, autoScan: r.autoScan })),
+  );
+
+  /**
+   * POST, not GET, because this is an action the user takes - it probes loopback ports on
+   * their machine and must never be something a page load, a prefetch or a background poll
+   * can trigger. See core/localDiscovery.ts for what "found" requires.
+   */
+  app.post("/api/local/scan", async () => scanForLocalServers());
+
+  app.post<{ Body: { runtime: string; port?: number } }>("/api/local/probe", async (req, reply) => {
+    const finding = await probeNamedRuntime(req.body.runtime, req.body.port);
+    if (!finding) {
+      reply.code(404);
+      return { error: "nothing on that port identified itself as that runtime" };
+    }
+    return finding;
+  });
+
   app.post<{ Body: { provider: ProviderId; label: string; apiKey: string; baseUrl?: string; connectionName?: string } }>(
     "/api/credentials",
     async (req, reply) => {
       // baseUrl/connectionName only mean anything for provider "custom" (an arbitrary
       // OpenAI-compatible endpoint); they're harmless but meaningless on the built-in ones.
-      if (req.body.provider === "custom" && !req.body.baseUrl?.trim()) {
+      const needsBaseUrl = req.body.provider === "custom" || req.body.provider === "local";
+      if (needsBaseUrl && !req.body.baseUrl?.trim()) {
         reply.code(400);
-        return { error: "a custom connection needs a base URL" };
+        return { error: `a ${req.body.provider} connection needs a base URL` };
+      }
+      // A missing key is allowed (a local server normally has none) but only where there's a
+      // base URL to call instead. For the CLI-backed providers a credential IS the key, so a
+      // keyless one would be an empty row that silently breaks its agent's next turn.
+      if (!needsBaseUrl && !req.body.apiKey?.trim()) {
+        reply.code(400);
+        return { error: `a ${req.body.provider} credential needs an API key` };
       }
       reply.code(201);
       return saveCredential(
@@ -269,14 +322,15 @@ async function main() {
     // CLI process instead of calling the API).
     for (const agent of agents.listAgents()) {
       if (agent.credentialId === req.params.id) {
-        // "custom" has no CLI to fall back to (getAdapter throws for custom+cli) - forcing
-        // authMode back to "cli" for it would leave the agent permanently broken with no UI
-        // path to fix it (AddAgentModal never offers a sign-in-method choice for "custom").
+        // "custom"/"local" have no CLI to fall back to (getAdapter throws for either + cli) -
+        // forcing authMode back to "cli" for them would leave the agent permanently broken
+        // with no UI path to fix it (AddAgentModal never offers a sign-in-method choice for
+        // an endpoint-backed provider).
         // Leaving authMode as "api-key" with no credentialId instead produces a clear,
         // actionable "no API key configured for this agent" error on its next turn via the
         // adapter's own existing check, from a state the user can actually recover from
         // (save a new connection under Connections, or delete/recreate the agent).
-        const isCustom = agent.provider === "custom";
+        const isCustom = agent.provider === "custom" || agent.provider === "local";
         agents.updateAgent(agent.id, isCustom ? { credentialId: undefined } : { authMode: "cli", credentialId: undefined });
         bus.postMessage({
           id: nanoid(),

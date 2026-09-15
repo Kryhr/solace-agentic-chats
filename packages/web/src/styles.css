@@ -1025,6 +1025,12 @@ body {
 .catalog-tile.is-custom {
   border-style: dashed;
 }
+/* Local runtimes sit in the same grid as the hosted providers but are a different kind of
+   thing - nothing is billed and no key is needed - so they carry the same green the "local"
+   provider icon uses rather than being visually interchangeable with a paid endpoint. */
+.catalog-tile.is-local {
+  border-left: 2px solid rgba(127, 176, 105, 0.55);
+}
 
 .catalog-tile-name {
   font-size: var(--text-xs);

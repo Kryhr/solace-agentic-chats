@@ -3,6 +3,8 @@ import type {
   AgentStatus,
   ChatMessage,
   CredentialMeta,
+  LocalServerFinding,
+  ModelDiscoveryResult,
   PendingApproval,
   ProviderId,
   ProviderModelInfo,
@@ -133,8 +135,9 @@ export async function fetchCredentials(): Promise<CredentialMeta[]> {
   return fetch("/api/credentials").then((r) => r.json());
 }
 
-/** baseUrl/connectionName are only meaningful for provider "custom" - an arbitrary
- * OpenAI-compatible endpoint added under Connections. */
+/** baseUrl/connectionName are only meaningful for providers "custom" and "local" - an
+ * OpenAI-compatible endpoint added under Connections. apiKey may be "" for those two: a
+ * local model server normally has no key at all. */
 export async function saveCredential(
   provider: ProviderId,
   label: string,
@@ -154,6 +157,24 @@ export async function saveCredential(
 
 export async function deleteCredential(id: string): Promise<void> {
   await fetch(`/api/credentials/${id}`, { method: "DELETE" });
+}
+
+/** Asks the endpoint behind a saved connection for its own model list. Takes the credential
+ * id, never a base URL + key, so the raw key stays server-side. Throws on any failure -
+ * discovery is best-effort and every caller falls back to a free-text model field. */
+export async function fetchDiscoveredModels(credentialId: string): Promise<ModelDiscoveryResult> {
+  const res = await fetch(`/api/credentials/${credentialId}/models`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? `Model discovery failed (${res.status})`);
+  return data;
+}
+
+/** POST because this probes loopback ports on the user's own machine - it must only ever run
+ * because they pressed the button, never on mount or in the background. */
+export async function scanLocalServers(): Promise<LocalServerFinding[]> {
+  const res = await fetch("/api/local/scan", { method: "POST" });
+  if (!res.ok) throw new Error(`Scan failed (${res.status})`);
+  return res.json();
 }
 
 export interface SkillInfo {

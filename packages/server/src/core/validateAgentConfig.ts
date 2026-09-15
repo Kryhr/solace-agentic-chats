@@ -2,7 +2,7 @@ import { resolve, sep } from "node:path";
 import type { AgentConfig, ProviderId, TrustLevel } from "@solace/shared";
 import { WORKSPACE_ROOT } from "./workspace";
 
-const PROVIDER_IDS: ProviderId[] = ["claude-code", "codex-cli", "gemini-cli", "qwen-code", "custom"];
+const PROVIDER_IDS: ProviderId[] = ["claude-code", "codex-cli", "gemini-cli", "qwen-code", "custom", "local"];
 const TRUST_LEVELS: TrustLevel[] = ["plan", "manual", "acceptEdits", "bypassPermissions", "auto"];
 const MAX_HANDLE_LEN = 40;
 const MAX_TASK_LEN = 20_000;
