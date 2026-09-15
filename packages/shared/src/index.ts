@@ -30,6 +30,22 @@ export interface AgentConfig {
   model?: string;
   /** Reasoning/thinking effort, passed straight through to the provider's own flag. Empty = provider default. */
   effort?: string;
+  /** "cli" (default, absent) signs in via that provider's own CLI subscription login;
+   * "api-key" calls the provider's HTTP API directly using a saved credential. */
+  authMode?: "cli" | "api-key";
+  /** Only meaningful when authMode is "api-key" - references a CredentialMeta.id, never the
+   * raw key itself (that never leaves the server - see core/credentials.ts). */
+  credentialId?: string;
+}
+
+/** Metadata only - the raw API key is never sent to the client, before or after saving.
+ * See core/credentials.ts for where the actual key lives (a local file outside the repo). */
+export interface CredentialMeta {
+  id: string;
+  provider: ProviderId;
+  /** A short label to tell saved keys apart, e.g. "personal" - not the key itself. */
+  label: string;
+  createdAt: string;
 }
 
 /**

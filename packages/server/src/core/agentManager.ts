@@ -4,6 +4,8 @@ import { getAdapter } from "../adapters";
 import { ChatBus } from "./chatBus";
 import { parseMentions } from "./mentions";
 import type { ApprovalRegistry } from "./approvalRegistry";
+import { getRawKey } from "./credentials";
+import { WORKSPACE_ROOT } from "./workspace";
 
 interface QueuedTurn {
   prompt: string;
@@ -78,7 +80,10 @@ export class AgentManager {
     this.onChange?.();
   }
 
-  updateAgent(id: string, patch: Partial<Pick<AgentConfig, "trustLevel" | "currentTask" | "model" | "effort">>) {
+  updateAgent(
+    id: string,
+    patch: Partial<Pick<AgentConfig, "trustLevel" | "currentTask" | "model" | "effort" | "authMode" | "credentialId">>,
+  ) {
     const runtime = this.agents.get(id);
     if (!runtime) return;
     Object.assign(runtime.config, patch);
@@ -194,7 +199,10 @@ export class AgentManager {
         createdAt: new Date().toISOString(),
       });
 
-    const adapter = getAdapter(runtime.config.provider);
+    const authMode = runtime.config.authMode ?? "cli";
+    const adapter = getAdapter(runtime.config.provider, authMode);
+    const apiKey =
+      authMode === "api-key" && runtime.config.credentialId ? getRawKey(WORKSPACE_ROOT, runtime.config.credentialId) : undefined;
     const controller = new AbortController();
     const turnTimeout = setTimeout(() => {
       controller.abort();
@@ -209,6 +217,7 @@ export class AgentManager {
       agentHandle: runtime.config.handle,
       model: runtime.config.model,
       effort: runtime.config.effort,
+      apiKey,
       signal: controller.signal,
       onEvent: (event) => {
         if (event.type === "text" && event.text.trim()) {

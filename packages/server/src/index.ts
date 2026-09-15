@@ -13,6 +13,7 @@ import { debounce, loadState, saveState } from "./core/persistence";
 import { ApprovalRegistry } from "./core/approvalRegistry";
 import { tryHandleCommand } from "./core/commands";
 import { checkGithubAuth } from "./core/github";
+import { deleteCredential, listCredentials, saveCredential } from "./core/credentials";
 import type { ProviderId } from "@solace/shared";
 
 const PORT = Number(process.env.PORT ?? 4310);
@@ -71,7 +72,7 @@ async function main() {
 
   app.patch<{
     Params: { id: string };
-    Body: Partial<Pick<AgentConfig, "trustLevel" | "currentTask" | "model" | "effort">>;
+    Body: Partial<Pick<AgentConfig, "trustLevel" | "currentTask" | "model" | "effort" | "authMode" | "credentialId">>;
   }>("/api/agents/:id", async (req) => {
     agents.updateAgent(req.params.id, req.body);
     return { ok: true };
@@ -112,6 +113,22 @@ async function main() {
   });
 
   app.get("/api/github/status", async () => checkGithubAuth());
+
+  app.get("/api/credentials", async () => listCredentials(WORKSPACE_ROOT));
+
+  app.post<{ Body: { provider: ProviderId; label: string; apiKey: string } }>("/api/credentials", async (req, reply) => {
+    reply.code(201);
+    return saveCredential(WORKSPACE_ROOT, req.body.provider, req.body.label, req.body.apiKey);
+  });
+
+  app.delete<{ Params: { id: string } }>("/api/credentials/:id", async (req, reply) => {
+    const ok = deleteCredential(WORKSPACE_ROOT, req.params.id);
+    if (!ok) {
+      reply.code(404);
+      return { error: "not found" };
+    }
+    return { ok: true };
+  });
 
   // Internal only - called by the per-turn approval bridge script (approval/bridgeScript.mjs),
   // never by the browser. Blocks (from the bridge script's perspective) until a human resolves

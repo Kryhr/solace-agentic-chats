@@ -136,7 +136,11 @@ export function AgentHubPage({
           </div>
           <span className="usage-meter-label">
             {formatTokens(totalIn)} in · {formatTokens(totalOut)} out this session
-            {status?.totalUsage?.totalCostUsd !== undefined ? ` · $${status.totalUsage.totalCostUsd.toFixed(4)}` : ""}
+            {status?.totalUsage?.totalCostUsd !== undefined
+              ? ` · $${status.totalUsage.totalCostUsd.toFixed(4)}${
+                  agent.authMode === "api-key" ? " (actual)" : " (≈ API-equivalent, you're not billed per-token)"
+                }`
+              : ""}
           </span>
         </div>
       )}

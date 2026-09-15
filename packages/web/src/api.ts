@@ -2,6 +2,7 @@ import type {
   AgentConfig,
   AgentStatus,
   ChatMessage,
+  CredentialMeta,
   ProviderId,
   ProviderModelInfo,
   ProviderPermissionInfo,
@@ -47,7 +48,7 @@ export async function createAgent(config: Omit<AgentConfig, "id">): Promise<Agen
 
 export async function updateAgent(
   id: string,
-  patch: Partial<Pick<AgentConfig, "trustLevel" | "currentTask" | "model" | "effort">>,
+  patch: Partial<Pick<AgentConfig, "trustLevel" | "currentTask" | "model" | "effort" | "authMode" | "credentialId">>,
 ): Promise<void> {
   await fetch(`/api/agents/${id}`, {
     method: "PATCH",
@@ -90,6 +91,22 @@ export async function resolveApproval(id: string, approved: boolean): Promise<vo
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ approved }),
   });
+}
+
+export async function fetchCredentials(): Promise<CredentialMeta[]> {
+  return fetch("/api/credentials").then((r) => r.json());
+}
+
+export async function saveCredential(provider: ProviderId, label: string, apiKey: string): Promise<CredentialMeta> {
+  return fetch("/api/credentials", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider, label, apiKey }),
+  }).then((r) => r.json());
+}
+
+export async function deleteCredential(id: string): Promise<void> {
+  await fetch(`/api/credentials/${id}`, { method: "DELETE" });
 }
 
 export async function sendChatMessage(text: string): Promise<void> {

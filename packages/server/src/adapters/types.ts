@@ -19,6 +19,9 @@ export interface RunTurnOptions {
   /** Model alias/id and reasoning effort to pass to the CLI's own flags - undefined means provider default. */
   model?: string;
   effort?: string;
+  /** Only set for authMode "api-key" agents - the raw key, resolved server-side right before
+   * the call (see core/credentials.ts). CLI adapters ignore this entirely. */
+  apiKey?: string;
   onEvent: (event: AdapterEvent) => void;
   /** Aborting kills the underlying CLI process - used to enforce a max turn duration. */
   signal?: AbortSignal;

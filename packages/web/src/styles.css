@@ -756,6 +756,12 @@ body {
   border-color: var(--accent);
 }
 
+.field-note {
+  font-size: var(--text-2xs);
+  color: var(--text-faint);
+  line-height: 1.4;
+}
+
 .modal .actions {
   display: flex;
   justify-content: flex-end;
