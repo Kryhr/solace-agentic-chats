@@ -23,6 +23,9 @@ import { permissionOptionsFor, TRUST_LABELS } from "../lib/permissionOptions";
 
 const PROVIDERS: ProviderId[] = ["claude-code", "codex-cli", "gemini-cli", "qwen-code", "custom", "local"];
 const NEW_PROJECT_VALUE = "__new__";
+/** "Give it its own folder, named after the handle" - the default, so adding an agent never
+ * requires answering a question about projects. */
+const OWN_FOLDER_VALUE = "__own__";
 const NEW_KEY_VALUE = "__new__";
 // Mirrors adapters/index.ts's apiAdapters map - only these providers have a direct-API
 // alternative to the CLI/subscription path today. "custom" and "local" are connection-only:
@@ -102,14 +105,12 @@ export function AddAgentModal({
     fetchProjects().then(({ root, projects }) => {
       setWorkspaceRoot(root);
       setProjects(projects);
-      // Default to the project the sidebar is currently scoped to. An agent belongs to the
-      // project its cwd is in - there is no separate "which project is this agent in" field to
-      // set - so this picker IS the project assignment, and defaulting it to anything else
-      // silently creates an agent the chat the user is looking at cannot reach.
+      // Only preselect a project when the sidebar is actually scoped to one - then the agent
+      // lands where the user is already working. Scoped to "All projects" there is nothing to
+      // inherit, so fall through to the agent's own folder rather than silently filing it
+      // under whichever project happens to sort first.
       const preferred = defaultProjectPath && projects.find((p) => p.path === defaultProjectPath);
-      if (preferred) setSelected(preferred.path);
-      else if (projects.length > 0) setSelected(projects[0].path);
-      else setSelected(NEW_PROJECT_VALUE);
+      setSelected(preferred ? preferred.path : OWN_FOLDER_VALUE);
     });
     fetchCredentials().then(setCredentials);
   }, []);
@@ -188,6 +189,7 @@ export function AddAgentModal({
   }, [provider, credentialId]);
 
   const isCreatingNew = selected === NEW_PROJECT_VALUE;
+  const usingOwnFolder = selected === OWN_FOLDER_VALUE;
   const isCreatingNewKey = credentialId === NEW_KEY_VALUE;
   /** A custom connection is identified by the service it points at, not by "custom" - several
    * saved custom keys would otherwise be indistinguishable in this dropdown. */
@@ -197,9 +199,24 @@ export function AddAgentModal({
   const handleAdd = async () => {
     setError(null);
     let cwd = selected;
+    // "Its own folder" creates one named after the handle. Deliberately NOT the workspace root
+    // itself: the credentials file and app state live there, and an agent on bypassPermissions
+    // pointed at the root could read both.
+    if (usingOwnFolder) {
+      try {
+        setCreatingProject(true);
+        const existing = projects.find((p) => p.name.toLowerCase() === handle.toLowerCase());
+        cwd = existing ? existing.path : (await createProject(handle)).path;
+      } catch (err) {
+        setError((err as Error).message);
+        setCreatingProject(false);
+        return;
+      }
+      setCreatingProject(false);
+    }
     if (isCreatingNew) {
       if (!newProjectName.trim()) {
-        setError("Give the new project a name first");
+        setError("Give the new folder a name first");
         return;
       }
       try {
@@ -391,19 +408,24 @@ export function AddAgentModal({
           </label>
         )}
         <label>
-          Project
+          Working folder
           <select className="select" value={selected} onChange={(e) => setSelected(e.target.value)}>
+            {/* An agent has to run somewhere, but "which project does it belong to" is a
+                question most people do not have an answer to - especially when the chat they
+                want it in is not filed under a project either. Its own folder is the honest
+                default: it still gets a real cwd, and nothing has to be decided. */}
+            <option value={OWN_FOLDER_VALUE}>Its own folder{handle ? ` (${handle})` : ""}</option>
             {projects.map((p) => (
               <option key={p.path} value={p.path}>
                 {p.name}
               </option>
             ))}
-            <option value={NEW_PROJECT_VALUE}>+ New project…</option>
+            <option value={NEW_PROJECT_VALUE}>+ New folder…</option>
           </select>
         </label>
         {isCreatingNew && (
           <label>
-            New project name
+            New folder name
             <input
               value={newProjectName}
               onChange={(e) => setNewProjectName(e.target.value)}
@@ -413,8 +435,9 @@ export function AddAgentModal({
           </label>
         )}
         <div className="field-note">
-          Projects live under <code>{workspaceRoot}</code>. This is also which project the agent
-          belongs to - it is the folder its CLI will actually run in.
+          Where this agent's CLI actually runs, under <code>{workspaceRoot}</code>. It does not
+          limit which chats it can join - only a chat filed under a project is restricted, and
+          then to agents working inside that project's folder.
         </div>
         {error && (
           <div className="field-error" role="alert">
