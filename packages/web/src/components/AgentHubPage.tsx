@@ -32,11 +32,12 @@ export function AgentHubPage({
   directHistory: ChatMessage[];
   onBack: () => void;
   onSave: (patch: Partial<Pick<AgentConfig, "trustLevel" | "model" | "effort">>) => void;
-  onSendDirect: (text: string) => void;
+  onSendDirect: (text: string) => Promise<void>;
   onClearHistory: () => void;
   onRemoveAgent: () => void;
 }) {
   const [draft, setDraft] = useState("");
+  const [sendError, setSendError] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const historyRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
@@ -70,8 +71,13 @@ export function AgentHubPage({
   };
 
   const submitDirect = () => {
-    if (!draft.trim()) return;
-    onSendDirect(draft.trim());
+    const text = draft.trim();
+    if (!text) return;
+    setSendError(null);
+    onSendDirect(text).catch(() => {
+      setSendError("Couldn't send - the connection may have dropped. Your message is back in the box.");
+      setDraft((current) => (current === "" ? text : current));
+    });
     setDraft("");
     stickToBottom.current = true;
     requestAnimationFrame(() => {
@@ -225,6 +231,7 @@ export function AgentHubPage({
       </div>
 
       <div className="composer">
+        {sendError && <div className="composer-error">{sendError}</div>}
         <div className="composer-field">
           <textarea
             ref={inputRef}
@@ -234,6 +241,7 @@ export function AgentHubPage({
             placeholder={`Message ${agent.handle}…`}
             onChange={(e) => {
               setDraft(e.target.value);
+              if (sendError) setSendError(null);
               resizeComposer();
             }}
             onKeyDown={(e) => {

@@ -255,7 +255,7 @@ export default function App() {
             setAgentsById((a) => (a[hubAgent.id] ? { ...a, [hubAgent.id]: { ...a[hubAgent.id], ...patch } } : a));
             void updateAgent(hubAgent.id, patch);
           }}
-          onSendDirect={(text) => void sendAgentDirectMessage(hubAgent.id, text)}
+          onSendDirect={(text) => sendAgentDirectMessage(hubAgent.id, text)}
           onClearHistory={() => void clearAgentHistory(hubAgent.id)}
           onRemoveAgent={() => void removeAgent(hubAgent.id)}
         />
@@ -265,7 +265,7 @@ export default function App() {
           agents={agents}
           statuses={statuses}
           modelCatalog={modelCatalog}
-          onSend={(text) => void sendChatMessage(text)}
+          onSend={(text) => sendChatMessage(text)}
         />
       )}
 

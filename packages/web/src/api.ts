@@ -89,11 +89,12 @@ export async function fetchArchives(): Promise<ChatArchive[]> {
 }
 
 export async function sendAgentDirectMessage(agentId: string, text: string): Promise<void> {
-  await fetch(`/api/agents/${agentId}/chat`, {
+  const res = await fetch(`/api/agents/${agentId}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text }),
   });
+  if (!res.ok) throw new Error(`Failed to send (${res.status})`);
 }
 
 export async function removeAgent(agentId: string): Promise<void> {
@@ -135,11 +136,12 @@ export async function deleteCredential(id: string): Promise<void> {
 }
 
 export async function sendChatMessage(text: string): Promise<void> {
-  await fetch("/api/chat", {
+  const res = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text }),
   });
+  if (!res.ok) throw new Error(`Failed to send (${res.status})`);
 }
 
 type Hello = {

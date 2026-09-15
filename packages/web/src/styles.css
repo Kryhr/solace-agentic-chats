@@ -1570,6 +1570,18 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.composer-error {
+  margin: 0 0 var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--danger-wash);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-sm);
+  color: var(--danger);
+  font-size: var(--text-xs);
+  line-height: var(--lh-snug);
+  animation: enter-rise var(--dur-3) var(--ease-out) both;
+}
+
 .hub-error-banner {
   display: flex;
   align-items: flex-start;

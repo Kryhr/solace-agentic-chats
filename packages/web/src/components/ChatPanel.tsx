@@ -50,11 +50,12 @@ export function ChatPanel({
   agents: AgentConfig[];
   statuses: Record<string, AgentStatus>;
   modelCatalog: ProviderModelInfo[];
-  onSend: (text: string) => void;
+  onSend: (text: string) => Promise<void>;
 }) {
   const [draft, setDraft] = useState("");
   const [cursor, setCursor] = useState(0);
   const [highlighted, setHighlighted] = useState(0);
+  const [sendError, setSendError] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const historyRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
@@ -123,8 +124,18 @@ export function ChatPanel({
   };
 
   const submit = () => {
-    if (!draft.trim()) return;
-    onSend(draft.trim());
+    const text = draft.trim();
+    if (!text) return;
+    setSendError(null);
+    // Clear optimistically so typing feels instant - but if the request actually fails (most
+    // commonly: the dev server just hot-reloaded and the WS/HTTP layer hasn't reconnected yet),
+    // put the text back instead of letting it silently vanish with no trace anything went
+    // wrong. Only restore into an empty box, so it doesn't clobber something new the user
+    // already started typing while the failed request was in flight.
+    onSend(text).catch(() => {
+      setSendError("Couldn't send - the connection may have dropped. Your message is back in the box.");
+      setDraft((current) => (current === "" ? text : current));
+    });
     setDraft("");
     setCursor(0);
     // Sending a message is a deliberate "I'm back in this conversation" signal, even if the
@@ -269,6 +280,7 @@ export function ChatPanel({
           </div>
         )}
         <div className="composer">
+          {sendError && <div className="composer-error">{sendError}</div>}
           <div className="composer-field">
             <textarea
               ref={inputRef}
@@ -280,6 +292,7 @@ export function ChatPanel({
                 setDraft(e.target.value);
                 setCursor(e.target.selectionStart ?? e.target.value.length);
                 setHighlighted(0);
+                if (sendError) setSendError(null);
                 resizeComposer();
               }}
               onKeyUp={(e) => setCursor(e.currentTarget.selectionStart ?? 0)}
