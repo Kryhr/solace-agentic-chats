@@ -8,9 +8,16 @@ import type { ApprovalRegistry } from "./approvalRegistry";
 import { extractLiveClaims, findUnreachableClaims, unreachableClaimNotice } from "./claimCheck";
 import { getCredentialSecrets } from "./credentials";
 import type { PersistedAgentSession } from "./persistence";
+import { classifyIncoming, type IncomingKind } from "./turnIntent";
 import { WORKSPACE_ROOT } from "./workspace";
 
 export interface QueuedTurn {
+  /** Stable identity for this piece of work, assigned once at enqueue and preserved across a
+   * restart. Needed because the same turn object is referenced from two places at once
+   * (`queue`, for durability and ordering, and `pendingInbound`, for cooperative delivery) and
+   * delivering it in one must remove it from the other - matching on prompt text would
+   * mis-match two identical messages from the same agent. */
+  id: string;
   prompt: string;
   replyChannel: ChatChannel;
   /** How many agent-to-agent @mention hops led to this turn (0 for a human-triggered turn).
@@ -26,6 +33,25 @@ export interface QueuedTurn {
   /** Set on the single cold retry allowed after a stale-session failure, so that retry can
    * never itself trigger another one. See looksLikeStaleSession. */
   sessionRetryDone?: boolean;
+  /** Everything this turn has already said to the group MID-turn via the solace MCP bridge
+   * (postFromCurrentTurn). Kept so end-of-turn routing can tell "this final answer is new" from
+   * "this final answer just repeats what I already posted", and so the per-turn cap can be
+   * enforced - both of which exist purely to stop one question being billed twice. */
+  midTurnPosts?: string[];
+  /** What this message is asking the agent to do - the only thing that decides whether it may
+   * interrupt a turn that is already running. See turnIntent.ts for why the classification is
+   * deliberately biased toward "work". */
+  kind: IncomingKind;
+  /** When this turn was created, ISO. Arrival order is the delivery guarantee, and `queue` gets
+   * deliberately reordered on an interrupt (question -> resume -> the rest), so the order has to
+   * live on the turn itself rather than in the array - and has to survive a restart. */
+  receivedAt: string;
+  /** Set only on a turn that is re-running work an interrupt cut short. `ofTurnId` is the
+   * ORIGINAL turn (not the previous resume), so repeated interruptions of the same piece of work
+   * stay correlated; `count` and `elapsedMs` are cumulative across all of them, and bound both
+   * how many times this can happen and how long the work may run in total - without the elapsed
+   * carry-over, an agent interrupted every 10 minutes would never hit MAX_TURN_MS at all. */
+  resume?: { ofTurnId: string; count: number; elapsedMs: number };
 }
 
 /** A snapshot of one agent's still-outstanding work, for persistence.ts - see
@@ -38,8 +64,15 @@ export interface PersistedAgentQueue {
    * forgetting it was asked at all. */
   inFlight?: QueuedTurn;
   /** Turns that were queued but hadn't started yet - these just run normally on restart,
-   * nothing was interrupted. */
+   * nothing was interrupted. A turn that carries `resume` rides here too: a pending resume IS
+   * an ordinary queued turn, just one whose prompt re-states work an interrupt cut short. */
   queued: QueuedTurn[];
+  /** The subset of `queued` that arrived while a turn was already running and has not yet been
+   * handed to that agent mid-turn (AgentRuntime.pendingInbound). Persisted as whole turns rather
+   * than ids so an older/partial state file can't resurrect a half-restored reference; on load
+   * they're matched back onto the restored `queued` entries by id, because the two must stay the
+   * SAME objects. Optional: state written before interrupts existed has no such field. */
+  pendingInbound?: QueuedTurn[];
 }
 
 interface AgentRuntime {
@@ -92,12 +125,26 @@ interface AgentRuntime {
    * is removed or a manual retry/new message preempts it. */
   scheduledRetryAt?: string;
   scheduledRetryTimeout?: NodeJS.Timeout;
+  /** Messages that arrived for this agent WHILE it was mid-turn and haven't been handed to it
+   * yet. Every entry here is the same object as an entry in `queue` - this is a delivery view of
+   * the queue, not a second queue. Handing one over (takeInboundNotice) removes it from `queue`
+   * so it can never both be answered mid-turn AND run again later as its own billed turn.
+   *
+   * This is the cheap, cooperative half of the interrupt mechanism: an agent that is actually
+   * using its tools sees the note within seconds, at a safe boundary of its own choosing, with
+   * nothing killed and no context lost. Only a question nobody picks up escalates to actually
+   * aborting the turn - see INTERRUPT_GRACE_MS. */
+  pendingInbound: QueuedTurn[];
+  /** The armed escalation for the oldest unpicked-up question in pendingInbound. Held here so
+   * Stop/Remove can disarm it: auto-resuming work after the user explicitly pressed Stop would
+   * be the worst possible behaviour of this whole feature. */
+  interruptTimer?: NodeJS.Timeout;
 }
 
 /** Large open-ended asks (e.g. "build a whole site") can legitimately take a while, but a
  * turn must eventually end so a genuinely stuck CLI doesn't leave an agent stuck "thinking"
  * forever with no feedback. */
-const MAX_TURN_MS = 15 * 60 * 1000;
+export const MAX_TURN_MS = 15 * 60 * 1000;
 
 /** How many agent-to-agent @mention hops are allowed before a chain is cut off. Two agents
  * mentioning each other back and forth is legitimate collaboration, not a bug - but with no
@@ -109,14 +156,138 @@ const MAX_MENTION_CHAIN_DEPTH = 6;
  * very end would make a single trailing period silently disable the off-ramp). */
 const END_THREAD_MARKER = /\[no-reply\]/i;
 
+/** How many mid-turn group posts one turn may make (see postFromCurrentTurn). Every post can
+ * enqueue a real, billed turn for another agent, so an agent that decides to narrate its whole
+ * working into the group would spend the user's money doing it. Eight is enough for genuine
+ * coordination (announce, ask, hand off, answer) and far short of a transcript. */
+const MAX_MID_TURN_POSTS = 8;
+
+/** How long a QUESTION may sit undelivered in pendingInbound before the running turn is killed
+ * to answer it. Tuned to be longer than the gap between two tool calls of a working agent (which
+ * is seconds) and shorter than a human's patience waiting on an answer. Anything that expires
+ * this has, in practice, not touched a solace tool in a minute - i.e. cooperative delivery was
+ * never going to reach it in time. */
+const INTERRUPT_GRACE_MS = 50 * 1000;
+
+/** How many times one piece of work may be interrupted and resumed before we stop and say so.
+ * Each resume is a real billed turn that re-reads files and re-establishes context, so an agent
+ * getting questions faster than it can work would otherwise spend the user's money making no
+ * progress at all. */
+export const MAX_RESUMES = 3;
+
+/** How long a turn may run, given what (if anything) it is resuming. A resumed turn inherits the
+ * REMAINING budget, never a fresh one: with a fresh 15 minutes each time, an agent interrupted
+ * every ten minutes would never time out at all. The floor keeps a near-exhausted resume usable
+ * instead of killing it on arrival. Exported for tests - it is the one bound here whose
+ * arithmetic being wrong is silently expensive rather than loudly broken. */
+export function resumeBudgetMs(resume: QueuedTurn["resume"]): number {
+  if (!resume) return MAX_TURN_MS;
+  return Math.max(60_000, MAX_TURN_MS - resume.elapsedMs);
+}
+
+/** Has this piece of work run out of resumes, or out of total run time across them? Either one
+ * ends the resume chain - see scheduleResume, which then reports exactly what was abandoned. */
+export function resumeExhausted(count: number, elapsedMs: number): boolean {
+  return count > MAX_RESUMES || elapsedMs >= MAX_TURN_MS;
+}
+
+/**
+ * Where a resume turn goes: the oldest queued QUESTION moves to the front, the resume turn sits
+ * immediately behind it, and everything else keeps its arrival order behind that - question ->
+ * resume -> the rest. That is the whole point of having killed the turn: answer the thing that
+ * could not wait, then go straight back to the work.
+ *
+ * Arrival order is read off each turn's receivedAt rather than from the array, because an
+ * earlier interrupt may already have reordered this queue. Returns a new array; mutates nothing.
+ */
+export function insertResumeTurn(queue: QueuedTurn[], resumeTurn: QueuedTurn): QueuedTurn[] {
+  let questionAt = -1;
+  for (let i = 0; i < queue.length; i++) {
+    if (queue[i].kind !== "question") continue;
+    if (questionAt === -1 || Date.parse(queue[i].receivedAt) < Date.parse(queue[questionAt].receivedAt)) {
+      questionAt = i;
+    }
+  }
+  // No question left to answer: it was delivered cooperatively in the instant between the abort
+  // firing and this running, so the work just goes straight back on the front.
+  if (questionAt === -1) return [resumeTurn, ...queue];
+  const rest = queue.filter((_, i) => i !== questionAt);
+  return [queue[questionAt], resumeTurn, ...rest];
+}
+
+/** Marks where a resume prompt's re-statement of the original work starts, so resuming an
+ * already-resumed turn re-states the ORIGINAL request instead of nesting one resume preamble
+ * inside another until the real task is buried. */
+const RESUME_WORK_MARKER = "[the work you were doing]\n";
+
+/** Whitespace/case-insensitive comparison key, so "the same message" posted mid-turn and then
+ * repeated in the final answer with different wrapping still counts as the same message - see
+ * the duplicate check in drainQueue. */
+function normalizeForDuplicateCheck(text: string): string {
+  return text.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
 /** For display only (the interrupted-turn restart notice) - a prompt built by buildGroupPrompt
  * has a "[group context: ...]" block and a "[group chat message from X]: " prefix wrapped
  * around the actual message; showing that raw wrapper to the user would bury what they
  * actually said. Strips known prefixes, falls back to the raw text for anything else
  * (a direct hub message has no wrapper at all). */
+function stripPromptWrapper(prompt: string): string {
+  return prompt.replace(/^\[group context:.*?\]\n\n/s, "").replace(/^\[group chat message from [^\]]+\]:\s*/, "");
+}
+
 function summarizePrompt(prompt: string): string {
-  const stripped = prompt.replace(/^\[group context:.*?\]\n\n/s, "").replace(/^\[group chat message from [^\]]+\]:\s*/, "");
+  const stripped = stripPromptWrapper(prompt);
   return stripped.length > 200 ? `${stripped.slice(0, 200)}…` : stripped;
+}
+
+/** What a turn is actually trying to get done, for any message a human will read. Needed because
+ * a resume turn's own prompt starts with a long re-read preamble, so summarizing it raw showed
+ * the user "Your previous turn was stopped part-way through so another agent's..." where they
+ * needed to see which piece of work was paused or abandoned. */
+function describeWork(turn: QueuedTurn): string {
+  const markerAt = turn.prompt.indexOf(RESUME_WORK_MARKER);
+  return summarizePrompt(markerAt >= 0 ? turn.prompt.slice(markerAt + RESUME_WORK_MARKER.length) : turn.prompt);
+}
+
+/** Who a queued turn came from, for the mid-turn delivery note - read back out of the prompt
+ * wrapper buildGroupPrompt put there, so this needs no extra field on QueuedTurn. A direct hub
+ * message has no wrapper and no agent author, which is exactly the human-operator case. */
+function promptAuthorHandle(turn: QueuedTurn): string {
+  if (turn.addressedBy) return `@${turn.addressedBy.handle}`;
+  const match = turn.prompt.match(/^\[group context:.*?\]\n\n\[group chat message from ([^\]]+)\]:/s);
+  const fromGroup = match?.[1] ?? turn.prompt.match(/^\[group chat message from ([^\]]+)\]:/)?.[1];
+  return fromGroup && fromGroup !== "you" ? `@${fromGroup}` : "the operator";
+}
+
+/**
+ * The prompt for a turn that re-runs work an interrupt cut short.
+ *
+ * It re-states the original request rather than relying on the CLI session to carry it: whether
+ * a KILLED `claude -p` turn persists anything at all to its session store is UNVERIFIED (the
+ * session is written by the CLI, and we killed the CLI), so assuming the agent still knows what
+ * it was doing is assuming something we have never observed.
+ *
+ * The re-read instruction is there for the same reason in the other direction: the kill can land
+ * between two writes of a multi-file edit, so the files on disk may be in a state neither the
+ * agent nor we can predict. Telling it to check rather than assume is the only honest option.
+ */
+export function buildResumePrompt(turn: QueuedTurn): string {
+  const markerAt = turn.prompt.indexOf(RESUME_WORK_MARKER);
+  const work =
+    markerAt >= 0 ? turn.prompt.slice(markerAt + RESUME_WORK_MARKER.length) : stripPromptWrapper(turn.prompt).trim();
+  return [
+    "[solace] Your previous turn was stopped part-way through so another agent's question could",
+    "be answered first. That has now been handled. Pick this work back up.",
+    "",
+    "IMPORTANT: you were stopped mid-work, possibly in the middle of an edit. Whether your last",
+    "write actually reached disk is unknown - the CLI process was killed, so do not assume it",
+    "landed and do not assume it did not. Before you continue, re-read the files you were",
+    "changing and check their CURRENT contents, then carry on from whatever state they are",
+    "actually in. Do not blindly re-apply an edit that is already there.",
+    "",
+    RESUME_WORK_MARKER + work,
+  ].join("\n");
 }
 
 /**
@@ -155,6 +326,38 @@ function looksLikeStaleSession(message: string): boolean {
   return /no conversation found|session .{0,40}not found|invalid session|unknown session|no session|conversation .{0,40}not found/i.test(
     message,
   );
+}
+
+interface EnqueueOptions {
+  mentionChainDepth?: number;
+  addressedBy?: { id: string; handle: string };
+  /** Defaults to "work": the safe classification, and the right one for every internal re-run
+   * (restore, retry, rate-limit retry) where nothing new has actually arrived. */
+  kind?: IncomingKind;
+  sessionRetryDone?: boolean;
+  resume?: QueuedTurn["resume"];
+  /** Preserve a turn's identity/arrival time across a restart or a retry, so ordering and the
+   * queue<->pendingInbound pairing survive rather than being silently re-generated. */
+  id?: string;
+  receivedAt?: string;
+  /** Is this a message that has just ARRIVED from someone, as opposed to work being re-run?
+   * Only arriving traffic is eligible for mid-turn delivery and for escalating to an interrupt.
+   * Defaults to false so no internal caller can accidentally opt into killing a turn. */
+  inbound?: boolean;
+}
+
+/** Map a turn read back off disk onto enqueue options, tolerating state files written before
+ * ids/kinds/arrival times existed on a turn - those fields are simply regenerated. */
+function restoredTurnOptions(turn: QueuedTurn): EnqueueOptions {
+  return {
+    mentionChainDepth: turn.mentionChainDepth,
+    addressedBy: turn.addressedBy,
+    kind: turn.kind,
+    sessionRetryDone: turn.sessionRetryDone,
+    resume: turn.resume,
+    id: turn.id,
+    receivedAt: turn.receivedAt,
+  };
 }
 
 function addUsage(total: TurnUsage, delta: TurnUsage): TurnUsage {
@@ -200,7 +403,14 @@ export class AgentManager {
     initialSessions: PersistedAgentSession[] = [],
   ) {
     for (const config of initialAgents) {
-      this.agents.set(config.id, { config, status: "idle", busy: false, queue: [], totalUsage: {} });
+      this.agents.set(config.id, {
+        config,
+        status: "idle",
+        busy: false,
+        queue: [],
+        pendingInbound: [],
+        totalUsage: {},
+      });
     }
     // Queued/in-flight work used to be pure in-memory state - a restart (a real crash, or
     // just editing server source in dev mode) silently dropped it with no trace it had ever
@@ -218,7 +428,13 @@ export class AgentManager {
       runtime.sessionId = saved.sessionId;
     }
     for (const saved of initialQueues) {
-      if (!this.agents.has(saved.agentId)) continue; // the agent itself was removed before restart
+      const runtime = this.agents.get(saved.agentId);
+      if (!runtime) continue; // the agent itself was removed before restart
+      // Restored work is a backlog being re-run, not freshly arrived traffic, so none of it is
+      // marked `inbound` here - that flag is what makes a message a candidate for cooperative
+      // mid-turn delivery, and dumping a whole restored backlog into the first restored turn as
+      // text would be neither what the senders asked for nor something anyone could audit.
+      // pendingInbound is instead restored explicitly below, exactly as it was saved.
       if (saved.inFlight) {
         this.bus.postMessage({
           id: nanoid(),
@@ -229,10 +445,21 @@ export class AgentManager {
           text: `This was interrupted by a restart before finishing - retrying now: "${summarizePrompt(saved.inFlight.prompt)}"`,
           createdAt: new Date().toISOString(),
         });
-        this.enqueueTurn(saved.agentId, saved.inFlight.prompt, saved.inFlight.replyChannel, saved.inFlight.mentionChainDepth, saved.inFlight.addressedBy);
+        this.enqueueTurn(saved.agentId, saved.inFlight.prompt, saved.inFlight.replyChannel, {
+          ...restoredTurnOptions(saved.inFlight),
+        });
       }
       for (const turn of saved.queued) {
-        this.enqueueTurn(saved.agentId, turn.prompt, turn.replyChannel, turn.mentionChainDepth, turn.addressedBy);
+        this.enqueueTurn(saved.agentId, turn.prompt, turn.replyChannel, { ...restoredTurnOptions(turn) });
+      }
+      // Re-point pendingInbound at the RESTORED turn objects (matched by id), never at the
+      // deserialized copies: the whole invariant is that a pendingInbound entry and its queue
+      // entry are the same object, so delivering one removes the other. State files written
+      // before this field existed simply restore nothing here, which is correct - everything
+      // just runs as an ordinary queued turn.
+      const pendingIds = new Set((saved.pendingInbound ?? []).map((t) => t?.id).filter(Boolean));
+      if (pendingIds.size > 0) {
+        runtime.pendingInbound = runtime.queue.filter((t) => pendingIds.has(t.id));
       }
     }
   }
@@ -261,13 +488,18 @@ export class AgentManager {
     const result: PersistedAgentQueue[] = [];
     for (const [agentId, runtime] of this.agents) {
       if (!runtime.currentTurn && runtime.queue.length === 0) continue;
-      result.push({ agentId, inFlight: runtime.currentTurn, queued: [...runtime.queue] });
+      result.push({
+        agentId,
+        inFlight: runtime.currentTurn,
+        queued: [...runtime.queue],
+        pendingInbound: [...runtime.pendingInbound],
+      });
     }
     return result;
   }
 
   addAgent(config: AgentConfig) {
-    this.agents.set(config.id, { config, status: "idle", busy: false, queue: [], totalUsage: {} });
+    this.agents.set(config.id, { config, status: "idle", busy: false, queue: [], pendingInbound: [], totalUsage: {} });
     this.bus.emitEvent({ type: "agent:added", payload: config });
     this.emitStatus(config.id);
     this.onChange?.();
@@ -279,7 +511,10 @@ export class AgentManager {
     // config disappears - otherwise both leak: the turn keeps running against a deleted
     // agent's channel, and a pending approval Promise/resolver sits in the registry forever.
     const runtime = this.agents.get(id);
-    if (runtime) runtime.abortKind = "stop";
+    if (runtime) {
+      runtime.abortKind = "stop";
+      this.abandonInterruptState(runtime, false);
+    }
     runtime?.activeController?.abort();
     if (runtime?.scheduledRetryTimeout) clearTimeout(runtime.scheduledRetryTimeout);
     this.approvals?.expireForAgent(id);
@@ -323,9 +558,36 @@ export class AgentManager {
     const runtime = this.agents.get(id);
     if (!runtime?.activeController) return false;
     runtime.abortKind = "stop";
+    // Stop has to mean stop. Without this, an agent the user deliberately stopped would sail on
+    // through a queued resume turn (and keep a primed interrupt timer pointed at a turn that no
+    // longer exists), which is the single most infuriating way this feature could misbehave.
+    this.abandonInterruptState(runtime, true);
     runtime.activeController.abort();
     this.approvals?.expireForAgent(id);
     return true;
+  }
+
+  /** Disarm everything the interrupt mechanism has in flight for one agent. `announce` posts an
+   * honest note for any resume turn this drops, because dropping queued work silently is exactly
+   * what the rest of this class goes out of its way not to do. */
+  private abandonInterruptState(runtime: AgentRuntime, announce: boolean) {
+    this.clearInterruptTimer(runtime);
+    runtime.pendingInbound = [];
+    const droppedResumes = runtime.queue.filter((t) => t.resume);
+    if (droppedResumes.length === 0) return;
+    runtime.queue = runtime.queue.filter((t) => !t.resume);
+    if (!announce) return;
+    for (const dropped of droppedResumes) {
+      this.bus.postMessage({
+        id: nanoid(),
+        channel: { agentId: runtime.config.id },
+        authorId: "system",
+        authorHandle: "system",
+        mentions: [],
+        text: `Stopped, so this paused work will NOT resume on its own: "${describeWork(dropped)}"`,
+        createdAt: new Date().toISOString(),
+      });
+    }
   }
 
   /** Re-submits an agent's most recently failed turn, exactly as it was - the manual "Retry"
@@ -339,7 +601,20 @@ export class AgentManager {
     if (runtime.scheduledRetryTimeout) clearTimeout(runtime.scheduledRetryTimeout);
     runtime.scheduledRetryAt = undefined;
     runtime.lastFailedTurn = undefined;
-    this.enqueueTurn(id, turn.prompt, turn.replyChannel, turn.mentionChainDepth, turn.addressedBy);
+    // Re-running known work, not new traffic: a fresh id/arrival time, but never `inbound`, so a
+    // retry can't make itself a candidate for interrupting somebody.
+    //
+    // `resume` is deliberately dropped. A manual Retry is a human deciding to run this again
+    // from the start, and carrying the old accumulated elapsed time forward would hand that
+    // fresh attempt the 60-second floor left over from the interrupt chain that abandoned it -
+    // i.e. the retry would be killed almost immediately, for reasons that happened before the
+    // user clicked. The prompt is kept exactly as it was (re-read-the-files preamble included,
+    // where there was one) because that instruction is still true.
+    this.enqueueTurn(id, turn.prompt, turn.replyChannel, {
+      mentionChainDepth: turn.mentionChainDepth,
+      addressedBy: turn.addressedBy,
+      kind: turn.kind,
+    });
     return true;
   }
 
@@ -425,6 +700,10 @@ export class AgentManager {
       /** The agent this message is an answer to, when this is an agent's reply to another
        * agent - treated as a target even with no @mention (see `targets` below). */
       replyTo?: { id: string; handle: string };
+      /** Set only when the SENDER explicitly said what this is (the solace bridge's `kind`
+       * argument). Left undefined everywhere else so classifyIncoming decides - an agent
+       * declaring its own message a question is a deliberate act; inferring one is a guess. */
+      declaredKind?: IncomingKind;
     },
   ) {
     const knownHandles = [...this.agents.values()].map((a) => a.config.handle);
@@ -483,14 +762,75 @@ export class AgentManager {
       // targets empty here means an unaddressed *human* message (the broadcast case above) -
       // everyone gets a turn and decides relevance for themselves.
       if (targets.length > 0 && !targets.includes(runtime.config.handle)) continue;
-      this.enqueueTurn(
-        runtime.config.id,
-        this.buildGroupPrompt(authorHandle, displayText, runtime.config.id),
-        "group",
-        opts.mentionChainDepth + 1,
-        isAgentAuthor ? { id: authorId, handle: authorHandle } : undefined,
-      );
+      this.enqueueTurn(runtime.config.id, this.buildGroupPrompt(authorHandle, displayText, runtime.config.id), "group", {
+        mentionChainDepth: opts.mentionChainDepth + 1,
+        addressedBy: isAgentAuthor ? { id: authorId, handle: authorHandle } : undefined,
+        // An agent that declared what it was sending is believed; everything else (every human
+        // message, and every agent final answer coming back through here) gets classified.
+        kind: opts.declaredKind ?? classifyIncoming(displayText),
+        inbound: true,
+      });
     }
+  }
+
+  /**
+   * An agent speaking into the group chat WHILE its turn is still running, via the solace MCP
+   * bridge (mcp/solaceBridge.mjs). Until this existed, only an agent's final message of a
+   * finished turn ever reached the group - a mid-work "@claude I'm proposing a restrained
+   * apothecary palette..." was posted to that agent's own hub and nowhere else, and an agent
+   * that announced "now I'll message the group with the direction I'm taking" had no mechanism
+   * to do so at all.
+   *
+   * Deliberately delegates to routeGroupMessage rather than posting directly: mention parsing,
+   * the [no-reply] off-ramp, the chain-depth cap and the reply-to-whoever-addressed-you rule
+   * all already live there, and a second, parallel copy of that logic is exactly how an agent's
+   * "@codex, thoughts?" once ended up as inert text that reached nobody.
+   *
+   * Returns rather than throws so the caller can hand the agent a tool error it can actually
+   * act on. Never awaits anything the *target* agent does: enqueueTurn only queues, so the
+   * posting agent's CLI is not blocked for the duration of someone else's turn.
+   */
+  postFromCurrentTurn(
+    agentId: string,
+    token: unknown,
+    text: string,
+    kind?: "question" | "work" | "fyi",
+  ): { ok: true } | { ok: false; reason: "no-turn" | "capped" | "empty"; error: string } {
+    if (!this.verifyTurnToken(agentId, token)) {
+      return { ok: false, reason: "no-turn", error: "no matching in-flight turn" };
+    }
+    const runtime = this.agents.get(agentId)!;
+    const turn = runtime.currentTurn;
+    if (!turn) return { ok: false, reason: "no-turn", error: "no matching in-flight turn" };
+    const trimmed = typeof text === "string" ? text.trim() : "";
+    if (!trimmed) return { ok: false, reason: "empty", error: "message text was empty" };
+
+    const posts = (turn.midTurnPosts ??= []);
+    if (posts.length >= MAX_MID_TURN_POSTS) {
+      // Explicitly refused rather than silently dropped: an agent that believes it told the
+      // group something it did not tell them is worse than one that knows it was blocked.
+      return {
+        ok: false,
+        reason: "capped",
+        error: `mid-turn group posts are capped at ${MAX_MID_TURN_POSTS} per turn and this turn has used all of them - say the rest in your final answer for this turn`,
+      };
+    }
+    posts.push(trimmed);
+
+    // "work"/"fyi" are statements, not questions, so they must not automatically bounce a turn
+    // back to whoever addressed this agent - that reply path is what routeGroupMessage's
+    // [no-reply] marker exists to opt out of. An explicit @mention in the text still always
+    // goes through, because that is a deliberate act.
+    const routed = kind === "question" || END_THREAD_MARKER.test(trimmed) ? trimmed : `${trimmed}\n\n[no-reply]`;
+
+    this.routeGroupMessage(agentId, runtime.config.handle, routed, {
+      broadcastIfUnmentioned: false,
+      mentionChainDepth: turn.mentionChainDepth + 1,
+      model: runtime.lastResolvedModel ?? runtime.config.model,
+      replyTo: turn.addressedBy,
+      declaredKind: kind,
+    });
+    return { ok: true };
   }
 
   /** A message sent directly to one agent's own hub - always triggers a turn for just that agent. */
@@ -508,7 +848,7 @@ export class AgentManager {
       createdAt: new Date().toISOString(),
     };
     this.bus.postMessage(message);
-    this.enqueueTurn(agentId, text, channel);
+    this.enqueueTurn(agentId, text, channel, { kind: classifyIncoming(text), inbound: true });
   }
 
   /**
@@ -546,23 +886,204 @@ export class AgentManager {
           `"@" (e.g. "@${others[0].handle} ..."): writing their name without the "@" is just text and will not ` +
           `reach them, so if you have a question or a handoff for someone, @mention them explicitly in this reply ` +
           `rather than waiting for them to notice. When the exchange is finished and you don't need an answer back, ` +
-          `end your reply with "[no-reply]" so the thread stops there instead of bouncing back and forth.`
+          `end your reply with "[no-reply]" so the thread stops there instead of bouncing back and forth.` +
+          // Agents could previously only discover each other's work after the fact: one wrote
+          // "now I'll message the group with the direction I'm taking" and had no way to do it.
+          // The tool is the mechanism; this is the only place every group turn passes through,
+          // so it's where an agent finds out the mechanism exists. Phrased conditionally because
+          // whether the tool is actually wired up is per-provider (see the adapters).
+          ` If you have the tool "post_to_group" available (mcp__solace__post_to_group), use it to tell the ` +
+          `group what you're doing WHILE you work - before you commit to a direction, when you claim or hand ` +
+          `off a piece of work, or to ask someone a question you need answered during this turn - rather than ` +
+          `saving it all for your final answer, which nobody sees until your whole turn ends. If you already ` +
+          `@mentioned someone through that tool, do NOT repeat the same @mention in your final answer: they ` +
+          `have already received it, and repeating it makes them run a second turn answering the same question. ` +
+          `"list_agents" tells you who is here and whether they are mid-turn.`
         : "";
     return `${identity}${roster}]\n\n[group chat message from ${fromHandle}]: ${text}`;
   }
 
-  private enqueueTurn(
-    agentId: string,
-    prompt: string,
-    replyChannel: ChatChannel,
-    mentionChainDepth = 0,
-    addressedBy?: { id: string; handle: string },
-  ) {
+  /** Options object rather than a growing positional tail: this had already reached five
+   * parameters, and the two that matter most for interrupts (`kind`, `inbound`) are exactly the
+   * ones a caller must not set by accident from position. */
+  private enqueueTurn(agentId: string, prompt: string, replyChannel: ChatChannel, opts: EnqueueOptions = {}) {
     const runtime = this.agents.get(agentId);
     if (!runtime) return;
-    runtime.queue.push({ prompt, replyChannel, mentionChainDepth, addressedBy });
+    const turn: QueuedTurn = {
+      id: opts.id ?? nanoid(),
+      prompt,
+      replyChannel,
+      mentionChainDepth: opts.mentionChainDepth ?? 0,
+      addressedBy: opts.addressedBy,
+      sessionRetryDone: opts.sessionRetryDone,
+      kind: opts.kind ?? "work",
+      receivedAt: opts.receivedAt ?? new Date().toISOString(),
+      resume: opts.resume,
+    };
+    runtime.queue.push(turn);
+    // A message that arrives while the agent is ALREADY mid-turn is the only kind that can be
+    // delivered cooperatively - if the agent is idle, drainQueue is about to start this turn
+    // properly anyway, and putting it in pendingInbound would just race that.
+    if (opts.inbound && runtime.busy) {
+      runtime.pendingInbound.push(turn);
+      this.armInterruptTimer(runtime);
+    }
     this.onChange?.(); // so a restart before this turn even starts still finds it queued
     void this.drainQueue(agentId);
+  }
+
+  /**
+   * Hand an agent every message that has arrived for it since its current turn started, as text
+   * it can act on right now, and take those messages OFF its queue so they cannot also run later
+   * as their own separate billed turns. Called from the solace MCP bridge's internal routes, so
+   * delivery happens at a tool-call boundary the agent chose - nothing is killed and no context
+   * is lost. Returns undefined when there is nothing to say, so the caller appends nothing.
+   *
+   * The approval bridge deliberately does NOT do this, even though it is the other per-turn
+   * channel: its MCP response body is a JSON permission decision that Claude Code parses
+   * strictly ({behavior:"allow"|"deny"}), and appending prose to it risks breaking the approval
+   * loop itself - a far worse failure than a message arriving a few seconds later.
+   */
+  takeInboundNotice(agentId: string, token: unknown): string | undefined {
+    const runtime = this.agents.get(agentId);
+    if (!runtime || !this.verifyTurnToken(agentId, token)) return undefined;
+    if (runtime.pendingInbound.length === 0) return undefined;
+
+    // Sorted by arrival rather than trusting array order: a restore rebuilds this array from a
+    // saved list, and an interrupt reorders `queue` underneath it. Arrival order is the promise
+    // made to whoever sent these, so it is read off the turns themselves.
+    const delivered = [...runtime.pendingInbound].sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt));
+    runtime.pendingInbound = [];
+    const deliveredIds = new Set(delivered.map((t) => t.id));
+    runtime.queue = runtime.queue.filter((t) => !deliveredIds.has(t.id));
+    this.clearInterruptTimer(runtime);
+
+    const lines = delivered.map((t) => {
+      const who = promptAuthorHandle(t);
+      const text = summarizePrompt(t.prompt).replace(/\s+/g, " ").trim();
+      if (t.kind === "question") {
+        return `- ${who} asked: "${text}" - answer it now with post_to_group, then continue what you were doing.`;
+      }
+      if (t.kind === "work") {
+        return `- ${who} sent work: "${text}" - finish the file or task you are on first, then do this before you end your turn.`;
+      }
+      return `- ${who} said: "${text}" - no reply needed.`;
+    });
+
+    this.onChange?.(); // these are no longer outstanding queued turns
+    return [
+      "[solace] While you were working, these arrived for you (oldest first):",
+      ...lines,
+      "They have been taken off your queue and will NOT be delivered to you again, so handle them in this turn.",
+    ].join("\n");
+  }
+
+  private clearInterruptTimer(runtime: AgentRuntime) {
+    if (runtime.interruptTimer) clearTimeout(runtime.interruptTimer);
+    runtime.interruptTimer = undefined;
+  }
+
+  /** Arm the preemptive fallback for the OLDEST pending question, if one isn't armed already.
+   * Anchored to that question's own receivedAt rather than to "now", so a question doesn't get
+   * its grace period extended every time some later message shows up behind it. */
+  private armInterruptTimer(runtime: AgentRuntime) {
+    if (runtime.interruptTimer) return;
+    const oldest = runtime.pendingInbound
+      .filter((t) => t.kind === "question")
+      .sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt))[0];
+    if (!oldest) return;
+    const waited = Date.now() - Date.parse(oldest.receivedAt);
+    const agentId = runtime.config.id;
+    runtime.interruptTimer = setTimeout(() => {
+      runtime.interruptTimer = undefined;
+      this.interruptIfStillPending(agentId);
+    }, Math.max(0, INTERRUPT_GRACE_MS - (Number.isFinite(waited) ? waited : 0)));
+  }
+
+  /**
+   * Tier 2: nobody picked the question up cooperatively, so kill the running turn for it. This
+   * is the fallback, not the plan - it costs a killed turn and a billed resume, which is why it
+   * only ever fires for a "question" and only after INTERRUPT_GRACE_MS.
+   */
+  private interruptIfStillPending(agentId: string) {
+    const runtime = this.agents.get(agentId);
+    if (!runtime) return;
+    if (!runtime.pendingInbound.some((t) => t.kind === "question")) return; // already delivered
+    // Nothing is actually running, so the question is about to be picked off the queue as a
+    // normal turn within moments. Deliberately does NOT re-arm: re-arming on an already-expired
+    // deadline is a zero-delay timer loop, and there is nothing here left to fix anyway.
+    if (!runtime.busy || !runtime.activeController) return;
+    runtime.abortKind = "interrupt";
+    runtime.activeController.abort();
+    // A killed turn must not leave a live approval card for it in the UI - same reasoning, and
+    // the same call, as the MAX_TURN_MS timeout path in drainQueue.
+    this.approvals?.expireForAgent(agentId);
+  }
+
+  /**
+   * Queue a turn that re-runs work an interrupt cut short, or - if this work has already been
+   * interrupted too many times or burned its whole time budget - stop and say so honestly.
+   *
+   * Ordering: the question that caused the interrupt goes to the FRONT, the resume turn goes
+   * immediately behind it, and everything else keeps its arrival order behind that. The agent
+   * therefore answers the question, resumes, and only then works through whatever else came in -
+   * which is the behaviour the interrupt was bought for in the first place.
+   */
+  private scheduleResume(runtime: AgentRuntime, turn: QueuedTurn, ranForMs: number) {
+    const agentId = runtime.config.id;
+    if (!this.agents.has(agentId)) return; // agent removed while the turn was being torn down
+    const ownChannel: ChatChannel = { agentId };
+    const count = (turn.resume?.count ?? 0) + 1;
+    const elapsedMs = (turn.resume?.elapsedMs ?? 0) + Math.max(0, ranForMs);
+    const ofTurnId = turn.resume?.ofTurnId ?? turn.id;
+
+    if (resumeExhausted(count, elapsedMs)) {
+      // Never silently drop work: name exactly what was abandoned, and leave it where the
+      // existing manual Retry action can pick it up unchanged.
+      const why =
+        count > MAX_RESUMES
+          ? `it has now been interrupted ${MAX_RESUMES + 1} times`
+          : `it has already used its full ${Math.round(MAX_TURN_MS / 60000)} minutes of run time across interruptions`;
+      this.bus.postMessage({
+        id: nanoid(),
+        channel: ownChannel,
+        authorId: "system",
+        authorHandle: "system",
+        mentions: [],
+        text:
+          `Stopped resuming this work because ${why}. It was NOT finished and is not being retried ` +
+          `automatically: "${describeWork(turn)}" - use Retry to run it again from the start.`,
+        createdAt: new Date().toISOString(),
+      });
+      runtime.lastFailedTurn = turn;
+      this.emitStatus(agentId); // so the UI's Retry affordance actually lights up
+      return;
+    }
+
+    const resumeTurn: QueuedTurn = {
+      ...turn,
+      id: nanoid(),
+      prompt: buildResumePrompt(turn),
+      receivedAt: new Date().toISOString(),
+      // Reset, not carried over: MAX_MID_TURN_POSTS is a per-turn budget, and a resumed turn
+      // that arrives with its group-posting budget already spent could not coordinate at all -
+      // which is precisely the failure this whole feature exists to fix.
+      midTurnPosts: undefined,
+      resume: { ofTurnId, count, elapsedMs },
+    };
+
+    runtime.queue = insertResumeTurn(runtime.queue, resumeTurn);
+
+    this.bus.postMessage({
+      id: nanoid(),
+      channel: ownChannel,
+      authorId: "system",
+      authorHandle: "system",
+      mentions: [],
+      text: `Paused this work to answer a question first - it will resume straight afterwards: "${describeWork(turn)}"`,
+      createdAt: new Date().toISOString(),
+    });
+    this.onChange?.();
   }
 
   private async drainQueue(agentId: string) {
@@ -571,6 +1092,13 @@ export class AgentManager {
     const turn = runtime.queue.shift();
     if (turn === undefined) return;
     const { prompt, replyChannel, mentionChainDepth, addressedBy } = turn;
+    // It is about to run as a real turn, so it is no longer a candidate for being handed to a
+    // running turn as text - without this it could be delivered a second time, as prose, after
+    // it had already been answered properly.
+    runtime.pendingInbound = runtime.pendingInbound.filter((t) => t.id !== turn.id);
+
+    const turnStartedAt = Date.now();
+    const turnBudgetMs = resumeBudgetMs(turn.resume);
 
     runtime.busy = true;
     runtime.currentTurn = turn;
@@ -628,7 +1156,7 @@ export class AgentManager {
         controller.abort();
         // A killed turn shouldn't leave a live approval card in the UI for it.
         this.approvals?.expireForAgent(agentId);
-      }, MAX_TURN_MS);
+      }, turnBudgetMs);
       await adapter.runTurn({
         cwd: runtime.config.cwd,
         prompt,
@@ -693,19 +1221,30 @@ export class AgentManager {
       }
     }
 
+    // Captured before the cleanup at the bottom clears abortKind, and used to suppress the
+    // end-of-turn routing below: a turn we killed mid-sentence has no "final answer", and
+    // routing its half-finished last message into the group would hand other agents a partial
+    // thought as if the agent had meant to say it.
+    const wasInterrupted = cancelled && runtime.abortKind === "interrupt";
+
     if (cancelled) {
       // A cancelled turn is reported honestly for what it was, and deliberately skips the whole
       // failure path below: no lastFailedTurn, no Retry affordance, no rate-limit retry
       // scheduled for a turn the user chose to end. A timeout IS a real failure, so it keeps
-      // the retry affordance; "stop" does not, because the user already decided.
+      // the retry affordance; "stop" does not, because the user already decided. An "interrupt"
+      // is not a failure either - the work was deliberately paused by us and is being requeued
+      // below, so it must not set hadError, must not populate lastFailedTurn, and must not
+      // schedule a rate-limit retry for a turn that never actually failed.
       if (runtime.abortKind === "timeout") {
         hadError = true;
-        runtime.lastError = `turn stopped after ${Math.round(MAX_TURN_MS / 60000)} minutes without finishing`;
+        runtime.lastError = `turn stopped after ${Math.round(turnBudgetMs / 60000)} minutes without finishing`;
         post(replyChannel, `error: ${runtime.lastError}`);
       } else if (runtime.abortKind === "stop" && this.agents.has(runtime.config.id)) {
         post(ownChannel, "_stopped before this turn finished_");
       }
     }
+
+    if (wasInterrupted) this.scheduleResume(runtime, turn, Date.now() - turnStartedAt);
 
     // Recover from a stale session id exactly once, then never again for this turn. Without the
     // one-shot guard this is an infinite billed retry loop; with it, the worst case is a single
@@ -745,7 +1284,12 @@ export class AgentManager {
           stillHere.scheduledRetryAt = undefined;
           stillHere.scheduledRetryTimeout = undefined;
           stillHere.lastFailedTurn = undefined;
-          this.enqueueTurn(agentId, turn.prompt, turn.replyChannel, turn.mentionChainDepth, turn.addressedBy);
+          this.enqueueTurn(agentId, turn.prompt, turn.replyChannel, {
+            mentionChainDepth: turn.mentionChainDepth,
+            addressedBy: turn.addressedBy,
+            kind: turn.kind,
+            resume: turn.resume,
+          });
         }, Math.max(0, resetAt.getTime() - Date.now()));
         if (this.agents.has(runtime.config.id)) {
           this.bus.postMessage({
@@ -761,7 +1305,16 @@ export class AgentManager {
       }
     }
 
-    if (isGroupTurn && lastText.trim() && !hadError) {
+    // An agent that posts "@codex what palette?" mid-turn and then repeats that same sentence
+    // as its final answer would hand codex the identical question twice - two real, billed
+    // turns for one question. Routing the final text is skipped when it's effectively something
+    // this turn already said (whitespace/case-normalised); it is not re-posted either, because
+    // the group already has it.
+    const alreadyPostedMidTurn =
+      lastText.trim().length > 0 &&
+      (turn.midTurnPosts ?? []).some((p) => normalizeForDuplicateCheck(p) === normalizeForDuplicateCheck(lastText));
+
+    if (isGroupTurn && lastText.trim() && !hadError && !alreadyPostedMidTurn && !wasInterrupted) {
       // Route the agent's own final answer through the same mention-parsing/triggering logic
       // as a human message - see routeGroupMessage's doc comment for why this matters. Guard
       // against the agent having been removed while this turn was running, same reasoning as
@@ -779,7 +1332,7 @@ export class AgentManager {
     // Deliberately not awaited: this does real (short) network waits, and the turn is already
     // finished - holding the agent "thinking" while we fact-check it would be worse than the
     // note arriving a couple of seconds late.
-    if (lastText.trim() && !hadError) {
+    if (lastText.trim() && !hadError && !wasInterrupted) {
       void this.checkLocalUrlClaims(runtime.config.id, lastText, replyChannel);
     }
 

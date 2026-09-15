@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import * as readline from "node:readline";
 import { join } from "node:path";
 import type { TrustLevel } from "@solace/shared";
-import { spawnCli } from "../core/spawnCli";
+import { killCliTree, spawnCli } from "../core/spawnCli";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 
 // Always re-anchor from the package root (two levels up from this compiled/ts-node file,
@@ -10,6 +10,11 @@ import type { ProviderAdapter, RunTurnOptions } from "./types";
 // *source* copy of the bridge script - it's plain JS with no compile step, so referencing it
 // directly works identically in both dev and prod.
 const BRIDGE_SCRIPT = join(__dirname, "..", "..", "src", "approval", "bridgeScript.mjs");
+/** The group-chat bridge, resolved the same way and for the same reason as BRIDGE_SCRIPT. */
+const SOLACE_BRIDGE_SCRIPT = join(__dirname, "..", "..", "src", "mcp", "solaceBridge.mjs");
+
+/** Claude Code addresses MCP tools as mcp__<server>__<tool>. */
+const SOLACE_TOOLS = ["mcp__solace__post_to_group", "mcp__solace__list_agents"];
 
 /**
  * Trust level -> Claude Code's own --permission-mode flag. Our TrustLevel enum now IS Claude
@@ -17,23 +22,34 @@ const BRIDGE_SCRIPT = join(__dirname, "..", "..", "src", "approval", "bridgeScri
  * rather than an approximation. "manual" additionally gets the live approval-bridge flags
  * wiring Claude's own --permission-prompt-tool to our approval/bridgeScript.mjs (see
  * ARCHITECTURE.md#trust-levels for the full mechanism, verified empirically 2026-09-15).
+ *
+ * The solace group-chat bridge (mcp/solaceBridge.mjs) is included at EVERY trust level, not
+ * just "manual": talking to your teammates mid-turn is not a privileged operation, and gating
+ * it on trust level would mean most agents silently kept the old behaviour of only ever
+ * reaching the group after their turn already ended. --strict-mcp-config still means these are
+ * the only MCP servers in play.
  */
 function flagsForTrustLevel(trustLevel: TrustLevel): string[] {
-  const base = ["--permission-mode", trustLevel];
-  if (trustLevel !== "manual") return base;
+  const manual = trustLevel === "manual";
+  const mcpServers: Record<string, { command: string; args: string[] }> = {
+    solace: { command: "node", args: [SOLACE_BRIDGE_SCRIPT] },
+  };
+  if (manual) mcpServers["approval-bridge"] = { command: "node", args: [BRIDGE_SCRIPT] };
 
-  const mcpConfig = JSON.stringify({
-    mcpServers: { "approval-bridge": { command: "node", args: [BRIDGE_SCRIPT] } },
-  });
   return [
-    ...base,
-    "--permission-prompt-tool",
-    "mcp__approval-bridge__permission",
-    "--permission-prompts",
-    "host",
+    "--permission-mode",
+    trustLevel,
+    ...(manual ? ["--permission-prompt-tool", "mcp__approval-bridge__permission", "--permission-prompts", "host"] : []),
     "--mcp-config",
-    mcpConfig,
+    JSON.stringify({ mcpServers }),
     "--strict-mcp-config",
+    // Pre-allow only our own two coordination tools. Without this, in "manual" mode every
+    // post_to_group call would raise a human approval card - i.e. the user would have to click
+    // to let one agent talk to another, which defeats the point - and in "plan" mode it isn't
+    // obvious the tools are reachable at all. This is an allowlist: it does not widen anything
+    // else, and the permission mode still governs every other tool.
+    "--allowedTools",
+    SOLACE_TOOLS.join(","),
   ];
 }
 
@@ -92,7 +108,9 @@ export const claudeCodeAdapter: ProviderAdapter = {
       let aborted = false;
       const onAbort = () => {
         aborted = true;
-        child.kill();
+        // Not child.kill(): on Windows that leaves the real CLI (and the per-turn MCP bridge it
+        // spawned) running against a turn we already gave up on. See killCliTree.
+        killCliTree(child);
       };
       signal?.addEventListener("abort", onAbort);
 

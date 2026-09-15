@@ -1,7 +1,7 @@
 import crossSpawn from "cross-spawn";
 import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
-import type { SpawnOptions } from "node:child_process";
+import type { ChildProcess, SpawnOptions } from "node:child_process";
 
 /**
  * Minimal `where`-equivalent, matching how Windows itself resolves a bare command name: each
@@ -67,4 +67,43 @@ function assertNoNewlineArgsOnWindowsShim(bin: string, args: string[]) {
 export function spawnCli(bin: string, args: string[], options: SpawnOptions = {}) {
   assertNoNewlineArgsOnWindowsShim(bin, args);
   return crossSpawn(bin, args, options);
+}
+
+/**
+ * Kill a spawned provider CLI *and everything it spawned*.
+ *
+ * child.kill() alone is not enough on Windows. There is no process-group signal there: it
+ * terminates the process we hold a handle to and nothing else. For every CLI here that handle is
+ * either a cmd.exe shim (cross-spawn routes .cmd/.bat through `cmd.exe /d /s /c`) or a launcher
+ * that forks its own workers, plus - since the MCP bridges landed - a `node` MCP server child
+ * per turn. So the thing that actually does the work routinely SURVIVES the kill: real
+ * filesystem writes and real billed tokens continuing against a turn the user already stopped,
+ * invisible to the UI. `taskkill /T` walks the tree and `/F` does not ask.
+ *
+ * Everywhere else the ordinary kill is correct and this is a plain pass-through.
+ */
+export function killCliTree(child: ChildProcess) {
+  const alive = () => child.exitCode === null && child.signalCode === null;
+  if (process.platform !== "win32" || typeof child.pid !== "number") {
+    child.kill();
+    return;
+  }
+  // Fall back to the plain kill on any sign taskkill did not do the job (missing from PATH,
+  // refused, nothing killed) - a turn that hangs forever because we assumed a kill worked would
+  // be strictly worse than the orphan this is trying to prevent. Exit code 128 means "no such
+  // process", i.e. it was already gone, which the aliveness check below treats as success.
+  try {
+    const killer = spawnCli("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    killer.on("error", () => {
+      if (alive()) child.kill();
+    });
+    killer.on("close", (code) => {
+      if (code !== 0 && alive()) child.kill();
+    });
+  } catch {
+    child.kill();
+  }
 }

@@ -1,7 +1,44 @@
 import * as readline from "node:readline";
+import { join } from "node:path";
 import type { TrustLevel } from "@solace/shared";
-import { spawnCli } from "../core/spawnCli";
+import { killCliTree, spawnCli } from "../core/spawnCli";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
+
+/** The group-chat MCP bridge, re-anchored to the *source* copy from the package root exactly as
+ * claude-code.ts does - it's plain JS with no compile step, so the same path works under
+ * `tsx watch` and in `dist/`. */
+const SOLACE_BRIDGE_SCRIPT = join(__dirname, "..", "..", "src", "mcp", "solaceBridge.mjs");
+
+/**
+ * Codex has no --mcp-config flag (confirmed against `codex exec --help`). This per-invocation
+ * form is INFERRED from its documented `-c, --config <key=value>` ("dotted path, value parsed
+ * as TOML") applied to the `mcp_servers` table codex reads from ~/.codex/config.toml - it is
+ * NOT documented as a supported way to register an MCP server, and has not been verified
+ * against a real codex build. runTurn therefore treats it as strictly best-effort and falls
+ * back to a plain invocation if codex rejects it (see the retry in runTurn).
+ *
+ * Deliberately per-invocation: writing into the user's own global ~/.codex/config.toml would
+ * change how every codex run on this machine behaves, including ones we know nothing about.
+ *
+ * JSON.stringify does the value quoting: a TOML basic string uses the same backslash/quote
+ * escapes JSON does, which matters because the script path is a Windows path full of
+ * backslashes. process.execPath rather than "node" so this doesn't depend on whatever PATH
+ * codex happens to hand its MCP child.
+ *
+ * The SOLACE_* env vars are passed explicitly because an MCP server codex spawns is not
+ * guaranteed to inherit our environment, and without them the bridge has no identity or turn
+ * token and every tool call would be refused by the server.
+ */
+function solaceMcpConfigArgs(agentId: string, serverPort: number, turnToken?: string): string[] {
+  const entries: Array<[string, unknown]> = [
+    ["mcp_servers.solace.command", process.execPath],
+    ["mcp_servers.solace.args", [SOLACE_BRIDGE_SCRIPT]],
+    ["mcp_servers.solace.env.SOLACE_AGENT_ID", agentId],
+    ["mcp_servers.solace.env.SOLACE_SERVER_PORT", String(serverPort)],
+    ...(turnToken ? ([["mcp_servers.solace.env.SOLACE_TURN_TOKEN", turnToken]] as Array<[string, unknown]>) : []),
+  ];
+  return entries.flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`]);
+}
 
 /**
  * Trust level -> Codex CLI flags. Codex has no single mode flag equivalent to Claude Code's
@@ -40,11 +77,12 @@ export const codexCliAdapter: ProviderAdapter = {
   id: "codex-cli",
   async runTurn({ cwd, prompt, trustLevel, model, effort, agentId, turnToken, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
     const { beforeExec, forExec } = flagsForTrustLevel(trustLevel);
+    const serverPort = Number(process.env.PORT ?? 4310);
     // Resume this agent's own prior conversation so it remembers its own work across turns.
     // Deliberately NOT `--last`: that is scoped to the user's entire codex session store, so
     // with two codex agents configured it would silently resume the other one's conversation.
     // No captured id means we run cold rather than guess.
-    const args = [
+    const buildArgs = (configArgs: string[]) => [
       ...beforeExec,
       "exec",
       ...(sessionId ? ["resume", sessionId] : []),
@@ -57,11 +95,19 @@ export const codexCliAdapter: ProviderAdapter = {
       // model_reasoning_effort is a TOML string value, hence the literal embedded quotes -
       // see the -c examples in `codex exec --help`.
       ...(effort ? ["-c", `model_reasoning_effort="${effort}"`] : []),
+      ...configArgs,
       prompt,
     ];
 
-    await new Promise<void>((resolve) => {
-      const child = spawnCli("codex", args, {
+    /** Resolves true when the caller should re-run WITHOUT the (undocumented, inferred) solace
+     * mcp config - i.e. codex exited non-zero having produced no stream output at all, which is
+     * what rejecting an unknown `-c` key looks like from out here. In that case nothing is
+     * reported to the agent: the fallback run is the real turn. Group-chat posting is a feature
+     * on top of codex, never a reason for a codex turn to fail. */
+    const runOnce = (configArgs: string[]) => new Promise<boolean>((resolve) => {
+      const canFallBack = configArgs.length > 0;
+      let sawStreamEvent = false;
+      const child = spawnCli("codex", buildArgs(configArgs), {
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
         env: {
@@ -78,12 +124,19 @@ export const codexCliAdapter: ProviderAdapter = {
       let aborted = false;
       const onAbort = () => {
         aborted = true;
-        child.kill();
+        // Not child.kill(): on Windows that leaves the real CLI (and the per-turn MCP bridge it
+        // spawned) running against a turn we already gave up on. See killCliTree.
+        killCliTree(child);
       };
       signal?.addEventListener("abort", onAbort);
 
       rl.on("line", (line) => {
         if (!line.trim()) return;
+        // Any stdout line at all means codex accepted its arguments and actually started the
+        // turn, so a later non-zero exit is a real failure of the turn - not the config
+        // rejection the fallback below exists for. Set before parsing on purpose: a line we
+        // couldn't parse is still proof codex ran.
+        sawStreamEvent = true;
         try {
           const event = JSON.parse(line);
           // Codex does not document its JSONL event schema, and the field carrying the session
@@ -139,6 +192,13 @@ export const codexCliAdapter: ProviderAdapter = {
 
       child.on("close", (code) => {
         signal?.removeEventListener("abort", onAbort);
+        if (!aborted && code !== 0 && !sawStreamEvent && canFallBack) {
+          // Codex died before producing a single line of its own stream, with an argument set
+          // that includes an mcp_servers config form we inferred rather than read in any docs.
+          // Re-run plainly instead of failing the turn, and report nothing from this attempt.
+          resolve(true);
+          return;
+        }
         if (aborted) {
           // Why it was aborted is the caller's knowledge, not ours - see AdapterEvent.cancelled.
           onEvent({ type: "cancelled" });
@@ -146,15 +206,20 @@ export const codexCliAdapter: ProviderAdapter = {
           onEvent({ type: "error", message: stderrBuffer.trim() });
         }
         onEvent({ type: "done" });
-        resolve();
+        resolve(false);
       });
 
       child.on("error", (err) => {
         signal?.removeEventListener("abort", onAbort);
+        // Deliberately NOT a fallback case: this is codex failing to spawn at all (not on
+        // PATH, permissions), which dropping our own config args cannot fix.
         onEvent({ type: "error", message: `failed to start codex CLI: ${err.message}` });
         onEvent({ type: "done" });
-        resolve();
+        resolve(false);
       });
     });
+
+    const needsPlainRetry = await runOnce(solaceMcpConfigArgs(agentId, serverPort, turnToken));
+    if (needsPlainRetry) await runOnce([]);
   },
 };

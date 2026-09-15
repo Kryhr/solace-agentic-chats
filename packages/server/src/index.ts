@@ -330,6 +330,54 @@ async function main() {
     return { approved };
   });
 
+  // Internal only - called by the per-turn solace MCP bridge (mcp/solaceBridge.mjs) that the
+  // provider CLI spawns, never by the browser. Same loopback hook + turn-token pair as
+  // /internal/approvals above.
+  //
+  // Both routes return IMMEDIATELY and deliberately await nothing the *target* agent does:
+  // postFromCurrentTurn only enqueues a turn for whoever was mentioned. Awaiting that agent's
+  // work here would block the posting agent's own CLI - which is still mid-turn waiting on this
+  // tool call - for the entire duration of somebody else's turn.
+  app.post<{ Body: { agentId: string; turnToken?: string; text: string; kind?: "question" | "work" | "fyi" } }>(
+    "/internal/solace/post",
+    async (req, reply) => {
+      const result = agents.postFromCurrentTurn(req.body.agentId, req.body.turnToken, req.body.text, req.body.kind);
+      // Every solace tool response doubles as the delivery channel for messages that arrived
+      // for THIS agent while it was working (see AgentManager.takeInboundNotice). An agent
+      // actually using its tools therefore learns about them within seconds, at a boundary it
+      // chose, instead of being killed for them once INTERRUPT_GRACE_MS expires.
+      if (result.ok) return { ok: true, inbound: agents.takeInboundNotice(req.body.agentId, req.body.turnToken) };
+      // A bad/expired token is an authorization failure; a hit cap or empty text is a real
+      // request from a real turn that we're refusing on purpose, so it isn't a 403.
+      reply.code(result.reason === "no-turn" ? 403 : 400);
+      return { ok: false, error: result.error };
+    },
+  );
+
+  app.post<{ Body: { agentId: string; turnToken?: string } }>("/internal/solace/agents", async (req, reply) => {
+    if (!agents.verifyTurnToken(req.body.agentId, req.body.turnToken)) {
+      reply.code(403);
+      return { error: "no matching in-flight turn" };
+    }
+    // The same roster /status renders, minus the caller itself (an agent asking who else is
+    // here doesn't need to be told about itself) and minus anything it can't act on.
+    const statuses = new Map(agents.listStatuses().map((s) => [s.agentId, s]));
+    return {
+      // Same piggy-backed delivery as /internal/solace/post - an agent that only ever calls
+      // list_agents is still reachable mid-turn.
+      inbound: agents.takeInboundNotice(req.body.agentId, req.body.turnToken),
+      agents: agents
+        .listAgents()
+        .filter((a) => a.id !== req.body.agentId)
+        .map((a) => ({
+          handle: a.handle,
+          provider: a.provider,
+          state: statuses.get(a.id)?.state ?? "idle",
+          currentTask: a.currentTask,
+        })),
+    };
+  });
+
   app.post<{ Params: { id: string }; Body: { approved: boolean } }>("/api/approvals/:id/resolve", async (req, reply) => {
     const ok = approvals.resolve(req.params.id, req.body.approved);
     if (!ok) {
