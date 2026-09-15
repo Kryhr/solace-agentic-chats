@@ -64,6 +64,13 @@ export function AddAgentModal({
     setEffort(effortOptions[0] ?? "");
     setTrustLevel(trustOptions.includes("bypassPermissions") ? "bypassPermissions" : (trustOptions[0] ?? "bypassPermissions"));
     if (!API_KEY_CAPABLE.includes(provider)) setAuthMode("cli");
+    // credentialId must reset too - a credential belongs to exactly one provider, and both
+    // claude-code and codex-cli are API_KEY_CAPABLE, so switching between them previously left
+    // a stale credentialId selected (pointing at the WRONG provider's saved key) with no
+    // visible sign anything was wrong, since the <select>'s displayed value silently falls
+    // back to whatever the browser shows for an out-of-list value while React's state still
+    // held the old id - it would have been submitted as-is on Add.
+    setCredentialId(NEW_KEY_VALUE);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider]);
 

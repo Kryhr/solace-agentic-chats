@@ -138,6 +138,14 @@ async function main() {
       reply.code(404);
       return { error: "not found" };
     }
+    // Any agent still pointing at this now-deleted credential would otherwise keep an
+    // authMode of "api-key" with a dangling credentialId, and silently fail its next turn
+    // with no visible explanation - fall those agents back to CLI/subscription mode instead.
+    for (const agent of agents.listAgents()) {
+      if (agent.credentialId === req.params.id) {
+        agents.updateAgent(agent.id, { authMode: "cli", credentialId: undefined });
+      }
+    }
     return { ok: true };
   });
 
