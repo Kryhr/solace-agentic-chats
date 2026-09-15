@@ -1,16 +1,24 @@
 import { useEffect, useState } from "react";
-import type { CredentialMeta, ProviderId, ProviderStatus, SshCredentialMeta } from "@solace/shared";
+import type {
+  CatalogProvider,
+  CredentialMeta,
+  LocalServerFinding,
+  ProviderId,
+  ProviderStatus,
+  SshCredentialMeta,
+} from "@solace/shared";
+import { searchCatalog } from "@solace/shared";
 import {
   deleteCredential,
   fetchCredentials,
   fetchProviderStatuses,
   saveCredential,
   saveSshCredential,
+  scanLocalServers,
   testProviderConnection,
   type SshCredentialDraft,
 } from "../api";
 import { ProviderIcon, providerLabel } from "./ProviderIcon";
-import { searchCatalog, type CatalogProvider } from "../lib/providerCatalog";
 
 type TestResult = { ok: boolean; message: string } | { pending: true };
 
@@ -33,7 +41,7 @@ function SkeletonRows() {
  * otherwise the provider it belongs to. The label ("personal", "work") is the secondary line. */
 export function credentialTitle(c: CredentialMeta): string {
   if (c.kind === "ssh") return c.label;
-  if (c.provider === "custom") return c.connectionName || c.baseUrl || "Custom endpoint";
+  if (isEndpointProvider(c.provider)) return c.connectionName || c.baseUrl || "Custom endpoint";
   return providerLabel(c.provider);
 }
 
@@ -228,7 +236,13 @@ function SshConnections({
         </div>
       )}
     </>
-  );
+  );}
+
+
+/** A connection is endpoint-backed (needs a base URL, may legitimately have no key) rather
+ * than a bare key for one of the built-in CLI providers. */
+function isEndpointProvider(provider: ProviderId): boolean {
+  return provider === "custom" || provider === "local";
 }
 
 /** Saved API-key connections. Separate from the CLI providers above it: those are "is this
@@ -240,10 +254,14 @@ export function SavedConnections() {
   const [query, setQuery] = useState("");
   /** null = still picking from the catalog; otherwise the chosen target's name + base URL
    * (pre-filled from a tile, or blank for the free-text "+ Custom" path). */
-  const [draft, setDraft] = useState<{ name: string; baseUrl: string; fromCatalog: boolean } | null>(null);
+  const [draft, setDraft] = useState<{ name: string; baseUrl: string; fromCatalog: boolean; local: boolean } | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** null = never scanned this session. Deliberately not fetched on mount: see api.ts. */
+  const [findings, setFindings] = useState<LocalServerFinding[] | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchCredentials()
@@ -259,7 +277,16 @@ export function SavedConnections() {
     setError(null);
   };
 
-  const pick = (p: CatalogProvider) => setDraft({ name: p.name, baseUrl: p.baseUrl, fromCatalog: true });
+  const pick = (p: CatalogProvider) =>
+    setDraft({ name: p.name, baseUrl: p.baseUrl, fromCatalog: true, local: Boolean(p.local) });
+
+  /** Pre-fills the form from a server the scan actually found, so the base URL is the one
+   * that answered rather than a default port that happens to be in the catalog. */
+  const useFinding = (f: LocalServerFinding) => {
+    setAdding(true);
+    setApiKey("");
+    setDraft({ name: f.name, baseUrl: f.baseUrl, fromCatalog: true, local: true });
+  };
 
   const save = async () => {
     if (!draft) return;
@@ -267,20 +294,37 @@ export function SavedConnections() {
       setError("Name and base URL are both required");
       return;
     }
-    if (!apiKey.trim()) {
-      setError("Paste an API key first");
-      return;
-    }
+    // No key requirement. A local server normally has none, and several hosted gateways can
+    // be reached keyless on a LAN too; the base URL above is the thing actually needed to
+    // make a request at all, so that's what's enforced.
     setSaving(true);
     setError(null);
     try {
-      const saved = await saveCredential("custom", draft.name.trim(), apiKey.trim(), draft.baseUrl.trim(), draft.name.trim());
+      const saved = await saveCredential(
+        draft.local ? "local" : "custom",
+        draft.name.trim(),
+        apiKey.trim(),
+        draft.baseUrl.trim(),
+        draft.name.trim(),
+      );
       setCredentials((c) => [...(c ?? []), saved]);
       reset();
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const scan = async () => {
+    setScanning(true);
+    setScanError(null);
+    try {
+      setFindings(await scanLocalServers());
+    } catch (err) {
+      setScanError((err as Error).message);
+    } finally {
+      setScanning(false);
     }
   };
 
@@ -313,14 +357,19 @@ export function SavedConnections() {
           </span>
           <span className="provider-name">
             {credentialTitle(c)}
-            <span className="credential-sub">{c.provider === "custom" ? c.baseUrl : c.label}</span>
+            <span className="credential-sub">
+              {isEndpointProvider(c.provider) ? c.baseUrl : c.label}
+              {/* hasKey is absent on connections saved before keyless ones existed, all of
+                  which did have a key - so only an explicit false means "no key". */}
+              {c.hasKey === false && " · no key"}
+            </span>
           </span>
           <span className="provider-actions">
             <button
               className="btn-ghost btn-xs"
               onClick={() => remove(c.id)}
               title={
-                c.provider === "custom"
+                isEndpointProvider(c.provider)
                   ? "Delete this saved key (agents using it will error on their next message - there's no CLI sign-in to fall back to)"
                   : "Delete this saved key (agents using it fall back to CLI sign-in)"
               }
@@ -349,12 +398,20 @@ export function SavedConnections() {
           />
           <div className="catalog-grid">
             {matches.map((p) => (
-              <button key={p.name} className="catalog-tile" onClick={() => pick(p)} title={`${p.baseUrl} · key from ${p.keyHint}`}>
+              <button
+                key={p.name}
+                className={`catalog-tile ${p.local ? "is-local" : ""}`}
+                onClick={() => pick(p)}
+                title={p.keyHint ? `${p.baseUrl} · key from ${p.keyHint}` : `${p.baseUrl} · runs on this machine`}
+              >
                 <span className="catalog-tile-name">{p.name}</span>
-                <span className="catalog-tile-hint">{p.keyHint}</span>
+                <span className="catalog-tile-hint">{p.keyHint ?? "on this machine · no key needed"}</span>
               </button>
             ))}
-            <button className="catalog-tile is-custom" onClick={() => setDraft({ name: "", baseUrl: "", fromCatalog: false })}>
+            <button
+              className="catalog-tile is-custom"
+              onClick={() => setDraft({ name: "", baseUrl: "", fromCatalog: false, local: false })}
+            >
               <span className="catalog-tile-name">+ Custom</span>
               <span className="catalog-tile-hint">any OpenAI-compatible URL</span>
             </button>
@@ -362,6 +419,52 @@ export function SavedConnections() {
           {matches.length === 0 && (
             <div className="provider-hint">No match - use “+ Custom” for any other OpenAI-compatible endpoint.</div>
           )}
+
+          <div className="connection-subhead">
+            Local servers
+            <span className="label-rule" />
+          </div>
+          <button className="btn-ghost btn-xs" onClick={scan} disabled={scanning}>
+            {scanning ? "Scanning…" : "Scan for local servers"}
+          </button>
+          <div className="provider-hint">
+            Checks this machine's own loopback ports for the default ports of Ollama, LM Studio, Jan, KoboldCpp and GPT4All,
+            and only reports one when the reply actually identifies that runtime. llama.cpp, vLLM and LocalAI share ports
+            with common non-LLM servers, so pick their tile above instead of scanning for them.
+          </div>
+          {scanError && (
+            <div className="field-error" role="alert">
+              {scanError}
+            </div>
+          )}
+          {findings?.length === 0 && (
+            <div className="provider-hint">
+              Nothing answered on those ports just now. That isn't proof nothing is installed - a server on a non-default
+              port is added with its tile above.
+            </div>
+          )}
+          {findings?.map((f) => (
+            <div key={`${f.runtime}-${f.baseUrl}`} className="provider-row">
+              <span className="provider-glyph">
+                <ProviderIcon provider="local" size={20} />
+              </span>
+              <span className="provider-name">
+                {f.name}
+                <span className="credential-sub">
+                  {f.baseUrl}
+                  {f.state === "authenticated" && " · wants an API key"}
+                  {f.models?.length ? ` · ${f.models.length} model${f.models.length === 1 ? "" : "s"}` : ""}
+                  {` · seen ${new Date(f.verifiedAt).toLocaleTimeString()}`}
+                </span>
+              </span>
+              <span className="provider-actions">
+                <button className="btn-ghost btn-xs" onClick={() => useFinding(f)}>
+                  Add
+                </button>
+              </span>
+            </div>
+          ))}
+
           <div className="connection-add-actions">
             <button className="btn-ghost btn-xs" onClick={reset}>
               Cancel
@@ -391,19 +494,28 @@ export function SavedConnections() {
             />
           </label>
           <label className="connection-field">
-            API key
+            {draft.local ? "API key (leave blank - most local servers have none)" : "API key (optional)"}
             <input
               type="password"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
-              placeholder="sk-…"
+              placeholder={draft.local ? "usually empty" : "sk-…"}
               autoComplete="off"
-              autoFocus={draft.fromCatalog}
+              autoFocus={draft.fromCatalog && !draft.local}
             />
           </label>
           <div className="provider-hint">
-            Stored locally on this machine only, never shown again after saving. Turns are billed by that provider; Solace
-            reports whatever token counts the endpoint returns and never estimates a cost for it.
+            {draft.local ? (
+              <>
+                Runs on this machine, so nothing is billed and no key is sent unless you enter one. Solace reports whatever
+                token counts the server returns and never estimates a cost.
+              </>
+            ) : (
+              <>
+                Stored locally on this machine only, never shown again after saving. Turns are billed by that provider;
+                Solace reports whatever token counts the endpoint returns and never estimates a cost for it.
+              </>
+            )}
           </div>
           {error && (
             <div className="field-error" role="alert">

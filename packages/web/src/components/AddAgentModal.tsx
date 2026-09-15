@@ -3,23 +3,37 @@ import type {
   AgentConfig,
   ApiKeyCredentialMeta,
   CredentialMeta,
+  ModelDiscoveryResult,
   ProviderId,
   ProviderModelInfo,
   ProviderPermissionInfo,
   TrustLevel,
 } from "@solace/shared";
-import { createProject, fetchCredentials, fetchProjects, saveCredential, type ProjectInfo } from "../api";
+import {
+  createProject,
+  fetchCredentials,
+  fetchDiscoveredModels,
+  fetchProjects,
+  saveCredential,
+  type ProjectInfo,
+} from "../api";
 import { effortOptionsFor, modelOptionsFor } from "../lib/modelOptions";
 import { permissionOptionsFor, TRUST_LABELS } from "../lib/permissionOptions";
 
-const PROVIDERS: ProviderId[] = ["claude-code", "codex-cli", "gemini-cli", "qwen-code", "custom"];
+const PROVIDERS: ProviderId[] = ["claude-code", "codex-cli", "gemini-cli", "qwen-code", "custom", "local"];
 const NEW_PROJECT_VALUE = "__new__";
 const NEW_KEY_VALUE = "__new__";
 // Mirrors adapters/index.ts's apiAdapters map - only these providers have a direct-API
-// alternative to the CLI/subscription path today. "custom" is API-key-only: there's no CLI
-// to shell out to for an arbitrary OpenAI-compatible endpoint.
-const API_KEY_CAPABLE: ProviderId[] = ["claude-code", "codex-cli", "custom"];
-const API_KEY_ONLY: ProviderId[] = ["custom"];
+// alternative to the CLI/subscription path today. "custom" and "local" are connection-only:
+// there's no CLI to shell out to for an arbitrary OpenAI-compatible endpoint.
+const API_KEY_CAPABLE: ProviderId[] = ["claude-code", "codex-cli", "custom", "local"];
+const API_KEY_ONLY: ProviderId[] = ["custom", "local"];
+
+/** Providers whose agent is backed by a saved connection (base URL + optional key) rather
+ * than a CLI login - they share every special case in this modal. */
+function isEndpointProvider(provider: ProviderId): boolean {
+  return provider === "custom" || provider === "local";
+}
 
 export function AddAgentModal({
   modelCatalog,
@@ -50,6 +64,10 @@ export function AddAgentModal({
   const [newProjectName, setNewProjectName] = useState("");
   const [creatingProject, setCreatingProject] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Models the selected connection's endpoint listed for itself, with when it said so.
+   * null = not asked/failed; the model field stays free text either way. */
+  const [discovered, setDiscovered] = useState<ModelDiscoveryResult | null>(null);
+  const [discoveryState, setDiscoveryState] = useState<"idle" | "loading" | "failed">("idle");
 
   const info = modelCatalog.find((m) => m.provider === provider);
   const modelOptions = modelOptionsFor(info);
@@ -99,7 +117,7 @@ export function AddAgentModal({
     // held the old id - it would have been submitted as-is on Add.
     // Custom endpoints can't be added inline (they need a base URL too, which belongs to the
     // Connections panel's flow) - so default to the first one already saved there.
-    setCredentialId(provider === "custom" ? (providerCredentials[0]?.id ?? "") : NEW_KEY_VALUE);
+    setCredentialId(isEndpointProvider(provider) ? (providerCredentials[0]?.id ?? "") : NEW_KEY_VALUE);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider]);
 
@@ -111,18 +129,49 @@ export function AddAgentModal({
   // "add this endpoint under Connections first" even though one is visibly selected. Re-sync
   // once real credentials show up, but only while nothing has been chosen yet.
   useEffect(() => {
-    if (provider === "custom" && !credentialId && providerCredentials.length > 0) {
+    if (isEndpointProvider(provider) && !credentialId && providerCredentials.length > 0) {
       setCredentialId(providerCredentials[0].id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [credentials, provider]);
+
+  /**
+   * Ask the selected connection's own endpoint what models it has. Nothing in this app used
+   * to do this, which is why an endpoint agent's model was a bare text field you had to get
+   * exactly right from memory. Best-effort on purpose: the field below stays free text, and
+   * a failure is reported as "couldn't ask", never as "this endpoint has no models".
+   *
+   * `cancelled` guards the usual out-of-order case - switching connections faster than a slow
+   * endpoint answers would otherwise show the previous connection's models under the new one.
+   */
+  useEffect(() => {
+    setDiscovered(null);
+    if (!isEndpointProvider(provider) || !credentialId || credentialId === NEW_KEY_VALUE) {
+      setDiscoveryState("idle");
+      return;
+    }
+    let cancelled = false;
+    setDiscoveryState("loading");
+    fetchDiscoveredModels(credentialId)
+      .then((result) => {
+        if (cancelled) return;
+        setDiscovered(result);
+        setDiscoveryState("idle");
+      })
+      .catch(() => {
+        if (!cancelled) setDiscoveryState("failed");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [provider, credentialId]);
 
   const isCreatingNew = selected === NEW_PROJECT_VALUE;
   const isCreatingNewKey = credentialId === NEW_KEY_VALUE;
   /** A custom connection is identified by the service it points at, not by "custom" - several
    * saved custom keys would otherwise be indistinguishable in this dropdown. */
   const credentialOptionLabel = (c: ApiKeyCredentialMeta) =>
-    c.provider === "custom" ? (c.connectionName || c.baseUrl || "custom endpoint") : c.label;
+    isEndpointProvider(c.provider) ? (c.connectionName || c.baseUrl || "custom endpoint") : c.label;
 
   const handleAdd = async () => {
     setError(null);
@@ -145,14 +194,14 @@ export function AddAgentModal({
     }
     if (!handle || !cwd) return;
 
-    if (provider === "custom" && !model.trim()) {
+    if (isEndpointProvider(provider) && !model.trim()) {
       setError("Enter the model id this endpoint expects - there's no default to fall back to");
       return;
     }
 
     let finalCredentialId: string | undefined;
     if (authMode === "api-key") {
-      if (provider === "custom" && !credentialId) {
+      if (isEndpointProvider(provider) && !credentialId) {
         setError("Add this endpoint under Connections in the sidebar first");
         return;
       }
@@ -223,7 +272,7 @@ export function AddAgentModal({
             <label>
               API key
               <select className="select" value={credentialId} onChange={(e) => setCredentialId(e.target.value)}>
-                {provider === "custom" && providerCredentials.length === 0 && <option value="">No connections saved yet</option>}
+                {isEndpointProvider(provider) && providerCredentials.length === 0 && <option value="">No connections saved yet</option>}
                 {providerCredentials.map((c) => (
                   <option key={c.id} value={c.id}>
                     {credentialOptionLabel(c)}
@@ -231,15 +280,15 @@ export function AddAgentModal({
                 ))}
                 {/* A custom endpoint needs a base URL as well as a key, so it's added in the
                     sidebar's Connections panel rather than inline here. */}
-                {provider !== "custom" && <option value={NEW_KEY_VALUE}>+ Add a new key…</option>}
+                {!isEndpointProvider(provider) && <option value={NEW_KEY_VALUE}>+ Add a new key…</option>}
               </select>
             </label>
-            {provider === "custom" && (
+            {isEndpointProvider(provider) && (
               <div className="field-note">
                 Custom endpoints are added under <strong>Connections</strong> in the sidebar (name + base URL + key).
               </div>
             )}
-            {provider !== "custom" && isCreatingNewKey && (
+            {!isEndpointProvider(provider) && isCreatingNewKey && (
               <>
                 <label>
                   Key label
@@ -264,13 +313,36 @@ export function AddAgentModal({
           </>
         )}
 
-        {/* No model catalog exists for an arbitrary endpoint - every provider names its models
-            differently - so this is free text rather than a guessed list. */}
-        {provider === "custom" && (
+        {/* Still free text, never a closed <select>: the suggestions below come from the
+            endpoint's own /models and can be missing, stale by a minute, or unavailable
+            entirely, so the user must always be able to type a model this list doesn't have. */}
+        {isEndpointProvider(provider) && (
           <label>
             Model id
-            <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="deepseek-chat" spellCheck={false} />
+            <input
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder="deepseek-chat"
+              spellCheck={false}
+              list={discovered ? "discovered-models" : undefined}
+            />
+            {discovered && (
+              <datalist id="discovered-models">
+                {discovered.models.map((m) => (
+                  <option key={m} value={m} />
+                ))}
+              </datalist>
+            )}
           </label>
+        )}
+        {isEndpointProvider(provider) && (
+          <div className="field-note">
+            {discoveryState === "loading" && "Asking this connection which models it has…"}
+            {discoveryState === "failed" &&
+              "Couldn't ask this connection for its model list - type the model id yourself. (That the list is unavailable says nothing about which models the endpoint has.)"}
+            {discovered &&
+              `${discovered.models.length} model${discovered.models.length === 1 ? "" : "s"} reported by this endpoint at ${new Date(discovered.fetchedAt).toLocaleTimeString()}.`}
+          </div>
         )}
         {modelOptions.length > 0 && (
           <label>

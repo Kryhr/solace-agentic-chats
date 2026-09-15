@@ -2,11 +2,16 @@ import type { ProviderId } from "@solace/shared";
 
 // Small abstract glyph + brand-adjacent color per provider, so a hub/message reads as
 // "which provider" at a glance without relying on trademarked logo marks.
+// "custom" is deliberately absent and falls through to the grey "?" below: an arbitrary
+// hosted endpoint could be anything, and inventing a mark for it would claim knowledge we
+// don't have. "local" is different - it's specifically "a model server on this machine",
+// which is a real, distinguishable thing and gets its own mark.
 const PROVIDER_STYLE: Record<Exclude<ProviderId, "custom">, { color: string; label: string }> = {
   "claude-code": { color: "#d3915a", label: "claude" },
   "codex-cli": { color: "#8fd1c9", label: "codex" },
   "gemini-cli": { color: "#7c93f2", label: "gemini" },
   "qwen-code": { color: "#c084e0", label: "qwen" },
+  local: { color: "#7fb069", label: "local" },
 };
 
 function GlyphFor({ provider }: { provider: ProviderId }) {
@@ -37,6 +42,14 @@ function GlyphFor({ provider }: { provider: ProviderId }) {
       return (
         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
           <path d="M12 3l7.79 4.5v9L12 21l-7.79-4.5v-9L12 3z" />
+        </svg>
+      );
+    case "local":
+      // a machine/box - "this is running here", not out on someone's API
+      return (
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3" y="5" width="18" height="10" rx="2" />
+          <path d="M8 19h8" />
         </svg>
       );
     default:
