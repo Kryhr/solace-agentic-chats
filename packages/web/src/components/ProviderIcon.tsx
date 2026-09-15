@@ -1,4 +1,5 @@
 import type { ProviderId } from "@solace/shared";
+import { BRAND_ICONS, type BrandIcon } from "./brandIcons";
 
 // Small abstract glyph + brand-adjacent color per provider, so a hub/message reads as
 // "which provider" at a glance without relying on trademarked logo marks.
@@ -61,15 +62,91 @@ function GlyphFor({ provider }: { provider: ProviderId }) {
   }
 }
 
-export function ProviderIcon({ provider, size = 22 }: { provider: ProviderId; size?: number }) {
-  const style = PROVIDER_STYLE[provider as Exclude<ProviderId, "custom">] ?? { color: "#82868f", label: "?" };
+/** Which CLI providers have a real published mark. Codex is absent on purpose - see brandIcons. */
+const PROVIDER_BRAND: Partial<Record<ProviderId, string>> = {
+  "claude-code": "claude",
+  "gemini-cli": "googlegemini",
+  "qwen-code": "qwen",
+};
+
+/**
+ * Match a saved connection's name to a real brand mark, so adding DeepSeek shows DeepSeek
+ * rather than the same grey "?" every other hosted endpoint got. Matched on a normalised
+ * name because the user types it: "DeepSeek", "deepseek", "Deep Seek" and "deepseek-v4" all
+ * have to land on the same icon.
+ */
+export function brandIconForName(name: string | undefined): BrandIcon | undefined {
+  if (!name) return undefined;
+  const key = name.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (!key) return undefined;
+  if (BRAND_ICONS[key]) return BRAND_ICONS[key];
+  // Longest slug first, so "githubcopilot" wins over "github" on a name containing both.
+  const slug = Object.keys(BRAND_ICONS)
+    .sort((a, b) => b.length - a.length)
+    .find((s) => key.includes(s) || s.includes(key));
+  return slug ? BRAND_ICONS[slug] : undefined;
+}
+
+/** A stable colour for an endpoint we have no mark for. Derived from the name, so the same
+ * connection is the same colour every time - a grey "?" for everything told you nothing, and
+ * a random colour per render would be worse. */
+function letterMarkColor(name: string): string {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+  return `hsl(${hash % 360} 45% 62%)`;
+}
+
+export function ProviderIcon({
+  provider,
+  size = 22,
+  connectionName,
+}: {
+  provider: ProviderId;
+  size?: number;
+  /** For "custom"/"local" endpoints: the service this connection actually points at. */
+  connectionName?: string;
+}) {
+  const brand = BRAND_ICONS[PROVIDER_BRAND[provider] ?? ""] ?? brandIconForName(connectionName);
+  if (brand) {
+    return (
+      <span
+        className="provider-icon"
+        style={{ width: size, height: size, background: `${brand.color}26`, color: brand.color }}
+        title={brand.title}
+      >
+        <svg viewBox="0 0 24 24" width={Math.round(size * 0.6)} height={Math.round(size * 0.6)} fill="currentColor" aria-hidden="true">
+          <path d={brand.path} />
+        </svg>
+      </span>
+    );
+  }
+
+  const style = PROVIDER_STYLE[provider as Exclude<ProviderId, "custom">];
+  if (style) {
+    return (
+      <span
+        className="provider-icon"
+        style={{ width: size, height: size, background: `${style.color}26`, color: style.color }}
+        title={style.label}
+      >
+        <GlyphFor provider={provider} />
+      </span>
+    );
+  }
+
+  // An endpoint we genuinely don't recognise: its own initial in its own stable colour, which
+  // at least distinguishes two unknown connections from each other.
+  const label = connectionName?.trim() || "endpoint";
+  const color = letterMarkColor(label);
   return (
     <span
       className="provider-icon"
-      style={{ width: size, height: size, background: `${style.color}26`, color: style.color }}
-      title={style.label}
+      style={{ width: size, height: size, background: `${color}26`, color }}
+      title={label}
     >
-      <GlyphFor provider={provider} />
+      <span style={{ fontSize: Math.round(size * 0.5), fontWeight: 600, lineHeight: 1 }}>
+        {label[0].toUpperCase()}
+      </span>
     </span>
   );
 }
