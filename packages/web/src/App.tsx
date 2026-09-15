@@ -297,6 +297,7 @@ export default function App() {
           statuses={statuses}
           modelCatalog={modelCatalog}
           rateLimits={Object.values(rateLimits)}
+          connected={connected}
           onSend={(text) => sendChatMessage(text)}
         />
       )}

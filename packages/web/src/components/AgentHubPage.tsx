@@ -1,12 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import type { AgentConfig, AgentStatus, ChatMessage, ProviderModelInfo, ProviderPermissionInfo, TrustLevel } from "@solace/shared";
 import { ProviderIcon, providerLabel, UserAvatar } from "./ProviderIcon";
-import { SendIcon } from "./SendIcon";
+import { Composer } from "./Composer";
+import { ToolRun } from "./ToolRun";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 import { useEntranceTracker } from "../lib/useEntranceTracker";
 import { effortOptionsFor, modelOptionsFor } from "../lib/modelOptions";
 import { permissionOptionsFor, TRUST_LABELS } from "../lib/permissionOptions";
 import { formatProviderError } from "../lib/errorFormat";
+import { buildTranscript, displayText, isErrorLine } from "../lib/messageKind";
 
 function formatTokens(n?: number): string {
   if (n === undefined) return "–";
@@ -40,9 +42,6 @@ export function AgentHubPage({
   onStop: () => void;
   onRetry: () => void;
 }) {
-  const [draft, setDraft] = useState("");
-  const [sendError, setSendError] = useState<string | null>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
   const historyRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const state = status?.state ?? "offline";
@@ -67,33 +66,8 @@ export function AgentHubPage({
     stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   };
 
-  const resizeComposer = () => {
-    const el = inputRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
-  };
-
-  const submitDirect = () => {
-    const text = draft.trim();
-    if (!text) return;
-    setSendError(null);
-    onSendDirect(text).catch(() => {
-      setSendError("Couldn't send - the connection may have dropped. Your message is back in the box.");
-      setDraft((current) => (current === "" ? text : current));
-    });
-    setDraft("");
-    stickToBottom.current = true;
-    requestAnimationFrame(() => {
-      resizeComposer();
-      if (historyRef.current) historyRef.current.scrollTop = historyRef.current.scrollHeight;
-    });
-  };
-
-  const isToolUse = (text: string) => text.startsWith("_used ") && text.endsWith("_");
-  const isErrorLine = (text: string) => text.startsWith("error: ");
-
   const shouldAnimate = trackEntrance(directHistory.map((m) => m.id));
+  const transcript = buildTranscript(directHistory);
 
   return (
     <div className="hub-page">
@@ -219,9 +193,26 @@ export function AgentHubPage({
               Messages here stay between you and this agent — they don't appear in the group chat. Try{" "}
               <kbd>/help</kbd> to see what it accepts.
             </div>
+            {/* An offline agent looks identical to an idle one once the transcript is empty, so
+                the empty state is the only place left to say why nothing is happening. */}
+            {state === "offline" && (
+              <div className="chat-empty-note">
+                {providerLabel(agent.provider)} hasn't started yet. It starts on your first message.
+              </div>
+            )}
           </div>
         )}
-        {directHistory.map((m) => {
+        {transcript.map((item) => {
+          // Tool detail is collapsed so the agent's actual output is what the page shows.
+          if (item.kind === "tool-run") {
+            const enter = shouldAnimate(item.id) ? "message-enter" : "";
+            return (
+              <div key={item.id} className={`message-row hub-message tool-run-row ${enter}`}>
+                <ToolRun messages={item.messages} />
+              </div>
+            );
+          }
+          const m = item.message;
           const enter = shouldAnimate(m.id) ? "message-enter" : "";
           if (m.authorId === "system") {
             return (
@@ -230,14 +221,12 @@ export function AgentHubPage({
               </div>
             );
           }
-          const toolUse = isToolUse(m.text);
-          const text = toolUse ? m.text.slice(6, -1) : m.text;
           const isUser = m.authorId === "user";
           return (
             <div key={m.id} className={`message-row hub-message ${isUser ? "from-user" : ""} ${enter}`}>
               {isUser ? <UserAvatar /> : <ProviderIcon provider={agent.provider} size={22} />}
               <div className="message">
-                <div className={`body ${toolUse ? "tool-use" : ""} ${isErrorLine(m.text) ? "error-line" : ""}`}>{text}</div>
+                <div className={`body ${isErrorLine(m.text) ? "error-line" : ""}`}>{displayText(m.text)}</div>
               </div>
             </div>
           );
@@ -245,46 +234,17 @@ export function AgentHubPage({
         {state === "thinking" && <ThinkingIndicator label={`${agent.handle} is working…`} />}
       </div>
 
-      <div className="composer">
-        {sendError && <div className="composer-error">{sendError}</div>}
-        <div className="composer-field">
-          <textarea
-            ref={inputRef}
-            rows={1}
-            value={draft}
-            aria-label={`Message ${agent.handle} directly`}
-            placeholder={`Message ${agent.handle}…`}
-            onChange={(e) => {
-              setDraft(e.target.value);
-              if (sendError) setSendError(null);
-              resizeComposer();
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                submitDirect();
-              }
-            }}
-          />
-          <button
-            className="send-btn"
-            onClick={submitDirect}
-            disabled={!draft.trim()}
-            aria-label="Send message"
-            title="Send · Enter"
-          >
-            <SendIcon />
-          </button>
-        </div>
-        <div className="composer-hint">
-          <span>
-            <code>/</code> commands
-          </span>
-          <span>
-            <code>Shift</code> + <code>Enter</code> for a new line
-          </span>
-        </div>
-      </div>
+      <Composer
+        placeholder={`Message ${agent.handle}…`}
+        ariaLabel={`Message ${agent.handle} directly`}
+        onSend={onSendDirect}
+        onSubmitted={() => {
+          stickToBottom.current = true;
+          requestAnimationFrame(() => {
+            if (historyRef.current) historyRef.current.scrollTop = historyRef.current.scrollHeight;
+          });
+        }}
+      />
     </div>
   );
 }
