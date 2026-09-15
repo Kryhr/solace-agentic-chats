@@ -48,6 +48,17 @@ export function AddAgentModal({
   const trustOptions = permissionOptionsFor(permissionInfo);
   const providerCredentials = credentials.filter((c) => c.provider === provider);
 
+  // Escape closes the dialog. It read as broken without this: the backdrop was
+  // already click-to-dismiss, so the modal was dismissible by mouse but not by
+  // keyboard.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   useEffect(() => {
     fetchProjects().then(({ root, projects }) => {
       setWorkspaceRoot(root);
@@ -126,7 +137,7 @@ export function AddAgentModal({
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className="modal" role="dialog" aria-modal="true" aria-label="Add agent" onClick={(e) => e.stopPropagation()}>
         <h3>Add agent</h3>
         <label>
           Handle (used for @mentions)
@@ -134,7 +145,7 @@ export function AddAgentModal({
         </label>
         <label>
           Provider
-          <select value={provider} onChange={(e) => setProvider(e.target.value as ProviderId)}>
+          <select className="select" value={provider} onChange={(e) => setProvider(e.target.value as ProviderId)}>
             {PROVIDERS.map((p) => (
               <option key={p} value={p}>
                 {p}
@@ -146,7 +157,7 @@ export function AddAgentModal({
         {API_KEY_CAPABLE.includes(provider) && (
           <label>
             Sign-in method
-            <select value={authMode} onChange={(e) => setAuthMode(e.target.value as "cli" | "api-key")}>
+            <select className="select" value={authMode} onChange={(e) => setAuthMode(e.target.value as "cli" | "api-key")}>
               <option value="cli">Subscription (this machine's CLI login)</option>
               <option value="api-key">API key</option>
             </select>
@@ -157,7 +168,7 @@ export function AddAgentModal({
           <>
             <label>
               API key
-              <select value={credentialId} onChange={(e) => setCredentialId(e.target.value)}>
+              <select className="select" value={credentialId} onChange={(e) => setCredentialId(e.target.value)}>
                 {providerCredentials.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.label}
@@ -194,7 +205,7 @@ export function AddAgentModal({
         {modelOptions.length > 0 && (
           <label>
             Model
-            <select value={model} onChange={(e) => setModel(e.target.value)}>
+            <select className="select" value={model} onChange={(e) => setModel(e.target.value)}>
               {modelOptions.map((m) => (
                 <option key={m} value={m}>
                   {m}
@@ -206,7 +217,7 @@ export function AddAgentModal({
         {effortOptions.length > 0 && authMode === "cli" && (
           <label>
             Thinking effort
-            <select value={effort} onChange={(e) => setEffort(e.target.value)}>
+            <select className="select" value={effort} onChange={(e) => setEffort(e.target.value)}>
               {effortOptions.map((level) => (
                 <option key={level} value={level}>
                   {level}
@@ -217,7 +228,7 @@ export function AddAgentModal({
         )}
         <label>
           Project
-          <select value={selected} onChange={(e) => setSelected(e.target.value)}>
+          <select className="select" value={selected} onChange={(e) => setSelected(e.target.value)}>
             {projects.map((p) => (
               <option key={p.path} value={p.path}>
                 {p.name}
@@ -237,14 +248,18 @@ export function AddAgentModal({
             />
           </label>
         )}
-        <div style={{ fontSize: "0.6875rem", color: "var(--text-faint)" }}>
-          Projects live under <code style={{ fontFamily: "var(--font-mono)" }}>{workspaceRoot}</code>
+        <div className="field-note">
+          Projects live under <code>{workspaceRoot}</code>
         </div>
-        {error && <div style={{ fontSize: "0.75rem", color: "var(--danger)" }}>{error}</div>}
+        {error && (
+          <div className="field-error" role="alert">
+            {error}
+          </div>
+        )}
         {authMode === "cli" && (
           <label>
             Trust level
-            <select value={trustLevel} onChange={(e) => setTrustLevel(e.target.value as TrustLevel)}>
+            <select className="select" value={trustLevel} onChange={(e) => setTrustLevel(e.target.value as TrustLevel)}>
               {trustOptions.map((level) => (
                 <option key={level} value={level}>
                   {TRUST_LABELS[level]}

@@ -55,3 +55,56 @@ export function validateNewAgentConfig(
     },
   };
 }
+
+type AgentPatch = Partial<Pick<AgentConfig, "trustLevel" | "currentTask" | "model" | "effort" | "authMode" | "credentialId">>;
+
+/**
+ * PATCH /api/agents/:id used to apply `req.body` with zero validation via `Object.assign` -
+ * unlike creation, nothing stopped a garbage `trustLevel` string from reaching the real CLI's
+ * `--permission-mode` flag, or an unbounded `currentTask` string from being broadcast to
+ * every connected tab and re-persisted to disk on every debounce cycle. Only validates
+ * whichever fields are actually present in the patch.
+ */
+export function validateAgentPatch(body: Partial<Record<string, unknown>>): { error: string } | { patch: AgentPatch } {
+  const patch: AgentPatch = {};
+
+  if ("trustLevel" in body) {
+    if (!TRUST_LEVELS.includes(body.trustLevel as TrustLevel)) {
+      return { error: `trustLevel must be one of: ${TRUST_LEVELS.join(", ")}` };
+    }
+    patch.trustLevel = body.trustLevel as TrustLevel;
+  }
+
+  if ("currentTask" in body) {
+    if (typeof body.currentTask !== "string" || body.currentTask.length > MAX_TASK_LEN) {
+      return { error: `currentTask must be a string of ${MAX_TASK_LEN} characters or fewer` };
+    }
+    patch.currentTask = body.currentTask;
+  }
+
+  if ("authMode" in body) {
+    if (body.authMode !== "cli" && body.authMode !== "api-key") {
+      return { error: 'authMode must be "cli" or "api-key"' };
+    }
+    patch.authMode = body.authMode;
+  }
+
+  if ("model" in body) {
+    if (typeof body.model !== "string") return { error: "model must be a string" };
+    patch.model = body.model;
+  }
+
+  if ("effort" in body) {
+    if (typeof body.effort !== "string") return { error: "effort must be a string" };
+    patch.effort = body.effort;
+  }
+
+  if ("credentialId" in body) {
+    if (body.credentialId !== undefined && typeof body.credentialId !== "string") {
+      return { error: "credentialId must be a string or undefined" };
+    }
+    patch.credentialId = body.credentialId as string | undefined;
+  }
+
+  return { patch };
+}

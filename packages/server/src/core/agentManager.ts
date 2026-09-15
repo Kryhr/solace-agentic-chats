@@ -20,6 +20,13 @@ interface AgentRuntime {
   lastUsage?: TurnUsage;
   totalUsage: TurnUsage;
   lastError?: string;
+  /** The in-flight turn's abort controller, if any - stored here (not just as a local inside
+   * drainQueue) so removeAgent/stopAgent can actually reach it. Previously removing an agent
+   * only deleted it from the `agents` map; the real `claude`/`codex` child process spawned
+   * for its in-flight turn kept running - real filesystem writes, real billed tokens - for
+   * as long as that turn happened to take, completely invisible to the UI, with no way for
+   * the user to stop it short of killing the whole server. */
+  activeController?: AbortController;
 }
 
 /** Large open-ended asks (e.g. "build a whole site") can legitimately take a while, but a
@@ -75,9 +82,34 @@ export class AgentManager {
   }
 
   removeAgent(id: string) {
+    // Stop any in-flight turn (kills the underlying CLI child via the adapter's own
+    // signal-abort handling) and drop any approval it might be blocked on, *before* the
+    // config disappears - otherwise both leak: the turn keeps running against a deleted
+    // agent's channel, and a pending approval Promise/resolver sits in the registry forever.
+    this.agents.get(id)?.activeController?.abort();
+    this.approvals?.expireForAgent(id);
     this.agents.delete(id);
     this.bus.emitEvent({ type: "agent:removed", payload: { agentId: id } });
     this.onChange?.();
+  }
+
+  /** Cancels an agent's in-flight turn (if any) without removing the agent itself - the
+   * "Stop" action in the UI, distinct from "Remove agent" which also deletes the config. */
+  stopAgent(id: string): boolean {
+    const runtime = this.agents.get(id);
+    if (!runtime?.activeController) return false;
+    runtime.activeController.abort();
+    this.approvals?.expireForAgent(id);
+    return true;
+  }
+
+  /** Lets a caller (the approval-bridge route) reflect a state drainQueue itself doesn't know
+   * about - specifically "blocked waiting on a human", not just thinking/idle/error. */
+  setStatus(id: string, status: AgentRunState) {
+    const runtime = this.agents.get(id);
+    if (!runtime) return;
+    runtime.status = status;
+    this.emitStatus(id);
   }
 
   /** Returns false if `id` doesn't name a live agent, so callers (the PATCH route) can
@@ -190,7 +222,12 @@ export class AgentManager {
     let lastText = "";
     const isGroupTurn = replyChannel === "group";
     const ownChannel: ChatChannel = { agentId: runtime.config.id };
-    const post = (channel: ChatChannel, text: string) =>
+    const post = (channel: ChatChannel, text: string) => {
+      // The agent may have been removed while this turn was in flight (removeAgent aborts
+      // the controller, but an event already queued on the microtask/event-loop can still
+      // land here in the brief window before the abort actually stops the CLI child) - don't
+      // let a message get written into a channel whose agent no longer exists.
+      if (!this.agents.has(runtime.config.id)) return;
       this.bus.postMessage({
         id: nanoid(),
         channel,
@@ -201,6 +238,7 @@ export class AgentManager {
         model: runtime.config.model,
         createdAt: new Date().toISOString(),
       });
+    };
 
     // getAdapter/getRawKey/adapter.runTurn can all throw (e.g. an unsupported provider+authMode
     // combination, or an adapter-internal bug) - previously nothing here was guarded, so a
@@ -213,6 +251,7 @@ export class AgentManager {
       const apiKey =
         authMode === "api-key" && runtime.config.credentialId ? getRawKey(WORKSPACE_ROOT, runtime.config.credentialId) : undefined;
       const controller = new AbortController();
+      runtime.activeController = controller;
       const turnTimeout = setTimeout(() => {
         controller.abort();
         // A killed turn shouldn't leave a live approval card in the UI for it.
@@ -264,6 +303,7 @@ export class AgentManager {
       post("group", lastText.trim());
     }
 
+    runtime.activeController = undefined;
     runtime.busy = false;
     runtime.status = hadError ? "error" : "idle";
     this.emitStatus(agentId);

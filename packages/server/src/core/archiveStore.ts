@@ -6,6 +6,12 @@ export interface ChatArchive {
   channel: ChatChannel;
   clearedAt: string;
   messages: ChatMessage[];
+  /** The agent's handle (or "Group chat") at the moment this was archived, captured once
+   * here rather than resolved live against the current agent list every time it's displayed -
+   * if the agent is later removed, the archive still shows who it actually was instead of
+   * falling back to a generic "an agent's hub" placeholder. Optional only because archives
+   * persisted before this field existed won't have it. */
+  channelLabel: string;
 }
 
 /**
@@ -21,9 +27,9 @@ export class ArchiveStore {
   }
 
   /** No-op if there was nothing to archive (an already-empty channel). */
-  add(channel: ChatChannel, messages: ChatMessage[]) {
+  add(channel: ChatChannel, messages: ChatMessage[], channelLabel: string) {
     if (messages.length === 0) return;
-    this.archives.unshift({ id: nanoid(), channel, clearedAt: new Date().toISOString(), messages });
+    this.archives.unshift({ id: nanoid(), channel, clearedAt: new Date().toISOString(), messages, channelLabel });
   }
 
   list(): ChatArchive[] {

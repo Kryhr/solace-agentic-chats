@@ -101,6 +101,13 @@ export default function App() {
           setAgentsById(Object.fromEntries(event.agents.map((a) => [a.id, a])));
           setHistoryById(Object.fromEntries(event.history.map((m) => [m.id, m])));
           setStatuses(Object.fromEntries(event.statuses.map((s) => [s.agentId, s])));
+          // Replace, don't merge: the approval registry is in-memory only, so a server
+          // restart (e.g. a dev-mode reload) wipes every pending approval it knew about. A
+          // stale approval card left over in this tab's own state from before that restart
+          // would otherwise sit there forever with Allow/Deny buttons pointing at an id the
+          // server has never heard of - a fresh "hello" is this tab's one chance to notice
+          // the server's approval state has moved on and drop anything it no longer knows.
+          setPendingApprovals(Object.fromEntries(event.approvals.map((a) => [a.id, a])));
         } else if (event.type === "chat:message") {
           if (event.payload.channel === "group") {
             setHistoryById((h) => ({ ...h, [event.payload.id]: event.payload }));
@@ -172,31 +179,66 @@ export default function App() {
       )}
       <aside className="sidebar">
         <div className="sidebar-header">
-          <h1>solace-agentic-chats</h1>
-          <span className="count">{agents.length}</span>
+          <h1>solace</h1>
+          <span className="brand-sub">agentic chats</span>
         </div>
-        <div className="sidebar-section-label">Agent hubs</div>
-        {agents.map((agent) => (
-          <AgentCard
-            key={agent.id}
-            agent={agent}
-            status={statuses[agent.id]}
-            modelInfo={modelCatalog.find((m) => m.provider === agent.provider)}
-            permissionInfo={permissionCatalog.find((p) => p.provider === agent.provider)}
-            onTrustChange={(level) => handleTrustChange(agent.id, level)}
-            onOpen={() => goToHub(agent.id)}
-          />
-        ))}
-        <button className="add-agent-btn" onClick={() => setShowAddAgent(true)}>
-          + Add agent
-        </button>
-        <div className="sidebar-section-label">Providers</div>
-        <ProvidersPanel />
-        <div className="sidebar-section-label">GitHub</div>
-        <GithubPanel />
-        <button className="add-agent-btn" onClick={goToArchives}>
-          Saved chats
-        </button>
+
+        <div className="sidebar-scroll">
+          <section className="sidebar-group">
+            <div className="sidebar-section-label">
+              Agents
+              <span className="count">{agents.length}</span>
+              <span className="label-rule" />
+            </div>
+            {agents.length === 0 ? (
+              <div className="sidebar-empty">No agents yet. Add one to start a session.</div>
+            ) : (
+              agents.map((agent) => (
+                <AgentCard
+                  key={agent.id}
+                  agent={agent}
+                  status={statuses[agent.id]}
+                  modelInfo={modelCatalog.find((m) => m.provider === agent.provider)}
+                  permissionInfo={permissionCatalog.find((p) => p.provider === agent.provider)}
+                  onTrustChange={(level) => handleTrustChange(agent.id, level)}
+                  onOpen={() => goToHub(agent.id)}
+                />
+              ))
+            )}
+            <button className="add-agent-btn" onClick={() => setShowAddAgent(true)}>
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
+                <path d="M8 3.5v9M3.5 8h9" />
+              </svg>
+              Add agent
+            </button>
+          </section>
+
+          {/* Providers and GitHub are the same kind of thing - a connection this machine
+              either has or doesn't - so they share one list instead of two headed sections. */}
+          <section className="sidebar-group">
+            <div className="sidebar-section-label">
+              Connections
+              <span className="label-rule" />
+            </div>
+            <div className="connection-list">
+              <ProvidersPanel />
+              <GithubPanel />
+            </div>
+          </section>
+        </div>
+
+        <div className="sidebar-footer">
+          <button
+            className={`nav-row ${view.type === "archives" ? "is-active" : ""}`}
+            onClick={goToArchives}
+            aria-current={view.type === "archives" ? "page" : undefined}
+          >
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M2 4.5h12v9H2zM2 2.5h12v2H2zM6.5 7.5h3" />
+            </svg>
+            Saved chats
+          </button>
+        </div>
       </aside>
 
       {view.type === "archives" ? (

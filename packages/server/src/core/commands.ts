@@ -96,7 +96,12 @@ export async function tryHandleCommand(text: string, ctx: CommandContext): Promi
 
     case "clear": {
       const removed = ctx.bus.clearChannel(ctx.channel);
-      ctx.archive.add(ctx.channel, removed);
+      const channel = ctx.channel;
+      const label =
+        channel === "group"
+          ? "Group chat"
+          : `${ctx.agents.listAgents().find((a) => a.id === channel.agentId)?.handle ?? "an agent"}'s hub`;
+      ctx.archive.add(ctx.channel, removed, label);
       return true;
     }
 

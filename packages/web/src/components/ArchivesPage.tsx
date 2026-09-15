@@ -2,14 +2,21 @@ import { useState } from "react";
 import type { AgentConfig } from "@solace/shared";
 import type { ChatArchive } from "../api";
 
-function formatChannel(channel: ChatArchive["channel"], agentsById: Record<string, AgentConfig>): string {
-  if (channel === "group") return "Group chat";
-  const agent = agentsById[channel.agentId];
+function formatChannel(archive: ChatArchive, agentsById: Record<string, AgentConfig>): string {
+  // Prefer the label captured at archive time (survives the agent later being removed);
+  // only fall back to a live lookup for archives saved before that field existed.
+  if (archive.channelLabel) return archive.channelLabel;
+  if (archive.channel === "group") return "Group chat";
+  const agent = agentsById[archive.channel.agentId];
   return agent ? `${agent.handle}'s hub` : "an agent's hub";
 }
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}
+
+function formatMessageCount(count: number): string {
+  return `${count} message${count === 1 ? "" : "s"}`;
 }
 
 export function ArchivesPage({
@@ -40,15 +47,28 @@ export function ArchivesPage({
       <div className="hub-page-chat">
         {archives.length === 0 && (
           <div className="chat-empty">
-            Nothing archived yet - running /clear on a chat moves it here instead of deleting it.
+            <div className="chat-empty-title">Nothing saved yet</div>
+            <div className="chat-empty-body">
+              Running <kbd>/clear</kbd> on a chat archives it here rather than deleting it, so you can always go back and
+              read what an agent actually did.
+            </div>
           </div>
         )}
         {archives.map((a) => (
-          <div key={a.id} className="archive-entry">
-            <button className="archive-entry-header" onClick={() => setOpenId(openId === a.id ? null : a.id)}>
-              <span className="archive-entry-title">{formatChannel(a.channel, agentsById)}</span>
+          <div key={a.id} className={`archive-entry ${openId === a.id ? "is-open" : ""}`}>
+            <button
+              className="archive-entry-header"
+              onClick={() => setOpenId(openId === a.id ? null : a.id)}
+              aria-expanded={openId === a.id}
+            >
+              <span className="archive-entry-title">
+                <svg className="archive-chevron" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M6 3.5 10.5 8 6 12.5" />
+                </svg>
+                {formatChannel(a, agentsById)}
+              </span>
               <span className="archive-entry-meta">
-                {a.messages.length} messages · cleared {formatDate(a.clearedAt)}
+                {formatMessageCount(a.messages.length)} · cleared {formatDate(a.clearedAt)}
               </span>
             </button>
             {openId === a.id && (

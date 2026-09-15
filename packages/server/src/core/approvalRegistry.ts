@@ -31,6 +31,15 @@ export class ApprovalRegistry {
     return this.pending.get(id)?.record;
   }
 
+  /** Used to seed a freshly (re)connected client's state - this registry is in-memory only,
+   * so a server restart (e.g. tsx watch reloading on a source change) wipes it, but a browser
+   * tab's own pendingApprovals state doesn't know that and would otherwise go on showing a
+   * now-nonexistent approval card forever, with Allow/Deny buttons pointing at an id the
+   * server has never heard of. */
+  listPending(): PendingApproval[] {
+    return [...this.pending.values()].map((entry) => entry.record);
+  }
+
   /** Returns true if an entry was actually resolved (false if it was already gone - expired/unknown). */
   resolve(id: string, approved: boolean): boolean {
     const entry = this.pending.get(id);

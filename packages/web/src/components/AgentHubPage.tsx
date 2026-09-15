@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { AgentConfig, AgentStatus, ChatMessage, ProviderModelInfo, ProviderPermissionInfo, TrustLevel } from "@solace/shared";
-import { ProviderIcon, providerLabel } from "./ProviderIcon";
+import { ProviderIcon, providerLabel, UserAvatar } from "./ProviderIcon";
+import { SendIcon } from "./SendIcon";
 import { ThinkingIndicator } from "./ThinkingIndicator";
+import { useEntranceTracker } from "../lib/useEntranceTracker";
 import { effortOptionsFor, modelOptionsFor } from "../lib/modelOptions";
 import { permissionOptionsFor, TRUST_LABELS } from "../lib/permissionOptions";
 import { formatProviderError } from "../lib/errorFormat";
@@ -47,6 +49,7 @@ export function AgentHubPage({
   const totalOut = status?.totalUsage?.outputTokens ?? 0;
   const totalTokens = totalIn + totalOut;
   const inPct = totalTokens > 0 ? Math.round((totalIn / totalTokens) * 100) : 50;
+  const trackEntrance = useEntranceTracker();
 
   useEffect(() => {
     const el = historyRef.current;
@@ -80,6 +83,8 @@ export function AgentHubPage({
   const isToolUse = (text: string) => text.startsWith("_used ") && text.endsWith("_");
   const isErrorLine = (text: string) => text.startsWith("error: ");
 
+  const shouldAnimate = trackEntrance(directHistory.map((m) => m.id));
+
   return (
     <div className="hub-page">
       <div className="hub-page-header">
@@ -94,7 +99,8 @@ export function AgentHubPage({
           <div>
             <h2>{agent.handle}</h2>
             <span className="hub-subtitle">
-              <span className={`status-dot status-${state}`} /> {providerLabel(agent.provider)} · {state}
+              <span className={`status-dot status-${state}`} /> {providerLabel(agent.provider)}
+              <span className="sep">·</span> {state}
             </span>
           </div>
         </div>
@@ -103,7 +109,7 @@ export function AgentHubPage({
           {modelOptions.length > 0 && (
             <label>
               Model
-              <select value={agent.model ?? modelOptions[0]} onChange={(e) => onSave({ model: e.target.value })}>
+              <select className="select" value={agent.model ?? modelOptions[0]} onChange={(e) => onSave({ model: e.target.value })}>
                 {modelOptions.map((m) => (
                   <option key={m} value={m}>
                     {m}
@@ -115,7 +121,7 @@ export function AgentHubPage({
           {effortOptions.length > 0 && (
             <label>
               Effort
-              <select value={agent.effort ?? effortOptions[0]} onChange={(e) => onSave({ effort: e.target.value })}>
+              <select className="select" value={agent.effort ?? effortOptions[0]} onChange={(e) => onSave({ effort: e.target.value })}>
                 {effortOptions.map((level) => (
                   <option key={level} value={level}>
                     {level}
@@ -126,7 +132,7 @@ export function AgentHubPage({
           )}
           <label>
             Trust
-            <select value={agent.trustLevel} onChange={(e) => onSave({ trustLevel: e.target.value as TrustLevel })}>
+            <select className="select" value={agent.trustLevel} onChange={(e) => onSave({ trustLevel: e.target.value as TrustLevel })}>
               {trustOptions.map((level) => (
                 <option key={level} value={level}>
                   {TRUST_LABELS[level]}
@@ -138,7 +144,7 @@ export function AgentHubPage({
 
         <div className="hub-page-actions">
           <button
-            className="btn-secondary"
+            className="btn-secondary btn-xs"
             onClick={() => {
               if (confirm(`Clear ${agent.handle}'s history? It'll be moved to Saved Chats, not deleted.`)) onClearHistory();
             }}
@@ -146,7 +152,7 @@ export function AgentHubPage({
             Clear history
           </button>
           <button
-            className="btn-secondary danger"
+            className="btn-secondary danger btn-xs"
             onClick={() => {
               if (confirm(`Remove ${agent.handle}? This can't be undone (its chat history stays in Saved Chats).`)) {
                 onRemoveAgent();
@@ -175,28 +181,40 @@ export function AgentHubPage({
         </div>
       )}
       {error && (
-        <div className="hub-error-banner" title={error.full}>
+        <div className="hub-error-banner" title={error.full} role="alert">
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
+            <circle cx="8" cy="8" r="6.25" />
+            <path d="M8 5v3.5M8 11h.01" />
+          </svg>
           {error.headline}
         </div>
       )}
 
       <div className="hub-page-chat" ref={historyRef} onScroll={onHistoryScroll}>
         {directHistory.length === 0 && state !== "thinking" && (
-          <div className="chat-empty">Nothing here yet. Message {agent.handle} directly below.</div>
+          <div className="chat-empty">
+            <div className="chat-empty-title">Direct line to {agent.handle}</div>
+            <div className="chat-empty-body">
+              Messages here stay between you and this agent — they don't appear in the group chat. Try{" "}
+              <kbd>/help</kbd> to see what it accepts.
+            </div>
+          </div>
         )}
         {directHistory.map((m) => {
+          const enter = shouldAnimate(m.id) ? "message-enter" : "";
           if (m.authorId === "system") {
             return (
-              <div key={m.id} className="message-row hub-message fade-in system-row">
+              <div key={m.id} className={`message-row hub-message system-row ${enter}`}>
                 <div className="body system-body">{m.text}</div>
               </div>
             );
           }
           const toolUse = isToolUse(m.text);
           const text = toolUse ? m.text.slice(6, -1) : m.text;
+          const isUser = m.authorId === "user";
           return (
-            <div key={m.id} className={`message-row hub-message fade-in ${m.authorId === "user" ? "from-user" : ""}`}>
-              {m.authorId !== "user" && <ProviderIcon provider={agent.provider} size={22} />}
+            <div key={m.id} className={`message-row hub-message ${isUser ? "from-user" : ""} ${enter}`}>
+              {isUser ? <UserAvatar /> : <ProviderIcon provider={agent.provider} size={22} />}
               <div className="message">
                 <div className={`body ${toolUse ? "tool-use" : ""} ${isErrorLine(m.text) ? "error-line" : ""}`}>{text}</div>
               </div>
@@ -207,25 +225,42 @@ export function AgentHubPage({
       </div>
 
       <div className="composer">
-        <textarea
-          ref={inputRef}
-          rows={1}
-          value={draft}
-          placeholder={`Message ${agent.handle} directly, or /help for commands…`}
-          onChange={(e) => {
-            setDraft(e.target.value);
-            resizeComposer();
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              submitDirect();
-            }
-          }}
-        />
-        <button onClick={submitDirect} disabled={!draft.trim()}>
-          Send
-        </button>
+        <div className="composer-field">
+          <textarea
+            ref={inputRef}
+            rows={1}
+            value={draft}
+            aria-label={`Message ${agent.handle} directly`}
+            placeholder={`Message ${agent.handle}…`}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              resizeComposer();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                submitDirect();
+              }
+            }}
+          />
+          <button
+            className="send-btn"
+            onClick={submitDirect}
+            disabled={!draft.trim()}
+            aria-label="Send message"
+            title="Send · Enter"
+          >
+            <SendIcon />
+          </button>
+        </div>
+        <div className="composer-hint">
+          <span>
+            <code>/</code> commands
+          </span>
+          <span>
+            <code>Shift</code> + <code>Enter</code> for a new line
+          </span>
+        </div>
       </div>
     </div>
   );

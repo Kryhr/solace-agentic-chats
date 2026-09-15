@@ -5,12 +5,28 @@ import { ProviderIcon, providerLabel } from "./ProviderIcon";
 
 type TestResult = { ok: boolean; message: string } | { pending: true };
 
+/** Mirrors the real row's shape (glyph + one line of text) rather than a spinner. */
+function SkeletonRows() {
+  return (
+    <div className="connection-list" aria-hidden="true">
+      {[52, 64, 46, 58].map((w, i) => (
+        <div className="skeleton-row" key={i}>
+          <span className="skeleton skeleton-glyph" />
+          <span className="skeleton skeleton-line" style={{ width: `${w}%` }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function ProvidersPanel() {
-  const [statuses, setStatuses] = useState<ProviderStatus[]>([]);
+  const [statuses, setStatuses] = useState<ProviderStatus[] | null>(null);
   const [results, setResults] = useState<Record<string, TestResult>>({});
 
   useEffect(() => {
-    fetchProviderStatuses().then(setStatuses);
+    fetchProviderStatuses()
+      .then(setStatuses)
+      .catch(() => setStatuses([]));
   }, []);
 
   const runTest = async (provider: ProviderId) => {
@@ -19,55 +35,58 @@ export function ProvidersPanel() {
     setResults((r) => ({ ...r, [provider]: result }));
   };
 
+  if (statuses === null) return <SkeletonRows />;
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+    <>
       {statuses.map((s) => {
         const result = results[s.provider];
+        const pending = result !== undefined && "pending" in result;
         // The dot reflects whether we've actually proven a connection works, never just
         // "the CLI binary exists" - that distinction was confusing before this fix.
-        const dotState = !result || "pending" in result ? "unknown" : result.ok ? "ok" : "fail";
+        const dotState = pending ? "pending" : !result ? "unknown" : "ok" in result && result.ok ? "ok" : "fail";
+        const statusText = !s.installed
+          ? "Not installed"
+          : pending
+            ? "Testing…"
+            : result && "ok" in result
+              ? result.ok
+                ? "Connected"
+                : "Failed"
+              : "Installed";
+        const tone = dotState === "ok" ? "is-ok" : dotState === "fail" ? "is-fail" : "";
+        const detail = result && "ok" in result && !result.ok ? result.message : statusText;
+
         return (
-          <div key={s.provider} className="provider-row">
-            <div className="provider-row-top">
+          <div key={s.provider} className={`provider-row ${s.installed ? "is-testable" : ""}`}>
+            <span className="provider-glyph">
               <ProviderIcon provider={s.provider} size={20} />
-              <span className="provider-name">{providerLabel(s.provider)}</span>
-              <span
-                className={`connection-dot ${dotState}`}
-                title={
-                  dotState === "unknown"
-                    ? "Not tested yet"
-                    : dotState === "ok"
-                      ? "Last test succeeded"
-                      : "Last test failed"
-                }
-              />
-            </div>
-            {!s.installed ? (
-              <div className="provider-hint">{s.detail}</div>
-            ) : (
-              <>
-                <div className="provider-hint">CLI installed</div>
-                <div className="provider-row-bottom">
+            </span>
+            <span className="provider-name">{providerLabel(s.provider)}</span>
+
+            <span className="provider-actions">
+              <span className="provider-swap">
+                <span className={`provider-status ${tone}`} title={detail}>
+                  {statusText}
+                </span>
+                {s.installed && (
                   <button
-                    className="btn-secondary"
-                    style={{ padding: "4px 10px", fontSize: "0.75rem" }}
+                    className="btn-ghost btn-xs provider-test"
                     onClick={() => runTest(s.provider)}
-                    disabled={result !== undefined && "pending" in result}
+                    disabled={pending}
+                    title={`Run a real request against ${providerLabel(s.provider)}`}
                   >
-                    Test connection
+                    {pending ? "Testing…" : "Test"}
                   </button>
-                  {result && "pending" in result && <span className="provider-hint">checking…</span>}
-                  {result && "ok" in result && (
-                    <span className={result.ok ? "test-ok" : "test-fail"} title={result.message}>
-                      {result.ok ? "connected" : result.message}
-                    </span>
-                  )}
-                </div>
-              </>
-            )}
+                )}
+              </span>
+              <span className={`connection-dot ${dotState}`} title={detail} />
+            </span>
+
+            {!s.installed && <div className="provider-hint">{s.detail}</div>}
           </div>
         );
       })}
-    </div>
+    </>
   );
 }

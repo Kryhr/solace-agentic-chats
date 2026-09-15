@@ -3,6 +3,7 @@ import type {
   AgentStatus,
   ChatMessage,
   CredentialMeta,
+  PendingApproval,
   ProviderId,
   ProviderModelInfo,
   ProviderPermissionInfo,
@@ -78,6 +79,9 @@ export interface ChatArchive {
   channel: "group" | { agentId: string };
   clearedAt: string;
   messages: ChatMessage[];
+  /** Captured server-side at archive time so the label survives the agent later being
+   * removed; absent only on archives saved before this field existed. */
+  channelLabel?: string;
 }
 
 export async function fetchArchives(): Promise<ChatArchive[]> {
@@ -138,7 +142,13 @@ export async function sendChatMessage(text: string): Promise<void> {
   });
 }
 
-type Hello = { type: "hello"; history: ChatMessage[]; agents: AgentConfig[]; statuses: AgentStatus[] };
+type Hello = {
+  type: "hello";
+  history: ChatMessage[];
+  agents: AgentConfig[];
+  statuses: AgentStatus[];
+  approvals: PendingApproval[];
+};
 
 /**
  * A dropped connection (server restart, laptop sleep, network blip) used to just go silent

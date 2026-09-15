@@ -23,7 +23,17 @@ export interface ProjectInfo {
 export function listProjects(): ProjectInfo[] {
   ensureWorkspaceRoot();
   return readdirSync(WORKSPACE_ROOT)
-    .filter((name) => statSync(join(WORKSPACE_ROOT, name)).isDirectory())
+    .filter((name) => {
+      // A project entry can be a directory junction/symlink (e.g. one pointing at a real repo
+      // living elsewhere) whose target can go missing - a moved/renamed/unmounted target
+      // makes statSync throw ENOENT. Unguarded, that took down this whole endpoint (every
+      // project, not just the broken one) with a bare 500.
+      try {
+        return statSync(join(WORKSPACE_ROOT, name)).isDirectory();
+      } catch {
+        return false;
+      }
+    })
     .map((name) => ({ name, path: join(WORKSPACE_ROOT, name) }));
 }
 
