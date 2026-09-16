@@ -423,7 +423,7 @@ export const continueAdapter: ProviderAdapter = {
   // union yet, because seven adapters are being built in parallel and every one of them needs a
   // line in the same shared file. CONTINUE-REGISTRATION.md states the exact line to add; once the
   // orchestrator applies it this becomes a plain `id: "continue"` and the cast must be deleted.
-  id: "continue" as unknown as ProviderAdapter["id"],
+  id: "continue",
   async runTurn({ cwd, prompt, trustLevel, agentId, turnToken, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
     const serverPort = Number(process.env.PORT ?? 4310);
     const globalDir = continueGlobalDir();

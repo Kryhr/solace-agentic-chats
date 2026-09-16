@@ -5395,6 +5395,32 @@ body {
   color: var(--text-muted);
 }
 
+/* A caveat belongs to the blurb above it, so it sits one step closer to it than the card's
+   own between-groups gap - the grouping is carried by the spacing, not by a divider. */
+.cli-card-caveat {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+  line-height: var(--lh-snug);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.cli-card-caveat-label {
+  display: inline-block;
+  margin-right: var(--space-2);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--warn);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  /* Optical: the pill's uppercase run sits high in its box, so a hair of lift lines its
+     midline up with the sentence it introduces. */
+  vertical-align: 1px;
+}
+
 .cli-card-signin {
   display: flex;
   flex-direction: column;

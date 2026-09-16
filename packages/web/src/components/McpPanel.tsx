@@ -499,7 +499,7 @@ export function McpPanel({ agents }: { agents: AgentConfig[] }) {
       )}
 
       <p className="mcp-footnote">
-        These reach agents that run a CLI (Claude Code, Codex, Gemini, Qwen, Copilot). Agents pointed at an API endpoint or a
+        These reach agents that run a CLI (Claude Code, Codex, Gemini, Qwen, Copilot, OpenCode, Crush, Continue, Kilo). Droid and Kimi are the exceptions - neither accepts an MCP server from this app, so nothing here reaches them. Agents pointed at an API endpoint or a
         local model run Solace's own tool loop instead, which has no MCP client yet — registering a server here does nothing
         for those, and the panel would rather say so than let you wonder.
       </p>

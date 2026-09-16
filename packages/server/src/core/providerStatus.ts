@@ -9,6 +9,11 @@ const CLI_BIN: Record<CliProviderId, string> = {
   "qwen-code": "qwen",
   "copilot-cli": "copilot",
   opencode: "opencode",
+  crush: "crush",
+  continue: "cn",
+  droid: "droid",
+  kilo: "kilo",
+  kimi: "kimi",
 };
 
 /** The actual command, on its own, so the UI can show something copy-pasteable rather than a
@@ -22,6 +27,11 @@ export const INSTALL_COMMAND: Record<CliProviderId, string> = {
   "qwen-code": "npm install -g @qwen-code/qwen-code",
   "copilot-cli": "npm install -g @github/copilot",
   opencode: "npm install -g opencode-ai",
+  crush: "npm install -g @charmland/crush",
+  continue: "npm install -g @continuedev/cli",
+  droid: "npm install -g droid",
+  kilo: "npm install -g @kilocode/cli",
+  kimi: "npm install -g @moonshot-ai/kimi-code",
 };
 
 export const LOGIN_COMMAND: Record<CliProviderId, string> = {
@@ -35,6 +45,16 @@ export const LOGIN_COMMAND: Record<CliProviderId, string> = {
   // A real top-level subcommand (confirmed in `opencode --help`, which also lists the
   // `opencode auth logout` counterpart), not an interactive-session sign-in like claude/gemini.
   opencode: "opencode auth login",
+  // `crush login` covers only hyper/copilot/openai; every other provider is configured by
+  // running `crush` once, which is what Crush's own signed-out error says to do.
+  crush: "crush",
+  // Continue has no login subcommand: `cn` opens a session that walks through config.
+  continue: "cn",
+  // Factory signs in from the interactive session via /login (or FACTORY_API_KEY).
+  droid: "droid",
+  // A real subcommand: `kilo auth list` and `kilo auth login` both exist.
+  kilo: "kilo auth login",
+  kimi: "kimi login",
 };
 
 const INSTALL_HINT: Record<CliProviderId, string> = {
@@ -44,6 +64,11 @@ const INSTALL_HINT: Record<CliProviderId, string> = {
   "qwen-code": "npm install -g @qwen-code/qwen-code, then run `qwen` once to log in",
   "copilot-cli": "npm install -g @github/copilot, then run `copilot login` to sign in",
   opencode: "npm install -g opencode-ai, then run `opencode auth login` to sign in",
+  crush: "npm install -g @charmland/crush, then run `crush` once to set up a provider",
+  continue: "npm install -g @continuedev/cli, then run `cn` once to configure a model",
+  droid: "npm install -g droid, then run `droid` once to log in (Factory has no free tier)",
+  kilo: "npm install -g @kilocode/cli, then run `kilo auth login` to sign in",
+  kimi: "npm install -g @moonshot-ai/kimi-code, then run `kimi login` to sign in",
 };
 
 export function isCliProvider(provider: ProviderId): provider is CliProviderId {

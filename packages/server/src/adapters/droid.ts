@@ -193,7 +193,7 @@ export const droidAdapter: ProviderAdapter = {
   // ProviderId union. That file is owned by the orchestrator (parallel agents are adding their
   // own providers to the same union), so the exact edit is specified in DROID-REGISTRATION.md
   // instead of being made here. Once it lands, this cast should be deleted.
-  id: "droid" as ProviderId,
+  id: "droid",
   async runTurn({ cwd, prompt, trustLevel, model, effort, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
     const args = buildDroidArgs({ cwd, trustLevel, model, effort, sessionId });
 

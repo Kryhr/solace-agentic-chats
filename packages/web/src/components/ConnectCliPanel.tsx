@@ -74,7 +74,7 @@ type CardState =
 
 function matches(p: ConnectableProvider, terms: string[]): boolean {
   if (terms.length === 0) return true;
-  const hay = `${p.name} ${p.blurb} ${p.signInCommand ?? ""} ${p.signInNote ?? ""} ${p.provider}`.toLowerCase();
+  const hay = `${p.name} ${p.blurb} ${p.signInCommand ?? ""} ${p.signInNote ?? ""} ${p.caveat ?? ""} ${p.provider}`.toLowerCase();
   return terms.every((t) => hay.includes(t));
 }
 
@@ -229,6 +229,15 @@ export function ConnectCliPanel({
                     {isConnected && <span className="cli-card-badge">Connected</span>}
                   </div>
                   <p className="cli-card-blurb">{p.blurb}</p>
+                  {/* Sits with the blurb rather than down by the buttons: it is part of what
+                      this provider IS, and the point is to be read before Add connection, not
+                      discovered afterwards. */}
+                  {p.caveat && (
+                    <p className="cli-card-caveat">
+                      <span className="cli-card-caveat-label">Limitation</span>
+                      {p.caveat}
+                    </p>
+                  )}
                 </div>
 
                 <div className="cli-card-signin">

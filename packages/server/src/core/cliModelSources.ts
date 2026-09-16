@@ -512,6 +512,78 @@ export function parseOpencodeModels(stdout: string): ModelOption[] {
   return out;
 }
 
+/**
+ * Kilo is a fork of OpenCode and `kilo models` prints the same shape - but two differences were
+ * measured against its real signed-out output (310 lines), and both break the OpenCode parser:
+ *
+ * - Some ids carry `~` in the provider segment (`kilo/~anthropic/claude-opus-latest`). The
+ *   OpenCode regex has no `~`, so 18 of the 310 lines are dropped - and they are the headline
+ *   `~anthropic` / `~google` / `~deepseek` aliases a user would actually pick.
+ * - Kilo ids are THREE segments, not two. Taking the segment before the first `/` as the family
+ *   groups all 310 under "kilo", which is no grouping at all. The SECOND segment is the family;
+ *   the whole string stays the id, because that is what `-m` takes.
+ */
+export function parseKiloModels(stdout: string): ModelOption[] {
+  const out: ModelOption[] = [];
+  const seen = new Set<string>();
+  for (const raw of stdout.split(/\r?\n/)) {
+    const line = raw
+      .replace(/^\uFEFF/, "")
+      .replace(/\u001b\[[0-9;]*m/g, "")
+      .trim();
+    if (!line) continue;
+    const match = /^([A-Za-z0-9._~-]+)\/([A-Za-z0-9._~-]+)\/([A-Za-z0-9._:\/~-]+)$/.exec(line);
+    if (!match) continue;
+    const [id, , family, name] = match;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, label: name, family, familyLabel: familyLabel(family), sourceIndex: 0 });
+  }
+  return out;
+}
+
+/**
+ * `crush models` prints every model id Crush knows, one `provider/model` per line, in exactly
+ * the form `crush run -m` accepts. It exits 0 and needs no auth. The list is very large
+ * (thousands of lines - every provider Crush knows about, not only the configured ones), which
+ * is a property of the CLI, not a bug here. The shape is identical to OpenCode's, so this is a
+ * named alias rather than a copy: if that parser is corrected, Crush is corrected with it.
+ */
+export function parseCrushModels(stdout: string): ModelOption[] {
+  return parseOpencodeModels(stdout);
+}
+
+/**
+ * Droid has no models command, but its model validation is LOCAL and runs before the auth
+ * check, so an invalid `-m` prints the whole built-in catalog while signed out:
+ *
+ *   Invalid model: __invalid__
+ *
+ *   Available built-in models:
+ *     auto, claude-opus-5, gpt-6-astra, ... (50 ids on 0.220.0)
+ *
+ * Two measured details a naive reader would get wrong: with stdin CLOSED the message goes to
+ * stderr only (stdout is empty) and appears ONCE; with a prompt on stdin it is emitted twice.
+ * Exit code is 1 either way, and that is normal here rather than a failure.
+ */
+export function parseDroidModels(output: string): ModelOption[] {
+  const marker = output.indexOf("Available built-in models:");
+  if (marker === -1) return [];
+  const rest = output.slice(marker + "Available built-in models:".length);
+  // The list ends at the first blank line - anything after it is the "No custom models
+  // configured" footer, which is prose, not ids.
+  const block = rest.split(/\r?\n\s*\r?\n/)[0] ?? "";
+  const out: ModelOption[] = [];
+  const seen = new Set<string>();
+  for (const piece of block.split(",")) {
+    const id = piece.replace(/\u001b\[[0-9;]*m/g, "").trim();
+    if (!id || !/^[A-Za-z0-9._:\/-]+$/.test(id) || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, label: id, family: "droid", familyLabel: "Factory built-in", sourceIndex: 0 });
+  }
+  return out;
+}
+
 /** Re-tags every option with the index of the source that produced it, and drops ids an
  * earlier (more authoritative) source already supplied. Order of `groups` is the order of
  * authority, so a live answer always wins over a shipped constant. */

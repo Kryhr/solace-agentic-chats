@@ -48,6 +48,35 @@ const GEMINI_MODES: TrustLevel[] = ["plan", "manual", "acceptEdits", "bypassPerm
 const QWEN_MODES: TrustLevel[] = ["plan", "manual", "acceptEdits", "bypassPermissions", "auto"];
 const COPILOT_MODES: TrustLevel[] = ["plan", "acceptEdits", "bypassPermissions"];
 const OPENCODE_MODES: TrustLevel[] = ["plan", "acceptEdits", "bypassPermissions"];
+/**
+ * Crush: headless `crush run` has NO approval mechanism - `--yolo` exists only on the
+ * interactive root command and a headless turn with no permissions config ran bash and wrote a
+ * file without asking. `permissions.allowed_tools` is a PRE-approval list, not a restrictive
+ * allowlist; only `options.disabled_tools` genuinely restricts, so the three modes below are
+ * expressed by removing tools outright. No "manual": there is no external approval hook.
+ */
+const CRUSH_MODES: TrustLevel[] = ["plan", "acceptEdits", "bypassPermissions"];
+/** Continue (`cn`): same shape as Crush - three levels, no human-in-the-loop hook headlessly. */
+const CONTINUE_MODES: TrustLevel[] = ["plan", "acceptEdits", "bypassPermissions"];
+/**
+ * Droid (Factory): `--auto low|medium|high` is a real documented tier ladder, so "auto" is
+ * offered here where it is refused elsewhere. No "manual": `droid exec` has no path to a human
+ * (`request_permission` exists only on the stream-jsonrpc surface, which this app does not use).
+ * NOTE: this mapping rests on Factory's documented tier boundaries, not on observed behaviour -
+ * the CLI was never signed in on this machine, so no turn could be run to confirm it.
+ */
+const DROID_MODES: TrustLevel[] = ["plan", "acceptEdits", "bypassPermissions", "auto"];
+/**
+ * Kilo is a fork of OpenCode and takes the same permissions block, so it gets the same three.
+ * No "manual": a headless "ask" is auto-rejected and never reaches a human.
+ */
+const KILO_MODES: TrustLevel[] = ["plan", "acceptEdits", "bypassPermissions"];
+/**
+ * Kimi: ONE level, and it is the permissive one. Headless `kimi -p` rejects --yolo, --auto AND
+ * --plan, and explicit deny rules are ignored - it auto-approves everything. Offering anything
+ * narrower would promise a restriction the CLI does not implement.
+ */
+const KIMI_MODES: TrustLevel[] = ["bypassPermissions"];
 
 const CATALOG: Record<CliProviderId, ProviderPermissionInfo> = {
   "claude-code": { provider: "claude-code", availableModes: CLAUDE_MODES },
@@ -56,6 +85,11 @@ const CATALOG: Record<CliProviderId, ProviderPermissionInfo> = {
   "qwen-code": { provider: "qwen-code", availableModes: QWEN_MODES },
   "copilot-cli": { provider: "copilot-cli", availableModes: COPILOT_MODES },
   opencode: { provider: "opencode", availableModes: OPENCODE_MODES },
+  crush: { provider: "crush", availableModes: CRUSH_MODES },
+  continue: { provider: "continue", availableModes: CONTINUE_MODES },
+  droid: { provider: "droid", availableModes: DROID_MODES },
+  kilo: { provider: "kilo", availableModes: KILO_MODES },
+  kimi: { provider: "kimi", availableModes: KIMI_MODES },
 };
 
 export function getPermissionCatalog(): ProviderPermissionInfo[] {

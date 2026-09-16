@@ -40,7 +40,7 @@ export const CONNECTOR_KINDS: ConnectorKind[] = [
     // exists, and it was previously the least prominent row in the panel.
     id: "cli",
     title: "Coding agent CLI",
-    blurb: "Claude Code, Codex, Gemini or Qwen, signed in on this machine against your own subscription.",
+    blurb: "Claude Code, Codex, Copilot, Gemini, Qwen and six more, signed in on this machine against your own subscription.",
     // No backticks in any string on this record: these are rendered as plain text in the Add
     // connection modal, so markdown punctuation shows up literally on screen.
     verification: "Runs the CLI's own --version and reports what it printed.",

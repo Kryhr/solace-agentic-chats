@@ -230,7 +230,7 @@ interface KimiLine {
 }
 
 export const kimiAdapter: ProviderAdapter = {
-  id: "kimi" as ProviderAdapter["id"],
+  id: "kimi",
   async runTurn({ cwd, prompt, model, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
     const entry = findKimiEntry();
     if (!entry) {

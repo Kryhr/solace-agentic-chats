@@ -14,6 +14,13 @@ const PROVIDER_STYLE: Record<Exclude<ProviderId, "custom">, { color: string; lab
   "qwen-code": { color: "#c084e0", label: "qwen" },
   "copilot-cli": { color: "#9aa4b2", label: "copilot" },
   opencode: { color: "#e0b341", label: "opencode" },
+  // Charm's pink, Continue's blue, Factory's amber, Kilo's violet, Moonshot's teal - picked to
+  // sit apart from each other at 13px rather than to match any trademark exactly.
+  crush: { color: "#ff5f87", label: "crush" },
+  continue: { color: "#5aa9e6", label: "continue" },
+  droid: { color: "#e8a13a", label: "droid" },
+  kilo: { color: "#a78bfa", label: "kilo" },
+  kimi: { color: "#4fd1c5", label: "kimi" },
   local: { color: "#7fb069", label: "local" },
 };
 
@@ -54,6 +61,44 @@ function GlyphFor({ provider }: { provider: ProviderId }) {
         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M9 4H5v16h4M15 4h4v16h-4" />
           <circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" />
+        </svg>
+      );
+    case "crush":
+      // a heart outline - Charm's house mark is a heart, abstracted to a stroke
+      return (
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+          <path d="M12 20s-7-4.5-7-9.5A3.8 3.8 0 0 1 12 8a3.8 3.8 0 0 1 7 2.5c0 5-7 9.5-7 9.5z" />
+        </svg>
+      );
+    case "continue":
+      // a play/forward chevron pair - "continue"
+      return (
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M6 5l7 7-7 7M15 5l4 7-4 7" />
+        </svg>
+      );
+    case "droid":
+      // a robot head, flat-topped so it does not read as qwen's hexagon
+      return (
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+          <rect x="4" y="7" width="16" height="12" rx="3" />
+          <path d="M12 3v4" strokeLinecap="round" />
+          <circle cx="9" cy="13" r="1.2" fill="currentColor" stroke="none" />
+          <circle cx="15" cy="13" r="1.2" fill="currentColor" stroke="none" />
+        </svg>
+      );
+    case "kilo":
+      // a stacked pair of bars - "kilo", a unit of scale
+      return (
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          <path d="M5 8h14M5 12h14M5 16h9" />
+        </svg>
+      );
+    case "kimi":
+      // a crescent moon - Moonshot
+      return (
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+          <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z" />
         </svg>
       );
     case "local":

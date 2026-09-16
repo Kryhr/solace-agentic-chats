@@ -385,7 +385,7 @@ export function isNoProviderError(text: string): boolean {
 }
 
 export const crushAdapter: ProviderAdapter = {
-  id: "crush" as ProviderAdapter["id"],
+  id: "crush",
   async runTurn({ cwd, prompt, trustLevel, model, effort, agentId, turnToken, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
     const serverPort = Number(process.env.PORT ?? 4310);
     const config = buildCrushConfig(trustLevel, mcpServersForAgent(agentId));

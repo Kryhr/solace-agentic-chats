@@ -8,6 +8,9 @@ import {
   claudeAliasOptions,
   mergeSourcedOptions,
   parseOpencodeModels,
+  parseKiloModels,
+  parseCrushModels,
+  parseDroidModels,
   parseClaudeAdditionalModelOptions,
   parseClaudeBuildChunk,
   parseCodexModelCatalog,
@@ -437,6 +440,73 @@ async function opencodeModels(): Promise<{ models: ModelOption[]; sources: Model
   }
 }
 
+/**
+ * `crush models` and `kilo models` are both plain model-listing commands that exit 0 and work
+ * signed out, so both are read live in the same shape as `opencode models`.
+ */
+async function listedModels(
+  bin: string,
+  parse: (stdout: string) => ModelOption[],
+  origin: string,
+  signedOutHint: string,
+): Promise<{ models: ModelOption[]; sources: ModelCatalogSource[]; error?: string }> {
+  try {
+    const stdout = await runForStdout(bin, ["models"], 20_000);
+    const models = parse(stdout);
+    if (models.length === 0) {
+      return { models: [], sources: [], error: `\`${bin} models\` ran but listed nothing. ${signedOutHint}` };
+    }
+    return {
+      models: mergeSourcedOptions([models]),
+      sources: [{ kind: "cli-live", origin, readAt: new Date().toISOString(), count: models.length }],
+    };
+  } catch (err) {
+    return { models: [], sources: [], error: (err as Error).message };
+  }
+}
+
+/**
+ * Droid's catalog comes out of its own rejection message (see parseDroidModels). This needs its
+ * own runner rather than runForStdout: with stdin closed the list goes to STDERR and the process
+ * exits 1, both of which runForStdout treats as failure.
+ */
+function droidModels(): Promise<{ models: ModelOption[]; sources: ModelCatalogSource[]; error?: string }> {
+  return new Promise((resolve) => {
+    let out = "";
+    const child = spawnCli("droid", ["exec", "-m", "__invalid__"], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const timer = setTimeout(() => {
+      child.kill();
+      resolve({ models: [], sources: [], error: "`droid exec -m __invalid__` did not answer within 20000ms" });
+    }, 20_000);
+    child.stdout?.on("data", (d) => (out += d));
+    child.stderr?.on("data", (d) => (out += d));
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      resolve({ models: [], sources: [], error: (err as Error).message });
+    });
+    child.on("close", () => {
+      clearTimeout(timer);
+      const models = parseDroidModels(out);
+      if (models.length === 0) {
+        resolve({ models: [], sources: [], error: "`droid exec -m __invalid__` did not print a built-in model list." });
+        return;
+      }
+      resolve({
+        models: mergeSourcedOptions([models]),
+        sources: [
+          {
+            kind: "cli-artifact",
+            // Named for what it is: the CLI's compiled-in roster, not an account-scoped list.
+            origin: "Droid's built-in model list, read from its own rejection of an invalid --model",
+            readAt: new Date().toISOString(),
+            count: models.length,
+          },
+        ],
+      });
+    });
+  });
+}
+
 // ---------------------------------------------------------------------------------------
 // Assembly + cache
 // ---------------------------------------------------------------------------------------
@@ -555,13 +625,16 @@ export async function getModelCatalog(): Promise<ProviderModelInfo[]> {
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.value;
 
   const codexDefault = detectCodexDefault();
-  const [claude, codex, gemini, qwen, copilot, opencode] = await Promise.all([
+  const [claude, codex, gemini, qwen, copilot, opencode, crush, kilo, droid] = await Promise.all([
     claudeModels().catch((err) => ({ models: [], sources: [], error: (err as Error).message })),
     codexModels().catch((err) => ({ models: [], sources: [], error: (err as Error).message })),
     geminiModels().catch((err) => ({ models: [], sources: [], error: (err as Error).message })),
     qwenModels().catch((err) => ({ models: [], sources: [], error: (err as Error).message })),
     copilotModels().catch((err) => ({ models: [], sources: [], error: (err as Error).message })),
     opencodeModels().catch((err) => ({ models: [], sources: [], error: (err as Error).message })),
+    listedModels("crush", parseCrushModels, "`crush models` (every model Crush knows, not only the configured ones)", "Run `crush` once to set up a provider.").catch((err) => ({ models: [], sources: [], error: (err as Error).message })),
+    listedModels("kilo", parseKiloModels, "`kilo models` (the models Kilo offers; this command answers signed out)", "Run `kilo auth login` if this machine is not signed in.").catch((err) => ({ models: [], sources: [], error: (err as Error).message })),
+    droidModels().catch((err) => ({ models: [], sources: [], error: (err as Error).message })),
   ]);
 
   const catalog: Record<CliProviderId, ProviderModelInfo> = {
@@ -633,6 +706,66 @@ export async function getModelCatalog(): Promise<ProviderModelInfo[]> {
       // No per-machine default to read. OpenCode stores its selected model in its own state,
       // not in a documented config key this app can honestly parse, so this is left undefined
       // rather than asserting a default that may not be the one in force.
+      currentDefaultModel: undefined,
+    },
+    crush: {
+      provider: "crush",
+      models: crush.models,
+      sources: crush.sources,
+      sourceError: crush.error,
+      // `crush run --reasoning-effort` takes low/medium/high, but the CLI's own help says the
+      // accepted levels DEPEND ON THE MODEL and that unsupported values are rejected with the
+      // accepted list. Not verified per model, so this is the common case, not an exhaustive set.
+      effortLevels: ["low", "medium", "high"],
+      // The default model lives in `models.large` of whichever crush.json applies - global,
+      // repo-local, or neither. Not readable honestly, so not asserted.
+      currentDefaultModel: undefined,
+    },
+    continue: {
+      provider: "continue",
+      // Deliberately empty, and not because a source failed. `cn --model` cannot select a
+      // configured model: with two models in config.yaml, `cn --model beta` still hit alpha's
+      // endpoint, and an unresolvable slug is silently ignored rather than rejected. The first
+      // chat-role model in the active config always wins. Offering a picker here would be
+      // offering a control that does nothing.
+      models: [],
+      sources: [],
+      sourceError: "Continue takes its model from ~/.continue/config.yaml. `cn --model` cannot override it, so there is nothing to pick here.",
+      effortLevels: [],
+      currentDefaultModel: undefined,
+    },
+    droid: {
+      provider: "droid",
+      models: droid.models,
+      sources: droid.sources,
+      sourceError: droid.error,
+      // The CLI's own enforced enum, captured from its rejection of `-r bogus`:
+      // "Allowed values: none, dynamic, off, minimal, low, medium, high, xhigh, max".
+      effortLevels: ["none", "dynamic", "off", "minimal", "low", "medium", "high", "xhigh", "max"],
+      currentDefaultModel: undefined,
+    },
+    kilo: {
+      provider: "kilo",
+      models: kilo.models,
+      sources: kilo.sources,
+      sourceError: kilo.error,
+      // Inherited from OpenCode, which Kilo is a fork of: --variant is documented as
+      // "provider-specific reasoning effort, e.g., high, max, minimal" - free-form text in the
+      // help, not a choices list the CLI enforces.
+      effortLevels: ["minimal", "high", "max"],
+      currentDefaultModel: undefined,
+    },
+    kimi: {
+      provider: "kimi",
+      // `kimi provider list --json` would list the aliases `-m` accepts, but the same JSON
+      // carries provider apiKey values in cleartext. Reading it is not worth the chance of a key
+      // reaching a log or an error string, so the model field stays free text for now.
+      models: [],
+      sources: [],
+      sourceError: "Kimi has no model-listing command that does not also print API keys, so type the alias from your Kimi config (for example k2).",
+      // Kimi has no per-invocation effort flag at all; its thinking settings live in
+      // config.toml, which this adapter does not write.
+      effortLevels: [],
       currentDefaultModel: undefined,
     },
   };

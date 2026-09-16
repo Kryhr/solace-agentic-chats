@@ -50,6 +50,12 @@ export interface ConnectableProvider {
   signInSource: string;
   /** The real command that puts the binary on PATH, for the refusal message and the card. */
   installCommand: string;
+  /**
+   * A limitation the user should know BEFORE connecting - not a disclaimer, a fact about what
+   * this provider cannot do in this app. Shown on the card. Left undefined when a provider has
+   * no such caveat, so its presence means something.
+   */
+  caveat?: string;
 }
 
 export const CONNECTABLE_PROVIDERS: ConnectableProvider[] = [
@@ -110,6 +116,54 @@ export const CONNECTABLE_PROVIDERS: ConnectableProvider[] = [
     signInCommand: "opencode auth login",
     signInSource: "`opencode auth --help` on 2026-09-16 lists list, login and logout",
     installCommand: INSTALL_COMMAND.opencode,
+  },
+  {
+    provider: "crush",
+    name: "Crush",
+    blurb: "Charm's terminal agent, bringing whichever provider you configure it with.",
+    // `crush login` exists but covers only hyper/copilot/openai; every other provider is set up
+    // by running `crush` once, which is what Crush's own signed-out error says to do.
+    signInNote: "crush login covers only hyper, copilot and openai: run crush once to set up any other provider.",
+    signInSource: "`crush --help` on 2026-09-16, against the real v0.95.0 binary",
+    installCommand: INSTALL_COMMAND.crush,
+    caveat: "No live streaming: `crush run` prints only the final answer, so tool calls and usage are replayed after the turn ends rather than as they happen.",
+  },
+  {
+    provider: "continue",
+    name: "Continue",
+    blurb: "The Continue CLI (cn), running whichever model your ~/.continue/config.yaml names.",
+    signInNote: "No login subcommand: run cn once and it walks through configuring a model.",
+    signInSource: "`cn --help` on 2026-09-16, against the real binary",
+    installCommand: INSTALL_COMMAND.continue,
+    caveat: "The model comes from your config.yaml and cannot be chosen here: --model is silently ignored for anything already configured.",
+  },
+  {
+    provider: "droid",
+    name: "Droid",
+    blurb: "Factory's terminal agent. Paid only - there is no free tier.",
+    signInNote: "Run droid once and sign in from the session with /login, or set FACTORY_API_KEY.",
+    signInSource: "`droid --help` and `droid doctor` on 2026-09-16",
+    installCommand: INSTALL_COMMAND.droid,
+    caveat: "Never signed in on this machine, so no Solace turn has ever completed against it. It also cannot call back into the group chat: the MCP bridge could not be registered.",
+  },
+  {
+    provider: "kilo",
+    name: "Kilo",
+    blurb: "Kilo Code's terminal agent, a fork of OpenCode with its own model routing.",
+    // `kilo auth list` and `kilo auth login` are both real subcommands.
+    signInCommand: "kilo auth login",
+    signInSource: "`kilo auth --help` on 2026-09-16 lists list, login and logout",
+    installCommand: INSTALL_COMMAND.kilo,
+    caveat: "Never signed in on this machine, so no Solace turn has ever completed against it.",
+  },
+  {
+    provider: "kimi",
+    name: "Kimi Code",
+    blurb: "Moonshot's terminal agent, running on a Kimi account.",
+    signInCommand: "kimi login",
+    signInSource: "`kimi --help` on 2026-09-16 lists login",
+    installCommand: INSTALL_COMMAND.kimi,
+    caveat: "The most limited provider here: it auto-approves every action (no plan or ask mode exists headlessly), reports no usage or cost, cannot call back into the group chat, and takes its prompt on the command line - so a long conversation is refused before it starts.",
   },
 ];
 

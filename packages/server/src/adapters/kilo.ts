@@ -299,7 +299,7 @@ export const kiloAdapter: ProviderAdapter = {
   // ProviderId union. That file is owned by the orchestrator (parallel agents are adding their
   // own providers to the same union), so the exact edit is specified in KILO-REGISTRATION.md
   // instead of being made here. Once it lands, this cast should be deleted.
-  id: "kilo" as ProviderId,
+  id: "kilo",
   async runTurn({ cwd, prompt, trustLevel, model, effort, agentId, turnToken, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
     const serverPort = Number(process.env.PORT ?? 4310);
     // Not `sessionId` directly: a session minted under a different trust level must not be

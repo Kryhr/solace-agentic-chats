@@ -256,6 +256,8 @@ export interface ConnectableProvider {
   signInNote?: string;
   signInSource: string;
   installCommand: string;
+  /** A real limitation of this provider inside Solace, shown before the user connects it. */
+  caveat?: string;
 }
 
 /** The connected list plus the catalogue to offer, in one round trip. */

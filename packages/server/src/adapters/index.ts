@@ -9,6 +9,11 @@ import { geminiCliAdapter } from "./gemini-cli";
 import { qwenCodeAdapter } from "./qwen-code";
 import { copilotCliAdapter } from "./copilot-cli";
 import { opencodeAdapter } from "./opencode";
+import { crushAdapter } from "./crush";
+import { continueAdapter } from "./continue";
+import { droidAdapter } from "./droid";
+import { kiloAdapter } from "./kilo";
+import { kimiAdapter } from "./kimi";
 
 const cliAdapters: Record<CliProviderId, ProviderAdapter> = {
   "claude-code": claudeCodeAdapter,
@@ -17,6 +22,11 @@ const cliAdapters: Record<CliProviderId, ProviderAdapter> = {
   "qwen-code": qwenCodeAdapter,
   "copilot-cli": copilotCliAdapter,
   opencode: opencodeAdapter,
+  crush: crushAdapter,
+  continue: continueAdapter,
+  droid: droidAdapter,
+  kilo: kiloAdapter,
+  kimi: kimiAdapter,
 };
 
 // Only claude-code and codex-cli have a direct-API-key alternative today. Gemini and Qwen have

@@ -21,7 +21,7 @@ import { effortOptionsFor, initialModelFor } from "../lib/modelOptions";
 import { ModelPicker, ModelSourceNote } from "./ModelPicker";
 import { permissionOptionsFor, TRUST_LABELS } from "../lib/permissionOptions";
 
-const PROVIDERS: ProviderId[] = ["claude-code", "codex-cli", "gemini-cli", "qwen-code", "copilot-cli", "opencode", "custom", "local"];
+const PROVIDERS: ProviderId[] = ["claude-code", "codex-cli", "gemini-cli", "qwen-code", "copilot-cli", "opencode", "crush", "continue", "droid", "kilo", "kimi", "custom", "local"];
 const NEW_PROJECT_VALUE = "__new__";
 /** "Give it its own folder, named after the handle" - the default, so adding an agent never
  * requires answering a question about projects. */
@@ -34,9 +34,9 @@ const NEW_KEY_VALUE = "__new__";
  * Only these are API-key backed, and they are exactly the connection kinds that have no CLI:
  * an arbitrary OpenAI-compatible endpoint, hosted or local.
  *
- * A CLI provider is NEVER asked for a key. Claude Code, Codex, Gemini, Qwen, Copilot and
- * OpenCode each own their own sign-in - you authenticate them once in the terminal, against
- * your subscription, and this app shells out to that. Offering "API key" as an alternative
+ * A CLI provider is NEVER asked for a key. Every coding-agent CLI in the list owns its own
+ * sign-in - you authenticate it once in the terminal, against your subscription, and this app
+ * shells out to that. Offering "API key" as an alternative
  * sign-in method for those blurred two genuinely different things together: a CLI you have
  * logged in, and a raw API endpoint you pay per token for. The app already has a separate
  * connection type for the second one.

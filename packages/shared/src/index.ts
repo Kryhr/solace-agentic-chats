@@ -77,6 +77,11 @@ export type ProviderId =
   | "qwen-code"
   | "copilot-cli"
   | "opencode"
+  | "crush"
+  | "continue"
+  | "droid"
+  | "kilo"
+  | "kimi"
   | "custom"
   | "local";
 
