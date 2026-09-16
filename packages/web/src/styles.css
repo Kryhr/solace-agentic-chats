@@ -2898,18 +2898,25 @@ body {
    ========================================================================= */
 
 /* ---- readable measure --------------------------------------------------
-   The rail now caps the column at 820px, which is already close to a
-   comfortable measure at --text-base. This stays as the belt to that
-   braces: on a very wide viewport where the column is at its cap, prose
-   still tops out around 70 characters rather than filling the row. */
+   70ch is the classic prose measure, and it was too narrow here. It works out
+   at ~522px, so on a 1360px window every message hugged the left third of a
+   column that was allowed 1180px, with most of the pane empty beside it.
+
+   A chat transcript is not an article: it is mostly short turns, code paths,
+   file lists and tool lines, and the eye is re-anchored constantly by the
+   author's name rather than tracking long unbroken paragraphs. So the measure
+   is widened rather than removed - text still starts hard left and still stops
+   before it becomes a strip across a wide monitor. Removing the cap entirely
+   would put 150-character lines on an ultrawide, which is genuinely worse to
+   read than the too-narrow version. */
 .message .body {
-  max-width: 70ch;
+  max-width: 96ch;
 }
 /* Mono runs narrower per character, so it gets its own cap rather than
    inheriting a measure tuned for the sans face. */
 .message .body.tool-use,
 .message .body.error-line {
-  max-width: 88ch;
+  max-width: 110ch;
 }
 
 /* ---- group chat header -------------------------------------------------
@@ -4376,4 +4383,72 @@ body {
 
 .credential-row .provider-status {
   max-width: 64px;
+}
+
+/* ---- jump to the newest message ----------------------------------------
+   Appears only once the reader has scrolled up far enough that new messages are
+   landing off-screen, so it is absent for the whole of a normal conversation.
+
+   Deliberately NOT absolutely positioned: .chat is a plain flex column with no
+   positioning context, so an absolute button would resolve against some
+   ancestor further up and drift. Instead it is a flex child between the
+   transcript and the composer, pulled back up by exactly its own height so it
+   floats over the end of the transcript and adds nothing to the layout - the
+   composer does not move when it appears. */
+.jump-to-bottom {
+  align-self: center;
+  position: relative;
+  z-index: 3;
+  margin-top: calc(-32px - var(--space-2));
+  margin-bottom: var(--space-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  color: var(--text-muted);
+  cursor: pointer;
+  box-shadow: var(--shadow-md);
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease,
+    transform 0.1s ease;
+  animation: jump-in var(--dur-2) var(--ease-out) both;
+}
+
+.jump-to-bottom:hover {
+  background: var(--surface-1);
+  color: var(--text);
+  border-color: var(--accent-border);
+}
+
+.jump-to-bottom:active {
+  transform: scale(0.94);
+}
+
+.jump-to-bottom:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+
+@keyframes jump-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* The button still appears, it just does not travel. */
+@media (prefers-reduced-motion: reduce) {
+  .jump-to-bottom {
+    animation: none;
+  }
 }

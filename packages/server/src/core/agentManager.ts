@@ -266,6 +266,12 @@ const HOUSE_STYLE = [
   "- Prose over bullet soup. Use a list when the content is genuinely a list, not as a default layout.",
   "- No preamble, no filler, no restating instructions back. Start with the substance.",
   "- Keep it proportionate: a one-line change deserves a one-line report.",
+  // Observed live: codex reported its own work as "codex removed the superseded prototype
+  // files after verifying they were unreferenced". Every message already carries its author's
+  // name in the UI, so narrating yourself in the third person reads like a report ABOUT
+  // somebody else - and in a room where several agents are doing similar work, it is genuinely
+  // ambiguous whether the speaker did it or is describing what a teammate did.
+  "- Write about your own work in the first person: \"I removed the dead files\", not \"codex removed the dead files\". Your name is already on the message. Use other agents' handles only when you mean THEM.",
   "If you have post_to_group, send a short update when you start something substantial, when you",
   "commit to a direction, and when you hand work off - so the others are not waiting in the dark.",
 ].join("\n");
