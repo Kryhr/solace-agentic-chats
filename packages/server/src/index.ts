@@ -17,6 +17,7 @@ import { ArchiveStore } from "./core/archiveStore";
 import { SettingsStore } from "./core/settingsStore";
 import { getCopilotQuota } from "./core/copilotQuota";
 import { CoordinationBoard } from "./core/coordination";
+import { isAllowedOrigin } from "./core/originPolicy";
 import { tryHandleCommand } from "./core/commands";
 import { checkGithubAuth, checkGithubConnection } from "./core/github";
 import {
@@ -51,11 +52,27 @@ import type { Block, ProviderId } from "@solace/shared";
 
 const PORT = Number(process.env.PORT ?? 4310);
 
+/**
+ * Loopback by DEFAULT. This server holds a credential vault (SSH keys, passwords, API tokens),
+ * can reveal those secrets in plaintext over HTTP, and can create an agent that runs shell
+ * commands unattended - and none of its /api routes require authentication, because until now
+ * the only caller was a browser tab on the same machine.
+ *
+ * It used to bind 0.0.0.0 so the UI could be opened from another device. That also meant every
+ * other device on the network could POST /api/credentials/:id/reveal. Opening the UI from a
+ * phone is a real want (see the roadmap), so the capability is kept - but as something the user
+ * turns on deliberately, with SOLACE_HOST=0.0.0.0, rather than the default nobody chose.
+ */
+const HOST = process.env.SOLACE_HOST ?? "127.0.0.1";
+
 async function main() {
   ensureWorkspaceRoot();
 
   const app = Fastify({ logger: true });
-  await app.register(cors, { origin: true });
+  await app.register(cors, {
+    origin: (origin, cb) => cb(null, isAllowedOrigin(origin ?? undefined)),
+    credentials: true,
+  });
   await app.register(websocketPlugin);
 
   const persisted = loadState(WORKSPACE_ROOT);
@@ -883,8 +900,18 @@ async function main() {
     return { ok: true };
   });
 
-  await app.listen({ port: PORT, host: "0.0.0.0" });
-  app.log.info(`solace-agentic-chats server listening on http://localhost:${PORT}`);
+  await app.listen({ port: PORT, host: HOST });
+  app.log.info(`Solace server listening on http://localhost:${PORT}`);
+  if (HOST !== "127.0.0.1") {
+    // Said loudly, every start, because this exposes a plaintext credential vault and unattended
+    // shell execution to every device on the network, and nothing else on this server will stop
+    // them: the /api routes have no authentication of any kind.
+    app.log.warn(
+      `SOLACE_HOST=${HOST}: this server is reachable from other devices on your network. ` +
+        `It has no authentication, and it can reveal saved credentials and run commands. ` +
+        `Only do this on a network you trust.`,
+    );
+  }
   app.log.info(`workspace root: ${WORKSPACE_ROOT}`);
 }
 
