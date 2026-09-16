@@ -19,6 +19,7 @@ import { parseMentions } from "./mentions";
 import { RateLimitStore } from "./rateLimits";
 import { clearCopilotQuotaCache, getCopilotQuota } from "./copilotQuota";
 import { CoordinationBoard } from "./coordination";
+import { buildSkillsIndex } from "./skills";
 import type { Block } from "@solace/shared";
 import { SettingsStore } from "./settingsStore";
 import type { ApprovalRegistry } from "./approvalRegistry";
@@ -1506,7 +1507,20 @@ ${text}` : text;
     // The house style rides along with the context block, so it follows the same
     // send-once-per-session rule and costs nothing on every later turn.
     const coordination = this.coordinationBlock(chatId, self);
-    return `${identity}${roster}${coordination}\n\n${HOUSE_STYLE}]\n\n[group chat message from ${fromHandle}]: ${text}`;
+    // The skills catalogue is ~3.3k tokens, and this method runs for EVERY group message an
+    // agent receives - so it is sent only on the first turn of a session, where "session" is
+    // this agent's provider conversation for the folder it is about to work in. After that the
+    // agent has already been told, and the CLI's own session carries it forward.
+    const skills = this.sessionIsNew(runtime, chatId) ? `\n\n${buildSkillsIndex()}` : "";
+    return `${identity}${roster}${coordination}\n\n${HOUSE_STYLE}]${skills}\n\n[group chat message from ${fromHandle}]: ${text}`;
+  }
+
+  /** Is this the first turn of this agent's conversation for the folder this chat works in?
+   * Used to send once-per-session context - the skills catalogue - without re-sending it on
+   * every single message. */
+  private sessionIsNew(runtime: AgentRuntime | undefined, chatId: string): boolean {
+    if (!runtime) return false;
+    return !runtime.sessions.has(sessionKey(this.chats.workingDirectoryFor(runtime.config, chatId)));
   }
 
   /**

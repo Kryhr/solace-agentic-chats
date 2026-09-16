@@ -1,6 +1,6 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { spawnCli } from "./spawnCli";
 import { WORKSPACE_ROOT, ensureWorkspaceRoot, listProjects, type ProjectInfo } from "./workspace";
 
@@ -273,4 +273,57 @@ export function isKnownSkillSource(sourcePath: string): boolean {
 }
 export function isKnownProjectPath(projectPath: string): boolean {
   return listProjects().some((p) => p.path === projectPath);
+}
+
+/** How much of each skill's own description goes into the index handed to an agent. Long enough
+ * to carry the "use this when..." trigger the descriptions open with, short enough that 96
+ * skills stay affordable. Measured: ~3.3k tokens for the whole catalogue at this length. */
+const SKILL_BLURB_CHARS = 150;
+
+/**
+ * The catalogue of skills, written for an agent rather than for the Skills page.
+ *
+ * Agents previously had NO idea these existed: the group context block never mentioned skills
+ * at all, and only 2 of 96 were installed into any project folder. So an agent asked to build a
+ * front end simply did not know there were front-end skills to read, and the work showed it -
+ * two full site builds shipped with no favicon, which one of the installed-nowhere skills
+ * covers explicitly.
+ *
+ * Deliberately NOT grouped into hand-written categories ("front-end", "back-end", ...). Any
+ * such mapping is a second list to maintain that silently goes stale the moment a skill is
+ * added or renamed, and this repo already had one honest-catalogue rule: read the real thing,
+ * never a copy. Each skill's own description opens with when to use it, so the matching is left
+ * to the reader with the real text in front of it.
+ *
+ * Returns "" when there are no skills, so a machine with none pays nothing for the feature.
+ */
+export function buildSkillsIndex(skills: SkillInfo[] = listAllSkills()): string {
+  if (skills.length === 0) return "";
+  // Skills nearly all live under one root (76 of 96 in ~/.claude/skills, the rest under an
+  // imported repo), so the root is stated once rather than repeated on all 96 lines - that
+  // alone was ~4,800 characters of the block. A skill whose folder does not match its own
+  // root's name still prints its full path, so nothing becomes unreadable to save space.
+  const rootCounts = new Map<string, number>();
+  for (const s of skills) rootCounts.set(dirname(s.sourcePath), (rootCounts.get(dirname(s.sourcePath)) ?? 0) + 1);
+  const mainRoot = [...rootCounts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+
+  const lines = skills.map((s) => {
+    const blurb = s.description.replace(/\s+/g, " ").trim();
+    const short = blurb.length > SKILL_BLURB_CHARS ? `${blurb.slice(0, SKILL_BLURB_CHARS).trimEnd()}…` : blurb;
+    // Only the name when it sits in the main root under its own name; the real path otherwise.
+    const where = dirname(s.sourcePath) === mainRoot && basename(s.sourcePath) === s.name ? "" : ` (${s.sourcePath})`;
+    return `- ${s.name}${where}: ${short}`;
+  });
+  return (
+    `[skills available to you: ${skills.length} of them, already on this machine. Each is a folder containing ` +
+    `SKILL.md, which you can read with your normal file-reading tool. Unless a line gives a different path, a ` +
+    `skill lives at ${mainRoot}${sep}<name>${sep}SKILL.md.\n\n` +
+    `Use them WITHOUT being asked. Before you start a piece of work, look down this list for anything that ` +
+    `matches what you are about to build, and read that SKILL.md first - if you are building a front end, read ` +
+    `the front-end and design ones; a back end, the back-end and security ones; a trading or algorithmic system, ` +
+    `the strategy and backtesting ones; and so on. They contain specific, checkable requirements that are easy ` +
+    `to miss and obvious once missed, so reading one before you start is far cheaper than discovering it in an ` +
+    `audit afterwards. Do not read every skill; read the ones that match, and say in the chat which you read.\n\n` +
+    `${lines.join("\n")}]`
+  );
 }
