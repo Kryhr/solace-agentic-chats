@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { COMMAND_DEFINITIONS } from "@solace/shared";
 import type { AgentConfig, ProviderId, ProviderRateLimit } from "@solace/shared";
 import { ProviderIcon } from "./ProviderIcon";
 import { SendIcon } from "./SendIcon";
@@ -17,17 +18,7 @@ import { UsageMeter } from "./UsageMeter";
 /** Matches the textarea's own `max-height` in styles.css. */
 const MAX_COMPOSER_HEIGHT = 160;
 
-const SLASH_COMMANDS = [
-  { name: "task", hint: "@handle <description>" },
-  { name: "status", hint: "" },
-  { name: "usage", hint: "" },
-  { name: "reset", hint: "(from an agent's hub)" },
-  { name: "github", hint: "status | init <repo-name>" },
-  { name: "clear", hint: "" },
-  { name: "model", hint: "<value> (from an agent's hub)" },
-  { name: "effort", hint: "<value> (from an agent's hub)" },
-  { name: "help", hint: "" },
-];
+
 
 /** Finds the "@partial" token touching the cursor, so we know what to autocomplete. */
 function findMentionQuery(text: string, cursor: number): { start: number; query: string } | null {
@@ -53,6 +44,7 @@ export function Composer({
   onSend,
   onSubmitted,
   mentionAgents,
+  surface,
   usage,
 }: {
   placeholder: string;
@@ -62,6 +54,9 @@ export function Composer({
   onSubmitted?: () => void;
   /** Supplying agents turns on "@handle" autocomplete; the hub has no one to mention. */
   mentionAgents?: AgentConfig[];
+  /** Where this composer is. Chat-only commands are not offered on a hub page and vice versa -
+   * offering one that can only answer "that doesn't work here" is worse than not listing it. */
+  surface?: "chat" | "hub";
   usage?: { rateLimits: ProviderRateLimit[]; providersInUse: ProviderId[] };
 }) {
   const [draft, setDraft] = useState("");
@@ -76,8 +71,17 @@ export function Composer({
     ? (mentionAgents ?? []).filter((a) => a.handle.toLowerCase().startsWith(mention.query.toLowerCase()))
     : [];
   const slashQuery = mention ? null : findSlashQuery(draft, cursor);
+  // Filtered from the SHARED definitions, not a copy kept here. The copy had drifted: /trust,
+  // /agents, /save, /vault and /deploy all worked on the server and were missing from it, so
+  // typing "/trust" matched nothing and no menu appeared at all.
   const slashSuggestions =
-    slashQuery !== null ? SLASH_COMMANDS.filter((c) => c.name.startsWith(slashQuery.toLowerCase())) : [];
+    slashQuery !== null
+      ? COMMAND_DEFINITIONS.filter(
+          (c) =>
+            c.name.startsWith(slashQuery.toLowerCase()) &&
+            (c.scope === "both" || c.scope === (surface ?? "chat")),
+        )
+      : [];
   const hasSuggestions = mentionSuggestions.length > 0 || slashSuggestions.length > 0;
 
   const resizeComposer = () => {
@@ -205,6 +209,7 @@ export function Composer({
             >
               <span className="slash-command-name">/{c.name}</span>
               {c.hint && <span className="slash-command-hint">{c.hint}</span>}
+              <span className="slash-command-help">{c.help}</span>
             </button>
           ))}
         </div>

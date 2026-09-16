@@ -1865,11 +1865,26 @@ body {
   flex-shrink: 0;
 }
 
+/* The argument shape sits directly after the name - "/task" and "@handle <description>" are
+   one phrase, so separating them across the row broke the thing being read. The plain-English
+   description is what gets pushed right and truncated, because it is the part a user can skip
+   once they recognise the command. */
 .slash-command-hint {
   color: var(--text-faint);
   font-size: var(--text-2xs);
   font-family: var(--font-mono);
+  flex: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slash-command-help {
   margin-left: auto;
+  padding-left: var(--space-4);
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

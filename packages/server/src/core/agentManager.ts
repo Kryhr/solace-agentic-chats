@@ -465,8 +465,24 @@ function parseResetTime(message: string, now: Date): Date | undefined {
  * can be recovered from automatically - starting cold is always possible - instead of leaving
  * the agent permanently unable to run because of a stale string we saved.
  */
-function looksLikeStaleSession(message: string): boolean {
-  return /no conversation found|session .{0,40}not found|invalid session|unknown session|no session|conversation .{0,40}not found/i.test(
+export function looksLikeStaleSession(message: string): boolean {
+  if (
+    /no conversation found|session .{0,40}not found|invalid session|unknown session|no session|conversation .{0,40}not found/i.test(
+      message,
+    )
+  ) {
+    return true;
+  }
+  // A session can also be POISONED rather than missing, which fails identically from here: the
+  // turn errors and no amount of retrying the same session will ever work again.
+  //
+  // Copilot stores the reasoning effort INSIDE the session. Verified live: a session created
+  // with `--effort none` keeps sending reasoningEffort "none" on every resumed turn even when
+  // the flag is omitted entirely, so once its routed model rejects that value the session is
+  // permanently broken - and changing the effort in this app cannot fix it, because the stored
+  // value is what gets sent. Dropping the session id and running cold is the only repair, and
+  // the existing one-shot guard means the worst case is a single extra cold run.
+  return /unsupported value.{0,80}(is not supported with|supported values are)|does not support reasoning effort/i.test(
     message,
   );
 }

@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { isChatChannel, type ChatChannel } from "@solace/shared";
+import { helpText, isChatChannel, type ChatChannel } from "@solace/shared";
 import type { AgentManager } from "./agentManager";
 import type { ChatBus } from "./chatBus";
 import type { ChatStore } from "./chatStore";
@@ -19,24 +19,9 @@ export interface CommandContext {
   archive: ArchiveStore;
 }
 
-const HELP_TEXT = [
-  "/task @handle <description> - set that agent's current task",
-  "/status - summarize every agent's state, model, and task",
-  "/agents - who's here: provider, model, trust level and working directory",
-  "/github status - check gh auth on this machine",
-  "/github init <repo-name> - (from an agent's own hub) ask it to init + push a GitHub repo",
-  "/deploy list - show the SSH deploy targets saved under Connections",
-  "/deploy <target> [what to do] - (from an agent's own hub) hand it a target's connection details",
-  "/vault - list what's saved in the vault by name (values are never shown in chat)",
-  "/save - save a copy of this chat to Saved chats, without clearing it",
-  "/clear - archive this channel's history (nothing is deleted - see Saved chats)",
-  "/model <value> - (from an agent's own hub) switch its model",
-  "/effort <value> - (from an agent's own hub) switch its thinking effort",
-  "/trust <level> [@handle] - set the permission mode for every agent at once, or just one",
-  "/reset - (from an agent's own hub) forget its session so the next turn starts fresh",
-  "/usage - real rate-limit usage each provider has actually reported",
-  "/help - show this list",
-].join("\n");
+// Built from the shared definitions the composer's autocomplete also renders, so a command
+// cannot exist on one side and be undiscoverable on the other. See shared/src/commands.ts.
+const HELP_TEXT = helpText();
 
 function post(bus: ChatBus, channel: ChatChannel, text: string) {
   bus.postMessage({

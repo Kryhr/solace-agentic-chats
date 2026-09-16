@@ -29,6 +29,12 @@ export const DEFAULT_APP_SETTINGS = DEFAULTS;
 export const SETTING_DEFINITIONS = DEFS;
 export const sanitizeAppSettings = sanitizeSettings;
 
+// Same re-binding rule again - see the comments above.
+import { COMMAND_DEFINITIONS as COMMANDS, helpText as help } from "./commands";
+export type { CommandDefinition } from "./commands";
+export const COMMAND_DEFINITIONS = COMMANDS;
+export const helpText = help;
+
 export type ProviderId =
   | "claude-code"
   | "codex-cli"

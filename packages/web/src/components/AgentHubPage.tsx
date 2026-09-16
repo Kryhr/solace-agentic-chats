@@ -290,6 +290,7 @@ export function AgentHubPage({
       </div>
 
       <Composer
+        surface="hub"
         placeholder={`Message ${agent.handle}…`}
         ariaLabel={`Message ${agent.handle} directly`}
         onSend={onSendDirect}

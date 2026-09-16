@@ -224,6 +224,7 @@ export function ChatPanel({
       </div>
 
       <Composer
+        surface="chat"
         placeholder={connected ? `Message ${chat.title}…` : "Reconnecting…"}
         ariaLabel={`Message ${chat.title}`}
         mentionAgents={agents}
