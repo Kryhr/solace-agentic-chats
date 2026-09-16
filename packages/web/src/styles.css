@@ -4452,3 +4452,165 @@ body {
     animation: none;
   }
 }
+
+/* ---- settings sections ----------------------------------------------------------------------
+   Grouped headings, and the filter bar above them. Nine flat rows were already hard to scan and
+   the list grows every time a hardcoded constant becomes configurable.
+
+   Same palette and spacing as the .setting-entry / .setting-switch rows these sit around - the
+   sections are chrome, not a second visual language. Every custom property below is defined on
+   :root in this file (checked, not assumed: an undefined one renders transparent, which has cost
+   real debugging time on this project). */
+
+/* Deliberately NOT position:sticky. It was, and it looked wrong: the scrolling ancestor
+   (.hub-page-chat) carries 32px of top padding, so a bar pinned at top:0 sits 32px down and
+   setting cards scroll through the strip above it, half-visible over the page header. Pinning it
+   flush would mean hard-coding another component's padding here and re-breaking the moment that
+   padding changes. The "/" shortcut focuses this box from anywhere on the page, which is what
+   sticky was buying in the first place. */
+.settings-filter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xs);
+}
+
+.settings-filter-icon {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+
+.settings-filter-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--space-1) 0;
+  font-family: inherit;
+  font-size: var(--text-sm);
+  color: var(--text);
+  background: none;
+  border: none;
+  outline: none;
+}
+
+.settings-filter-input::placeholder {
+  color: var(--text-faint);
+}
+
+/* The whole bar takes the focus ring, not the bare input: the input has no border of its own, so
+   a ring on it alone reads as a stray rectangle floating inside the bar. */
+.settings-filter:focus-within {
+  border-color: var(--accent-border);
+  box-shadow: var(--ring-tight);
+}
+
+/* Safari draws its own clear affordance on type="search"; ours is a real button with a label. */
+.settings-filter-input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.settings-filter-count {
+  flex: 0 0 auto;
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.settings-filter-clear {
+  flex: 0 0 auto;
+  padding: var(--space-1) var(--space-2);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 120ms var(--ease-out), border-color 120ms var(--ease-out);
+}
+
+.settings-filter-clear:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+/* Inline inside the empty-state sentence, so it reads as part of it rather than as a stray
+   control parked underneath. */
+.settings-empty-clear {
+  padding: 0;
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--accent);
+  background: none;
+  border: none;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.settings-empty-clear:hover {
+  color: var(--accent-strong);
+}
+
+.settings-filter-clear:focus-visible,
+.settings-empty-clear:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+  border-radius: var(--radius-sm);
+}
+
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
+}
+
+/* The first heading sits directly under the filter bar and needs no extra air above it. */
+.settings-group:first-of-type {
+  margin-top: var(--space-2);
+}
+
+.settings-group-head {
+  padding: 0 var(--space-1);
+}
+
+.settings-group-title {
+  margin: 0;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.settings-group-blurb {
+  margin: var(--space-1) 0 0;
+  /* Held to a readable measure: at 1440px the column is ~1180px, where a one-line note would
+     otherwise run the full width as a single very long line. Wide enough that these blurbs
+     actually fit on one line at 12px - 62ch was cramped enough to wrap every one of them. */
+  max-width: 92ch;
+  font-size: var(--text-xs);
+  line-height: var(--lh-normal);
+  color: var(--text-faint);
+}
+
+@media (max-width: 640px) {
+  /* At 375px the count and the Clear button squeeze the input down to a few characters. The
+     count is the line that can go: the filtered list is immediately below it, and Clear is the
+     way back out. */
+  .settings-filter-count {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-filter-clear {
+    transition: none;
+  }
+}
