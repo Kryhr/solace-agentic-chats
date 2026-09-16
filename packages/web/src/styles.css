@@ -2531,6 +2531,9 @@ body {
 
 .skill-entry-desc {
   margin-top: var(--space-1);
+  /* Same measure as .setting-entry-desc: a skill description is the same kind of
+     several-sentence prose in the same kind of full-width card. */
+  max-width: 78ch;
   font-size: var(--text-sm);
   line-height: var(--lh-normal);
   color: var(--text-secondary);
@@ -3968,6 +3971,8 @@ body {
 
 .settings-scope-note {
   margin: 0 0 var(--space-2);
+  /* Same note family, same measure - see .settings-group-blurb. */
+  max-width: 92ch;
   font-size: var(--text-xs);
   line-height: var(--lh-normal);
   color: var(--text-faint);
@@ -4009,6 +4014,10 @@ body {
 
 .setting-entry-desc {
   margin-top: var(--space-1);
+  /* These are the longest prose in the app - several sentences each - and the settings card
+     runs the full page column, so uncapped they set ~170 characters to a line at 1440px.
+     78ch matches the measure the other multi-sentence prose in this file already uses. */
+  max-width: 78ch;
   font-size: var(--text-sm);
   line-height: var(--lh-normal);
   color: var(--text-secondary);
@@ -4227,6 +4236,9 @@ body {
 
 .settings-section-note {
   margin: 0 0 var(--space-4);
+  /* Same 92ch measure as .settings-group-blurb - both are the short note that sits under a
+     heading, so they should break at the same width rather than one running the full column. */
+  max-width: 92ch;
   font-size: var(--text-xs);
   line-height: 1.55;
   color: var(--text-muted);
@@ -4379,6 +4391,27 @@ body {
 
 .credential-row .credential-sub {
   margin-right: -92px;
+}
+
+/* The pinned-actions layout above rests on "nothing is drawn there once the row is at rest",
+   which holds for a CLI row - its only action is the status/Check swap. It does NOT hold for a
+   saved endpoint, which always shows Reveal and Delete too: that cluster measures ~190px, so in
+   the 234px rail it was painted straight over the name ("Reveal" sat on top of "Anthropic
+   production", a 52x8px overlap of opaque text). Those rows drop the actions onto their own
+   line under the name instead, which is the only honest layout at this width. */
+.credential-row.has-managed-actions .provider-actions {
+  position: static;
+  grid-column: 2;
+  justify-content: flex-start;
+  margin-top: var(--space-1);
+}
+
+.credential-row.has-managed-actions .provider-name {
+  padding-right: 0;
+}
+
+.credential-row.has-managed-actions .credential-sub {
+  margin-right: 0;
 }
 
 .credential-row .provider-status {
@@ -4627,17 +4660,14 @@ body {
   padding: var(--space-6);
 }
 
+/* Holds only the Add button now that the duplicated title and blurb are gone, so it aligns
+   to the end rather than spreading a single child across the row. */
 .mcp-panel-head {
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: var(--space-4);
   flex-wrap: wrap;
-}
-
-.mcp-panel h2 {
-  margin: 0;
-  font-size: var(--text-md);
 }
 
 .mcp-section-head {
@@ -5065,6 +5095,42 @@ body {
 .connections-embedded .credential-row .credential-sub {
   margin-right: 0;
 }
+/* Putting the actions back in flow only works if the row has a column for them to
+   land in. .credential-row narrows the grid to two columns BECAUSE the actions are
+   lifted out of it (position: absolute) in the rail; taking that away without
+   restoring the third column left them wrapping onto a second grid row under the
+   badge, and made column one auto-size to whichever action cluster was widest -
+   so the name column started at a different x on every row in the same list. */
+.connections-embedded .credential-row {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
 .connections-embedded .credential-row .provider-actions {
   position: static;
+}
+
+/* ---- fenced code inside a message --------------------------------------
+   Agent replies are markdown; a fenced block used to render as its literal ``` lines set in
+   the body face. This is the one markdown construct the transcript renders (see
+   components/MessageText.tsx).
+
+   The block scrolls rather than wraps: a wrapped line of code is harder to read than a
+   scrolled one, and unlike prose there is no "measure" to hold it to. Every value below is a
+   token already declared in :root. */
+.message .body .code-block {
+  margin: var(--space-2) 0;
+  padding: var(--space-3);
+  background: var(--gray-1000);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  /* The body is white-space: pre-wrap and overflow-wrap: anywhere; a code block wants neither
+     inherited, or long identifiers break mid-token. */
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.message .body .code-block code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--lh-snug);
+  color: var(--text-secondary);
 }

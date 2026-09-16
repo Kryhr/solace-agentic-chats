@@ -259,7 +259,9 @@ function GithubGuide({ github }: { github: GithubConnection | null }) {
 
       {github.statusText && (
         <>
-          <div className="field-note">What `gh auth status` said, word for word:</div>
+          <div className="field-note">
+            What <code>gh auth status</code> said, word for word:
+          </div>
           <pre className="verbatim-output">{github.statusText}</pre>
         </>
       )}

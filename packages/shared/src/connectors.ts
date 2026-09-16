@@ -41,14 +41,16 @@ export const CONNECTOR_KINDS: ConnectorKind[] = [
     id: "cli",
     title: "Coding agent CLI",
     blurb: "Claude Code, Codex, Gemini or Qwen, signed in on this machine against your own subscription.",
-    verification: "Runs the CLI's own `--version` and reports what it printed.",
+    // No backticks in any string on this record: these are rendered as plain text in the Add
+    // connection modal, so markdown punctuation shows up literally on screen.
+    verification: "Runs the CLI's own --version and reports what it printed.",
     checkable: true,
   },
   {
     id: "github",
     title: "GitHub",
-    blurb: "Lets agents clone, push, open PRs and read issues as you, through the `gh` CLI.",
-    verification: "Runs `gh auth status` and shows what it said, word for word.",
+    blurb: "Lets agents clone, push, open PRs and read issues as you, through the gh CLI.",
+    verification: "Runs gh auth status and shows what it said, word for word.",
     checkable: true,
   },
   {
