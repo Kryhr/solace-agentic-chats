@@ -143,9 +143,22 @@ export function resolveInside(root: string, input: unknown): ContainmentResult {
 
   const target = isAbsolute(raw) ? resolve(raw) : resolve(resolvedRoot, raw);
 
-  // Device-name check runs on every segment, not just the last: `<cwd>\NUL\..\x` is as bad.
   if (process.platform === "win32") {
-    for (const segment of target.split(/[\\/]/)) {
+    // .slice(1) skips the drive ("C:"), the one legitimate colon in a resolved Windows path.
+    for (const segment of target.split(/[\\/]/).slice(1)) {
+      // NTFS alternate data streams. `file.txt:stash` writes bytes into a hidden stream on a
+      // real file: the listed size never changes, the main content is untouched, and neither a
+      // directory listing nor this app's own list_directory shows it. And `NUL::$DATA` walked
+      // straight past the device-name check below, because that splits on "." and so never saw
+      // a bare "nul" - it created a real file literally named NUL that Explorer and `del`
+      // cannot remove (it takes a \\?\ path). Both are refused here: nothing this app writes
+      // has any business naming a stream.
+      if (segment.includes(":")) {
+        return { ok: false, reason: `refusing path "${raw}" - ":" names an alternate data stream, which is not a file` };
+      }
+      // Device names, checked on every segment rather than only the last. Note that
+      // `<cwd>\NUL\..\x` is NOT caught here and does not need to be: path.resolve collapses
+      // `NUL\..` before this runs, so what remains is an ordinary contained path.
       const bare = segment.split(".")[0]?.toLowerCase() ?? "";
       if (WINDOWS_DEVICE_NAMES.has(bare)) {
         return { ok: false, reason: `refusing path "${raw}" - "${segment}" is a reserved Windows device name` };

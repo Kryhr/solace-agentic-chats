@@ -56,3 +56,12 @@ test("capitalising cannot sneak a duplicate past the uniqueness check", () => {
   );
   assert.ok("error" in dupe);
 });
+
+test("a null or non-object body is refused rather than crashing the route", () => {
+  // POST /api/agents with a JSON `null` body produced a 500 ("Cannot read properties of null")
+  // instead of a 400. Every other malformed body was already handled.
+  for (const bad of [null, undefined, [], "string", 42]) {
+    const res = validateNewAgentConfig(bad as never, []);
+    assert.ok("error" in res, `${JSON.stringify(bad)} should be refused`);
+  }
+});

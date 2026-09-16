@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir, userInfo } from "node:os";
 import { isAbsolute, join, normalize } from "node:path";
@@ -162,7 +162,15 @@ function loadAll(workspaceRoot: string): StoredCredential[] {
 
 function saveAll(workspaceRoot: string, all: StoredCredential[]) {
   const path = credentialsPath(workspaceRoot);
-  writeFileSync(path, JSON.stringify(all), credentialsWriteOptions());
+  // Atomic replace, for the same reason as persistence.saveState: a straight overwrite that is
+  // interrupted mid-write leaves a truncated file, and loadAll treats an unparseable file as an
+  // empty vault - so one torn write silently discards every saved key, password and SSH secret,
+  // with no backup. Write a temp file and rename it over the target so the swap is all-or-
+  // nothing. The temp file carries the same owner-only mode, and permissions are hardened on the
+  // final path after the rename.
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, JSON.stringify(all), credentialsWriteOptions());
+  renameSync(tmp, path);
   hardenFilePermissions(path);
 }
 

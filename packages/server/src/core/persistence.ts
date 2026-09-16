@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sanitizePersistedRateLimits } from "./rateLimits";
 import {
@@ -220,7 +220,31 @@ export function loadState(workspaceRoot: string): PersistedState {
 }
 
 export function saveState(workspaceRoot: string, state: PersistedState) {
-  writeFileSync(statePath(workspaceRoot), JSON.stringify(state), "utf-8");
+  // Atomic replace. The previous version wrote JSON straight over the live file with a single
+  // writeFileSync. A crash, power loss, full disk, or a dev-mode restart landing mid-write left
+  // a TRUNCATED file, and loadState's catch-all treats an unparseable file as "everything is
+  // gone" and hands back EMPTY_STATE - so one torn write silently wipes every agent, all chat
+  // history, archives, projects, coordination and MCP servers, with no backup. Writing a temp
+  // file first and renaming it over the target makes the swap atomic: a reader ever only sees
+  // the whole old file or the whole new one, never a half-written one.
+  atomicWriteFileSync(statePath(workspaceRoot), JSON.stringify(state), { encoding: "utf-8" });
+}
+
+/**
+ * Write `data` to `path` so that `path` is never observed in a partially-written state: the
+ * bytes go to a sibling temp file, which is then renamed over the target. rename is atomic on
+ * a single volume on every OS this runs on (on Windows, libuv maps it to MoveFileEx with
+ * REPLACE_EXISTING, which overwrites), so a crash can lose the newest save but can never
+ * corrupt the existing one into unparseable JSON.
+ */
+export function atomicWriteFileSync(
+  path: string,
+  data: string,
+  options: { encoding: "utf-8"; mode?: number },
+): void {
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, data, options);
+  renameSync(tmp, path);
 }
 
 export function debounce(fn: () => void, ms: number): () => void {

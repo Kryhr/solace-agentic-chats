@@ -519,3 +519,20 @@ test("a write into another agent's claimed file is refused, but reading it is no
   const free = await exec.execute("write_file", JSON.stringify({ path: "mine.py", content: "ok" }));
   assert.notEqual(free.isError, true, "an unclaimed path is unaffected");
 });
+
+test("an alternate data stream is refused, on any segment", async () => {
+  // Found by the adversarial pass. `file.txt:stash` writes into a hidden NTFS stream: the
+  // file's listed size never changes, its content is untouched, and neither a directory
+  // listing nor this app's own list_directory shows it. And `NUL::$DATA` walked past the
+  // device-name guard entirely - that splits on "." so never saw a bare "nul" - creating a
+  // real file named NUL that Explorer and `del` cannot remove.
+  const root = mkdtempSync(join(tmpdir(), "solace-ads-"));
+  writeFileSync(join(root, "inside.txt"), "hello");
+  for (const bad of ["NUL::$DATA", "CON::$DATA", "inside.txt:stash", "sub/file.txt:s"]) {
+    const res = resolveInside(root, bad);
+    assert.equal(res.ok, false, `${bad} should be refused`);
+  }
+  // ...and ordinary paths are untouched by the new check.
+  assert.equal(resolveInside(root, "inside.txt").ok, true);
+  assert.equal(resolveInside(root, "sub/ok.txt").ok, true);
+});

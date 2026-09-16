@@ -31,6 +31,12 @@ export function validateNewAgentConfig(
   // command names: "Codex", "Claude", "Copilot". Only the first character is touched - a handle
   // like "OllamaQwen3.5" keeps its own casing, and @mentions are matched case-insensitively
   // (see mentions.ts) so nothing that already refers to an agent stops working.
+  // A JSON `null` body reached here and was dereferenced - `null.handle` threw, and Fastify
+  // turned that into a 500 with a stack-shaped message. Every other malformed body (arrays,
+  // wrong types, missing fields) was already rejected cleanly with a 400; this was the one hole.
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return { error: "expected a JSON object describing the agent" };
+  }
   const handle = capitalizeFirst(typeof body.handle === "string" ? body.handle.trim() : "");
   if (!handle) return { error: "handle is required" };
   if (handle.length > MAX_HANDLE_LEN) return { error: `handle must be ${MAX_HANDLE_LEN} characters or fewer` };
