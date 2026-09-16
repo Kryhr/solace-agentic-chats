@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AgentConfig,
   AppSettings,
@@ -7,8 +7,23 @@ import type {
   SelectSettingDefinition,
   SettingDefinition,
 } from "@solace/shared";
+import { SETTING_SECTIONS } from "@solace/shared";
 import { fetchSettings, setProjectMembership, updateSettings } from "../api";
 import { ProviderIcon } from "./ProviderIcon";
+
+/**
+ * Does this setting match what was typed in the filter box?
+ *
+ * Label AND description, because the label is a short phrase and the thing a user actually
+ * remembers is usually a word from the explanation ("billed", "rate limit", "hub"). Every word
+ * typed has to appear SOMEWHERE in the row rather than as one contiguous run, so "resume turn"
+ * finds the resume setting even though those two words are nowhere near each other in it.
+ */
+function matchesFilter(def: SettingDefinition, terms: string[]): boolean {
+  if (terms.length === 0) return true;
+  const haystack = `${def.label} ${def.description}`.toLowerCase();
+  return terms.every((term) => haystack.includes(term));
+}
 
 /**
  * App settings, rendered from the schema the server serves rather than from JSX written per
@@ -41,6 +56,68 @@ export function SettingsPage({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
+  const filterRef = useRef<HTMLInputElement>(null);
+
+  /**
+   * Group the schema into the sections it declares, in SETTING_SECTIONS order, after filtering.
+   *
+   * Built from the definitions rather than from a list written here, so adding a setting stays
+   * one array entry in shared/src/settings.ts. A section whose settings are all filtered out
+   * drops away entirely - an empty "Projects" heading would read as "there is nothing here",
+   * which is a different (and wrong) claim from "nothing here matched what you typed".
+   */
+  const terms = filter.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const grouped = useMemo(() => {
+    const matched = definitions.filter((def) => matchesFilter(def, terms));
+    const known = SETTING_SECTIONS.map((section) => ({
+      section,
+      defs: matched.filter((def) => def.section === section.id),
+    }));
+    // Anything the server sent that this page has no heading for is shown anyway, at the end.
+    //
+    // Not hypothetical: a server running a build older than this page sends definitions with no
+    // section at all, and filtering them out silently produced a completely blank settings page
+    // claiming nothing matched an empty filter. A setting that exists, saves and is honoured
+    // must never be invisible just because its heading is unfamiliar.
+    const filed = new Set(SETTING_SECTIONS.map((s) => s.id));
+    const orphans = matched.filter((def) => !filed.has(def.section));
+    return [
+      ...known,
+      { section: { id: "other" as const, title: "Other", blurb: "Sent by the server under a heading this page does not know." }, defs: orphans },
+    ].filter((group) => group.defs.length > 0);
+  }, [definitions, filter]);
+
+  const matchCount = grouped.reduce((n, group) => n + group.defs.length, 0);
+
+  /**
+   * "/" focuses the filter, Escape clears it.
+   *
+   * Safe to bind at the window: this page and the chat composer are never mounted at the same
+   * time (App renders one view or the other), so it cannot steal a keystroke the composer wants.
+   * The typing guard is belt-and-braces for the controls on THIS page - without it, typing a
+   * slash into the filter box itself, or into a number box, would be swallowed.
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      const typing =
+        el instanceof HTMLInputElement ||
+        el instanceof HTMLTextAreaElement ||
+        el instanceof HTMLSelectElement ||
+        el?.isContentEditable === true;
+      if (e.key === "/" && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        filterRef.current?.focus();
+        filterRef.current?.select();
+      }
+      if (e.key === "Escape" && el === filterRef.current) {
+        setFilter("");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   useEffect(() => {
     fetchSettings()
@@ -113,6 +190,46 @@ export function SettingsPage({
 
           {error && <div className="settings-error">{error}</div>}
 
+          {/* Only worth showing once there is actually something to load and filter. Rendering
+              it over "Loading settings…" would offer to narrow a list that does not exist yet. */}
+          {!loading && settings && definitions.length > 0 && (
+            <div className="settings-filter">
+              <svg
+                className="settings-filter-icon"
+                viewBox="0 0 16 16"
+                width="14"
+                height="14"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                aria-hidden="true"
+              >
+                <circle cx="7.2" cy="7.2" r="4.4" />
+                <path d="M10.4 10.4 13.5 13.5" />
+              </svg>
+              <input
+                ref={filterRef}
+                className="settings-filter-input"
+                type="search"
+                value={filter}
+                placeholder="Filter settings"
+                aria-label="Filter settings by name or description"
+                onChange={(e) => setFilter(e.target.value)}
+              />
+              {/* Announced politely rather than assertively: it updates on every keystroke, and
+                  an assertive region would interrupt a screen-reader user mid-word. */}
+              <span className="settings-filter-count" aria-live="polite">
+                {terms.length === 0 ? `${definitions.length} settings` : `${matchCount} of ${definitions.length}`}
+              </span>
+              {terms.length > 0 && (
+                <button type="button" className="settings-filter-clear" onClick={() => setFilter("")}>
+                  Clear
+                </button>
+              )}
+            </div>
+          )}
+
           {loading || !settings ? (
             <div className="chat-empty">
               <div className="chat-empty-title">Loading settings…</div>
@@ -122,49 +239,36 @@ export function SettingsPage({
               <div className="chat-empty-title">No settings yet</div>
               <div className="chat-empty-body">This server exposes no configurable options.</div>
             </div>
-          ) : (
-            definitions.map((def) => (
-              <div key={def.key} className="setting-entry">
-                <div className="setting-entry-text">
-                  <label className="setting-entry-label" htmlFor={`setting-${def.key}`}>
-                    {def.label}
-                  </label>
-                  <div className="setting-entry-desc">{def.description}</div>
-                </div>
-                {def.kind === "toggle" ? (
-                  <button
-                    id={`setting-${def.key}`}
-                    type="button"
-                    role="switch"
-                    aria-checked={settings[def.key] as boolean}
-                    className="setting-switch"
-                    disabled={savingKey === def.key}
-                    onClick={() => void save(def, !settings[def.key])}
-                  >
-                    <span className="setting-switch-track" aria-hidden="true">
-                      <span className="setting-switch-thumb" />
-                    </span>
-                    <span className="setting-switch-state">{settings[def.key] ? "On" : "Off"}</span>
-                  </button>
-                ) : def.kind === "number" ? (
-                  <NumberControl
-                    def={def}
-                    value={settings[def.key] as number}
-                    busy={savingKey === def.key}
-                    onCommit={(next) => void save(def, next)}
-                  />
-                ) : (
-                  <SelectControl
-                    def={def}
-                    value={settings[def.key] as string}
-                    busy={savingKey === def.key}
-                    // The control can only ever emit one of def.options, and sanitizeAppSettings
-                    // checks that same list again on the server, so the cast is narrowing a
-                    // string TS cannot see is already constrained - not trusting free input.
-                    onCommit={(next) => void save(def, next as AppSettings[typeof def.key])}
-                  />
-                )}
+          ) : grouped.length === 0 ? (
+            /* A filter that matches nothing must SAY nothing matched. Falling through to an
+               empty column would look identical to a page that failed to load, and the way out
+               (clear the box) would not be obvious from anything on screen. */
+            <div className="chat-empty">
+              <div className="chat-empty-title">Nothing matches “{filter.trim()}”</div>
+              <div className="chat-empty-body">
+                No setting has that in its name or description.{" "}
+                <button type="button" className="settings-empty-clear" onClick={() => setFilter("")}>
+                  Show all {definitions.length} settings
+                </button>
               </div>
+            </div>
+          ) : (
+            grouped.map(({ section, defs }) => (
+              <section key={section.id} className="settings-group">
+                <div className="settings-group-head">
+                  <h3 className="settings-group-title">{section.title}</h3>
+                  <p className="settings-group-blurb">{section.blurb}</p>
+                </div>
+                {defs.map((def) => (
+                  <SettingRow
+                    key={def.key}
+                    def={def}
+                    settings={settings}
+                    busy={savingKey === def.key}
+                    onSave={save}
+                  />
+                ))}
+              </section>
             ))
           )}
 
@@ -225,6 +329,70 @@ export function SettingsPage({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * One setting row, whatever control it renders as.
+ *
+ * Pulled out of the page only because the page now maps over sections and then over settings,
+ * and two levels of nesting around this much JSX stopped being readable. The behaviour is
+ * unchanged: the control is still chosen from `def.kind` alone, so a new kind is a compile
+ * error here rather than a silently unrendered row.
+ */
+function SettingRow({
+  def,
+  settings,
+  busy,
+  onSave,
+}: {
+  def: SettingDefinition;
+  settings: AppSettings;
+  busy: boolean;
+  onSave: (def: SettingDefinition, next: AppSettings[typeof def.key]) => void;
+}) {
+  return (
+    <div className="setting-entry">
+      <div className="setting-entry-text">
+        <label className="setting-entry-label" htmlFor={`setting-${def.key}`}>
+          {def.label}
+        </label>
+        <div className="setting-entry-desc">{def.description}</div>
+      </div>
+      {def.kind === "toggle" ? (
+        <button
+          id={`setting-${def.key}`}
+          type="button"
+          role="switch"
+          aria-checked={settings[def.key] as boolean}
+          className="setting-switch"
+          disabled={busy}
+          onClick={() => onSave(def, !settings[def.key])}
+        >
+          <span className="setting-switch-track" aria-hidden="true">
+            <span className="setting-switch-thumb" />
+          </span>
+          <span className="setting-switch-state">{settings[def.key] ? "On" : "Off"}</span>
+        </button>
+      ) : def.kind === "number" ? (
+        <NumberControl
+          def={def}
+          value={settings[def.key] as number}
+          busy={busy}
+          onCommit={(next) => onSave(def, next)}
+        />
+      ) : (
+        <SelectControl
+          def={def}
+          value={settings[def.key] as string}
+          busy={busy}
+          // The control can only ever emit one of def.options, and sanitizeAppSettings checks
+          // that same list again on the server, so the cast is narrowing a string TS cannot see
+          // is already constrained - not trusting free input.
+          onCommit={(next) => onSave(def, next as AppSettings[typeof def.key])}
+        />
+      )}
     </div>
   );
 }

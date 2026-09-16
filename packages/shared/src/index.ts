@@ -22,6 +22,7 @@ export const connectorKind = kindById;
 import {
   DEFAULT_APP_SETTINGS as DEFAULTS,
   SETTING_DEFINITIONS as DEFS,
+  SETTING_SECTIONS as SECTIONS,
   sanitizeAppSettings as sanitizeSettings,
 } from "./settings";
 export type {
@@ -30,10 +31,13 @@ export type {
   ToggleSettingDefinition,
   NumberSettingDefinition,
   SelectSettingDefinition,
+  SettingSection,
+  SettingSectionId,
   SettingsTrustLevel,
 } from "./settings";
 export const DEFAULT_APP_SETTINGS = DEFAULTS;
 export const SETTING_DEFINITIONS = DEFS;
+export const SETTING_SECTIONS = SECTIONS;
 export const sanitizeAppSettings = sanitizeSettings;
 
 // Same re-binding rule again - see the comments above.

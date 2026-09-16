@@ -242,8 +242,27 @@ export const MAX_TURN_IDLE_MS = 5 * 60 * 1000;
 
 /** How many agent-to-agent @mention hops are allowed before a chain is cut off. Two agents
  * mentioning each other back and forth is legitimate collaboration, not a bug - but with no
- * cap at all, it has no natural stopping point either. */
-const MAX_MENTION_CHAIN_DEPTH = 6;
+ * cap at all, it has no natural stopping point either. Now the default for a setting
+ * (maxMentionChainDepth), read live in routeChatMessage. */
+export const MAX_MENTION_CHAIN_DEPTH = 6;
+
+/**
+ * Whether a chain being cut off at `depth` should ANNOUNCE itself in the chat.
+ *
+ * Only the first over-cap hop says anything; announcing every one of them would replace a
+ * runaway chain of turns with a runaway chain of notices.
+ *
+ * The `+ 2` is the whole point of this being a named, tested function. Depth reaches
+ * routeChatMessage in steps of TWO, not one: a hop is route(D) -> enqueueTurn(D+1) -> that
+ * turn's answer routes at D+2. So the depths actually seen are 0, 2, 4, ... and the original
+ * `depth === cap + 1` test could never match at the default cap of 6 - the first over-cap call
+ * arrives at 8, not 7. The cut-off was therefore completely silent: work simply stopped and
+ * nobody was told. That is why this cap stayed hardcoded until now; a limit a user can lower
+ * without ever seeing it bite is a limit that makes work disappear.
+ */
+export function announcesChainCutoff(depth: number, maxDepth: number): boolean {
+  return depth > maxDepth && depth <= maxDepth + 2;
+}
 
 /**
  * One house style for every agent, whatever provider it is.
@@ -824,6 +843,7 @@ export class AgentManager {
       maxHandovers: s.maxHandovers,
       maxMidTurnPosts: s.maxMidTurnPosts,
       interruptGraceMs: s.interruptGraceSeconds * 1000,
+      agentQuestionGraceMs: s.agentQuestionGraceMinutes * 60_000,
     };
   }
 
@@ -1231,15 +1251,20 @@ export class AgentManager {
 
     if (targets.length === 0 && !opts.broadcastIfUnmentioned) return; // agent-authored, unaddressed: visible only
 
-    if (opts.mentionChainDepth > MAX_MENTION_CHAIN_DEPTH) {
-      if (opts.mentionChainDepth === MAX_MENTION_CHAIN_DEPTH + 1) {
+    // Read at the moment the hop is judged, not at boot - same rule as every other limit here.
+    const maxChainDepth = this.settings.get().maxMentionChainDepth;
+    if (opts.mentionChainDepth > maxChainDepth) {
+      if (announcesChainCutoff(opts.mentionChainDepth, maxChainDepth)) {
         this.bus.postMessage({
           id: nanoid(),
           channel,
           authorId: "system",
           authorHandle: "system",
           mentions: [],
-          text: `Stopped an agent-to-agent reply chain after ${MAX_MENTION_CHAIN_DEPTH} hops to avoid a runaway loop - reply directly to continue.`,
+          text:
+            maxChainDepth === 0
+              ? "Agents are not allowed to trigger each other (0 hops), so this reply went no further - reply directly to continue."
+              : `Stopped an agent-to-agent reply chain after ${maxChainDepth} hops to avoid a runaway loop - reply directly to continue.`,
           createdAt: new Date().toISOString(),
         });
       }
@@ -1814,7 +1839,8 @@ ${text}` : text;
     // The operator's question always arms, at the configured grace. Theirs is a redirection of
     // the work and they are sitting there waiting for it.
     let oldest = fromOperator[0];
-    let graceMs = this.limits().interruptGraceMs;
+    const { interruptGraceMs, agentQuestionGraceMs } = this.limits();
+    let graceMs = interruptGraceMs;
 
     // An agent's question arms too, but only ONCE per turn and only after a much longer wait.
     //
@@ -1824,13 +1850,13 @@ ${text}` : text;
     // none of them could interrupt, claude worked straight through eight @mentions without
     // acknowledging any of them, and the others sat blocked on an answer that was minutes away.
     //
-    // So: a running turn is protected for AGENT_QUESTION_GRACE_MS, which is long enough to
+    // So: a running turn is protected for the configured agent-question grace, long enough to
     // finish a real piece of work, and after that it stops once to answer everything waiting.
     // The once-per-turn cap is what makes it an interruption rather than a livelock - a second
     // pile-up waits for the turn that answers the first.
     if (!oldest && fromAgents[0] && !runtime.currentTurn?.agentInterruptUsed) {
       oldest = fromAgents[0];
-      graceMs = AGENT_QUESTION_GRACE_MS;
+      graceMs = agentQuestionGraceMs;
     }
     if (!oldest) return;
 
@@ -2318,6 +2344,12 @@ ${text}` : text;
             if (id) lastProgressMessageId = id;
           } else if (event.type === "reasoning") {
             post(ownChannel, event.text, { agentKind: "reasoning" });
+            // Opt-in copy into the group. Read live, per line, so turning it on mid-turn shows
+            // the rest of that turn's working rather than waiting for a turn boundary. The hub
+            // post above is unconditional: this setting adds a view, it never moves the record.
+            if (isGroupTurn && this.settings.get().showAgentWorkInGroupChat) {
+              post(replyChannel, event.text, { agentKind: "reasoning" });
+            }
           } else if (event.type === "tool-use") {
             // The label comes from the provider's real tool name and real arguments; when the
             // adapter had no structured input to give (an in-stream notice), the already-built
@@ -2326,6 +2358,9 @@ ${text}` : text;
             // agentKind - and every already-persisted message - still renders identically.
             const summary = describeToolCall(event.toolName ?? event.description, event.input);
             post(ownChannel, `_used ${event.description}_`, { agentKind: "tool", tool: summary });
+            if (isGroupTurn && this.settings.get().showAgentWorkInGroupChat) {
+              post(replyChannel, `_used ${event.description}_`, { agentKind: "tool", tool: summary });
+            }
           } else if (event.type === "usage") {
             runtime.lastUsage = event.usage;
             runtime.totalUsage = addUsage(runtime.totalUsage, event.usage);
