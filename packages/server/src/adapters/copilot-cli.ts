@@ -4,6 +4,7 @@ import * as readline from "node:readline";
 import { join } from "node:path";
 import type { TrustLevel } from "@solace/shared";
 import { killCliTree, spawnCli } from "../core/spawnCli";
+import { mcpServersForAgent, type ResolvedMcpServer } from "../core/mcpServers";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 
 /** The group-chat MCP bridge, re-anchored to the *source* copy from the package root exactly as
@@ -157,21 +158,38 @@ export function copilotPermissionFlags(trustLevel: TrustLevel): string[] {
  * MCP child. `tools: ["*"]` is Copilot's own opt-in for enabling a server's tools without an
  * interactive confirmation.
  */
-export function solaceMcpConfig(agentId: string, serverPort: number, turnToken?: string): string {
-  return JSON.stringify({
-    mcpServers: {
-      [SOLACE_SERVER]: {
-        command: process.execPath,
-        args: [SOLACE_BRIDGE_SCRIPT],
-        tools: ["*"],
-        env: {
-          SOLACE_AGENT_ID: agentId,
-          SOLACE_SERVER_PORT: String(serverPort),
-          ...(turnToken ? { SOLACE_TURN_TOKEN: turnToken } : {}),
-        },
+export function solaceMcpConfig(
+  agentId: string,
+  serverPort: number,
+  turnToken?: string,
+  userServers: ResolvedMcpServer[] = [],
+): string {
+  const mcpServers: Record<string, unknown> = {
+    [SOLACE_SERVER]: {
+      command: process.execPath,
+      args: [SOLACE_BRIDGE_SCRIPT],
+      tools: ["*"],
+      env: {
+        SOLACE_AGENT_ID: agentId,
+        SOLACE_SERVER_PORT: String(serverPort),
+        ...(turnToken ? { SOLACE_TURN_TOKEN: turnToken } : {}),
       },
     },
-  });
+  };
+  // --additional-mcp-config is the one mechanism of the five that genuinely ADDS to what the
+  // user already has (~/.copilot/mcp-config.json) rather than replacing it. A user server
+  // registered here therefore rides alongside both our bridge AND anything they configured for
+  // Copilot themselves - and if they had already added the same server to Copilot directly,
+  // this entry simply wins for this session and nothing is written to their file either way.
+  //
+  // `tools: ["*"]` is set on OUR bridge only. On a third-party server it would be Copilot's
+  // opt-in to enable every tool without an interactive confirmation, which is the user's call
+  // to make through the agent's trust level, not ours to make by registering a server.
+  for (const server of userServers) {
+    if (server.name === SOLACE_SERVER) continue;
+    mcpServers[server.name] = { command: server.command, args: server.args, env: server.env };
+  }
+  return JSON.stringify({ mcpServers });
 }
 
 /**
@@ -196,6 +214,9 @@ export function buildCopilotArgs(opts: {
   agentId: string;
   serverPort: number;
   turnToken?: string;
+  /** The user's registered MCP servers that apply to this agent. Defaults to none, so every
+   * existing caller and test sees exactly the argv it saw before. */
+  userServers?: ResolvedMcpServer[];
 }): string[] {
   return [
     opts.loader,
@@ -218,7 +239,7 @@ export function buildCopilotArgs(opts: {
     opts.sessionId ?? opts.newSessionId,
     ...copilotPermissionFlags(opts.trustLevel),
     "--additional-mcp-config",
-    solaceMcpConfig(opts.agentId, opts.serverPort, opts.turnToken),
+    solaceMcpConfig(opts.agentId, opts.serverPort, opts.turnToken, opts.userServers ?? []),
     // Copilot's built-in GitHub MCP server is left alone rather than disabled: it is the user's
     // own configured tooling and turning it off is not this app's call.
     ...(opts.model ? ["--model", opts.model] : []),
@@ -308,6 +329,7 @@ export const copilotCliAdapter: ProviderAdapter = {
       agentId,
       serverPort,
       turnToken,
+      userServers: mcpServersForAgent(agentId),
     });
 
     await new Promise<void>((resolve) => {

@@ -9,9 +9,13 @@ import type {
   ConnectionCheck,
   GithubConnection,
   ProjectMeta,
+  CatalogMcpServer,
   CredentialMeta,
   CredentialReveal,
   LocalServerFinding,
+  McpEnvEntry,
+  McpServerConfig,
+  McpServerScope,
   ModelDiscoveryResult,
   PendingApproval,
   ProviderId,
@@ -447,6 +451,73 @@ type Hello = {
    * after a restart) shows what is actually in force rather than a stale or default copy. */
   settings: AppSettings;
 };
+
+/* ------------------------------- MCP servers ------------------------------ */
+
+/** A server as the UI sees it, plus the curated catalogue - one round trip, because the panel
+ * needs both to render anything useful. A vault-referenced env value comes back as its
+ * credential id only; the resolved secret never leaves the server (see toPublicMcpServer). */
+export async function fetchMcpServers(): Promise<{ servers: McpServerConfig[]; catalog: CatalogMcpServer[] }> {
+  return fetch("/api/mcp/servers").then((r) => r.json());
+}
+
+export interface McpServerDraft {
+  name: string;
+  command: string;
+  args: string[];
+  env: McpEnvEntry[];
+  enabled?: boolean;
+  scope?: McpServerScope;
+  note?: string;
+}
+
+export async function createMcpServer(draft: McpServerDraft): Promise<McpServerConfig> {
+  const res = await fetch("/api/mcp/servers", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(draft),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? `Failed to add MCP server (${res.status})`);
+  return data.server;
+}
+
+export async function updateMcpServer(id: string, patch: Partial<McpServerDraft>): Promise<McpServerConfig> {
+  const res = await fetch(`/api/mcp/servers/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? `Failed to update MCP server (${res.status})`);
+  return data.server;
+}
+
+export async function deleteMcpServer(id: string): Promise<void> {
+  await fetch(`/api/mcp/servers/${id}`, { method: "DELETE" });
+}
+
+export interface McpTestResult {
+  ok: boolean;
+  tools: string[];
+  serverInfo?: { name?: string; version?: string };
+  error?: string;
+  stderr?: string;
+}
+
+/**
+ * Really spawns the server and lists its tools. Takes an unsaved draft on purpose: the point
+ * is to find out BEFORE saving, rather than to save something broken and learn about it when
+ * an agent's turn quietly fails.
+ */
+export async function testMcpServer(draft: McpServerDraft & { id?: string }): Promise<McpTestResult> {
+  const res = await fetch("/api/mcp/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(draft),
+  });
+  return res.json();
+}
 
 /**
  * A dropped connection (server restart, laptop sleep, network blip) used to just go silent

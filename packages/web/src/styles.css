@@ -4452,3 +4452,355 @@ body {
     animation: none;
   }
 }
+
+/* ---- MCP servers ---- */
+/* Built entirely from the tokens at the top of this file - no one-off colours, no spacing off
+   the 4px scale. The panel's whole job is to distinguish "verified" from "configured", so the
+   one place it spends a colour is that badge pair. */
+
+.mcp-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-6);
+}
+
+.mcp-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.mcp-panel h2 {
+  margin: 0;
+  font-size: var(--text-md);
+}
+
+.mcp-section-head {
+  margin: var(--space-4) 0 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.mcp-sub,
+.mcp-hint,
+.mcp-meta,
+.mcp-footnote {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-xs);
+  line-height: var(--lh-snug);
+  color: var(--text-muted);
+  max-width: 68ch;
+}
+
+.mcp-footnote {
+  border-top: 1px solid var(--hairline);
+  padding-top: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+.mcp-empty {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+}
+
+.mcp-error {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--danger);
+  background: var(--danger-wash);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+}
+
+.mcp-list,
+.mcp-catalog {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.mcp-catalog {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-3);
+}
+
+.mcp-row,
+.mcp-tile {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+}
+
+.mcp-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+/* A disabled server is still listed - it is something the user set up - but it must not read
+   as active. Dimmed, not hidden. */
+.mcp-row.is-off {
+  opacity: 0.55;
+}
+
+.mcp-row-main {
+  min-width: 0;
+  flex: 1 1 320px;
+}
+
+.mcp-row-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.mcp-cmd {
+  display: block;
+  margin-top: var(--space-1);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.mcp-row-actions,
+.mcp-editor-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* "Not tested" is the default and is deliberately quiet rather than alarming - it is an
+   absence of evidence, not a failure. Only a real handshake earns the accent. */
+.mcp-badge {
+  font-size: var(--text-2xs);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-strong);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.mcp-badge.is-verified {
+  color: var(--ok);
+  background: var(--ok-wash);
+  border-color: var(--ok-border);
+}
+
+.mcp-tile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.mcp-tile-blurb {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+  line-height: var(--lh-snug);
+  color: var(--text-secondary);
+}
+
+/* What the entry needs before it can work. Warn-coloured because it is a precondition the user
+   has to act on, not an error they have made. */
+.mcp-tile-need {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-2xs);
+  line-height: var(--lh-snug);
+  color: var(--warn);
+}
+
+.mcp-tile-need code {
+  font-family: var(--font-mono);
+}
+
+.mcp-editor {
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.mcp-editor h3 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-base);
+}
+
+.mcp-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.mcp-field > span {
+  flex: 0 0 120px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.mcp-field-block {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+
+.mcp-field input,
+.mcp-env-row input,
+.mcp-env-row select {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--text-sm);
+  padding: var(--space-2) var(--space-3);
+}
+
+.mcp-radio input {
+  flex: none;
+  padding: 0;
+}
+
+.mcp-env-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.mcp-env-name {
+  flex: 1 1 220px;
+  font-family: var(--font-mono);
+}
+
+.mcp-env-value {
+  flex: 1 1 180px;
+}
+
+/* Says, at the point of the value, that Solace is not holding a copy of it here. */
+.mcp-env-vaulted {
+  flex: 1 1 180px;
+  font-size: var(--text-2xs);
+  color: var(--ok);
+}
+
+.mcp-radio {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.mcp-agent-picks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-left: var(--space-5);
+}
+
+.mcp-test-result {
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  font-size: var(--text-sm);
+  border: 1px solid var(--border);
+}
+
+.mcp-test-result.is-ok {
+  color: var(--ok);
+  background: var(--ok-wash);
+  border-color: var(--ok-border);
+}
+
+.mcp-test-result.is-bad {
+  color: var(--danger);
+  background: var(--danger-wash);
+  border-color: var(--danger-border);
+}
+
+.mcp-test-result p {
+  margin: var(--space-1) 0 0;
+}
+
+.mcp-tools {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+/* The server's own stderr, verbatim. Scrollable rather than clipped: the useful line is very
+   often the last one. */
+.mcp-stderr {
+  margin: var(--space-2) 0 0;
+  max-height: 160px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  border-radius: var(--radius-xs);
+  padding: var(--space-2);
+  white-space: pre-wrap;
+}
+
+.mcp-panel button {
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+}
+
+.mcp-panel button:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.mcp-panel button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.mcp-panel button.mcp-primary,
+.mcp-panel button.mcp-add {
+  color: var(--accent-strong);
+  background: var(--accent-wash);
+  border-color: var(--accent-border);
+}
+
+.mcp-panel button.mcp-danger {
+  color: var(--danger);
+  border-color: var(--danger-border);
+}
+
+@media (max-width: 640px) {
+  .mcp-field {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-1);
+  }
+
+  .mcp-field > span {
+    flex: none;
+  }
+}

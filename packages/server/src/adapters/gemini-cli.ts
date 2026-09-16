@@ -5,6 +5,7 @@ import * as readline from "node:readline";
 import { join } from "node:path";
 import type { TrustLevel } from "@solace/shared";
 import { killCliTree, spawnCli } from "../core/spawnCli";
+import { mcpServersForAgent, type ResolvedMcpServer } from "../core/mcpServers";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 
 /** The group-chat MCP bridge, re-anchored to the *source* copy from the package root exactly as
@@ -70,31 +71,61 @@ export function geminiApprovalMode(trustLevel: TrustLevel): string {
  * tool is still governed by --approval-mode. (Gemini's own --allowed-tools is marked DEPRECATED
  * in favour of the policy engine, so it is deliberately not used here.)
  */
-function writeSolaceSettings(agentId: string, serverPort: number, turnToken?: string): { dir: string; path: string } {
+/**
+ * The settings object itself, split out from the write so it can be asserted on without
+ * touching the filesystem - see mcpServers.adapters.test.ts.
+ */
+export function geminiSettings(
+  agentId: string,
+  serverPort: number,
+  turnToken?: string,
+  userServers: ResolvedMcpServer[] = [],
+): { mcpServers: Record<string, unknown> } {
+  const mcpServers: Record<string, unknown> = {
+    // No underscore in the alias on purpose: gemini's policy engine parses the fully
+    // qualified name at the first underscore after the "mcp_" prefix, and an underscore in
+    // the server alias makes security policies fail silently (its own documented warning).
+    solace: {
+      command: process.execPath,
+      args: [SOLACE_BRIDGE_SCRIPT],
+      env: {
+        SOLACE_AGENT_ID: agentId,
+        SOLACE_SERVER_PORT: String(serverPort),
+        ...(turnToken ? { SOLACE_TURN_TOKEN: turnToken } : {}),
+      },
+      trust: true,
+      description: "Solace group chat",
+    },
+  };
+  // The user's servers go into the SAME system-defaults file, which is the lowest-precedence
+  // settings layer gemini reads. That is the right layer for both: gemini deep-merges the
+  // layers (mergeSettings -> customDeepMerge), so these coexist with anything in the user's own
+  // ~/.gemini/settings.json - and if a future gemini ever replaced rather than merged, it would
+  // drop OUR entries rather than the user's, which is the failure direction we can live with.
+  //
+  // `trust: true` is set only on the solace bridge, for the reason the block above explains. A
+  // user server gets no trust flag, so --approval-mode still governs every one of its tools.
+  //
+  // The underscore caveat above applies to a user server's name too: a name containing "_" is
+  // accepted here (the name is the user's, and silently rewriting it would break every other
+  // adapter's tool ids) but gemini's policy engine may mis-parse it, which is why the UI warns
+  // about underscores at the point the name is typed rather than here.
+  for (const server of userServers) {
+    if (server.name === "solace") continue;
+    mcpServers[server.name] = { command: server.command, args: server.args, env: server.env };
+  }
+  return { mcpServers };
+}
+
+function writeSolaceSettings(
+  agentId: string,
+  serverPort: number,
+  turnToken?: string,
+  userServers: ResolvedMcpServer[] = [],
+): { dir: string; path: string } {
   const dir = mkdtempSync(join(tmpdir(), "solace-gemini-"));
   const path = join(dir, "system-defaults.json");
-  writeFileSync(
-    path,
-    JSON.stringify({
-      mcpServers: {
-        // No underscore in the alias on purpose: gemini's policy engine parses the fully
-        // qualified name at the first underscore after the "mcp_" prefix, and an underscore in
-        // the server alias makes security policies fail silently (its own documented warning).
-        solace: {
-          command: process.execPath,
-          args: [SOLACE_BRIDGE_SCRIPT],
-          env: {
-            SOLACE_AGENT_ID: agentId,
-            SOLACE_SERVER_PORT: String(serverPort),
-            ...(turnToken ? { SOLACE_TURN_TOKEN: turnToken } : {}),
-          },
-          trust: true,
-          description: "Solace group chat",
-        },
-      },
-    }),
-    "utf-8",
-  );
+  writeFileSync(path, JSON.stringify(geminiSettings(agentId, serverPort, turnToken, userServers)), "utf-8");
   return { dir, path };
 }
 
@@ -156,7 +187,7 @@ export const geminiCliAdapter: ProviderAdapter = {
 
     const args = buildGeminiArgs({ trustLevel, model, sessionId, newSessionId: resolvedSessionId });
 
-    const settings = writeSolaceSettings(agentId, serverPort, turnToken);
+    const settings = writeSolaceSettings(agentId, serverPort, turnToken, mcpServersForAgent(agentId));
 
     await new Promise<void>((resolve) => {
       let cleanedUp = false;
