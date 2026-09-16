@@ -8,9 +8,23 @@
  *
  * The schema below is the single definition of what a setting IS: its key, its default, the
  * words shown next to it. The server validates against it and the Settings page renders from
- * it, so adding a second setting is one entry in SETTING_DEFINITIONS - not a new route, a new
- * field on three types, and a new block of JSX.
+ * it, so adding a setting is one entry in SETTING_DEFINITIONS - not a new route, a new field on
+ * three types, and a new block of JSX.
+ *
+ * THE RULE for anything added here: a setting must control REAL, EXISTING behaviour, and the
+ * place that behaviour lives must read it LIVE (never a copy taken at boot), so a change made
+ * in one tab applies to a turn that starts five seconds later. Every default below is the
+ * constant the code already used, so a user who never opens this page sees no change at all.
  */
+
+/** The trust levels an agent can run at. Aliased from the real AgentConfig type rather than
+ * re-listed here, so the setting's accepted values can never drift from the ones an agent can
+ * actually be created with. Type-only, so this import is erased and there is no runtime cycle
+ * with index.ts (which re-exports this file). The authoritative runtime check still lives in
+ * server/core/validateAgentConfig.ts, which rejects anything outside the list. */
+import type { TrustLevel } from "./index";
+
+export type SettingsTrustLevel = TrustLevel;
 
 export interface AppSettings {
   /**
@@ -37,22 +51,132 @@ export interface AppSettings {
    * directory sits in, and nowhere else.
    */
   agentsFollowProjects: boolean;
+
+  /**
+   * The ceiling on one turn's wall-clock run time, in minutes. Read live in
+   * agentManager.drainQueue, which arms the abort timer from it.
+   *
+   * Default 120 = the old MAX_TURN_MS. Range 5..720: below five minutes the ceiling would start
+   * killing ordinary work (a single "build this page" turn is routinely longer), and twelve
+   * hours is past the point where an unattended runaway turn is cheaper to stop than to let
+   * run. The idle limit below is the one that actually fires in practice; this one only catches
+   * a turn that never stops talking.
+   */
+  maxTurnMinutes: number;
+
+  /**
+   * How long a turn may produce NO output at all before it is treated as hung, in minutes.
+   * Read live in agentManager.drainQueue, which arms and re-arms the idle timer from it.
+   *
+   * Default 5 = the old MAX_TURN_IDLE_MS. Range 1..60. This is the check that matters: a
+   * working CLI emits constantly, so silence is the real signal of a stuck process. Raise it if
+   * a provider you use goes quiet for long stretches mid-thought; below a minute it will start
+   * killing healthy turns that are simply waiting on a slow tool.
+   */
+  turnIdleMinutes: number;
+
+  /**
+   * How many times one piece of work may be interrupted by a question and resumed before the
+   * app stops and says so. Read live in agentManager.scheduleResume.
+   *
+   * Default 3 = the old MAX_RESUMES. Range 0..10. Each resume is a real billed turn that
+   * re-reads files and re-establishes context, so an agent getting questions faster than it can
+   * work would otherwise spend your money making no progress. 0 means work is never resumed
+   * after an interrupt - it is abandoned and reported, not silently dropped.
+   */
+  maxResumes: number;
+
+  /**
+   * How many times one piece of work may be passed to a DIFFERENT agent after a usage
+   * exhaustion. Read live in agentManager.attemptHandover. Does nothing at all unless
+   * "Hand work over when an agent runs out of usage" is on.
+   *
+   * Default 2 = the old MAX_HANDOVERS. Range 0..5. Every hop is a real billed turn on a fresh
+   * agent that has to re-read the files first, and agents on the same account share one real
+   * limit, so "everybody is exhausted" is the normal case rather than the exotic one.
+   */
+  maxHandovers: number;
+
+  /**
+   * How many mid-turn group posts one turn may make, before it has to save the rest for its
+   * final answer. Read live in agentManager.postFromCurrentTurn.
+   *
+   * Default 8 = the old MAX_MID_TURN_POSTS. Range 0..50. Every post can enqueue a real, billed
+   * turn for another agent, so an agent that decides to narrate its whole working into the
+   * group spends your money doing it. 0 stops mid-turn posting entirely: agents then only speak
+   * in their final answers, which is quieter and cheaper but removes live coordination.
+   */
+  maxMidTurnPosts: number;
+
+  /**
+   * How long your question waits for the running turn to pick it up cooperatively before that
+   * turn is killed to answer it, in seconds. Read live in agentManager.armInterruptTimer.
+   *
+   * Default 50 = the old INTERRUPT_GRACE_MS. Range 5..600. Longer than the gap between two tool
+   * calls of a working agent (seconds) and shorter than a human's patience. Raising it means
+   * fewer destroyed turns and slower answers; lowering it means the opposite. Only YOUR
+   * questions can do this - an agent's question never kills another agent's turn, because doing
+   * so starves the very answer it is asking for.
+   */
+  interruptGraceSeconds: number;
+
+  /**
+   * Which trust level a NEWLY added agent starts on, in the Add agent form.
+   *
+   * Default "bypassPermissions" = what the form already preselected. This is a starting point
+   * for the dropdown, nothing more: it does NOT change any agent that already exists, and it is
+   * not a cap - you can still pick any level for any agent, before or after creating it. If the
+   * provider you pick does not support this level, the form falls back to that provider's first
+   * supported one rather than sending something the CLI would reject.
+   */
+  defaultTrustLevel: SettingsTrustLevel;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   handoverOnUsageExhausted: false,
   agentsFollowProjects: true,
+  // Each number below is exactly the constant agentManager.ts used before it was configurable,
+  // so nothing changes behaviour for someone who never opens Settings.
+  maxTurnMinutes: 120,
+  turnIdleMinutes: 5,
+  maxResumes: 3,
+  maxHandovers: 2,
+  maxMidTurnPosts: 8,
+  interruptGraceSeconds: 50,
+  defaultTrustLevel: "bypassPermissions",
 };
 
-/** What a setting looks like on the Settings page. Only booleans exist so far; `kind` is here
- * so the second setting can be a different control without the page needing to be rebuilt. */
-export interface SettingDefinition {
+/** Fields every setting has, whatever control it renders as. */
+interface BaseSettingDefinition {
   key: keyof AppSettings;
-  kind: "toggle";
   label: string;
   /** The honest explanation, including what the setting does NOT do. Shown under the label. */
   description: string;
 }
+
+export interface ToggleSettingDefinition extends BaseSettingDefinition {
+  kind: "toggle";
+}
+
+export interface NumberSettingDefinition extends BaseSettingDefinition {
+  kind: "number";
+  /** Inclusive. A value outside [min, max] is REJECTED, not clamped - see sanitizeAppSettings. */
+  min: number;
+  max: number;
+  /** The word shown after the box ("minutes", "seconds", "posts per turn"). */
+  unit: string;
+}
+
+export interface SelectSettingDefinition extends BaseSettingDefinition {
+  kind: "select";
+  /** The only accepted values. Anything else falls back to the default. */
+  options: { value: string; label: string }[];
+}
+
+/** What a setting looks like on the Settings page. A discriminated union so the page can render
+ * each control from the schema alone, and so a new kind is a compile error everywhere it has to
+ * be handled rather than a silently unrendered row. */
+export type SettingDefinition = ToggleSettingDefinition | NumberSettingDefinition | SelectSettingDefinition;
 
 export const SETTING_DEFINITIONS: SettingDefinition[] = [
   {
@@ -63,8 +187,8 @@ export const SETTING_DEFINITIONS: SettingDefinition[] = [
       "If an agent's provider reports a usage or rate limit, pass that piece of work to another agent " +
       "working in the same directory. Only agents with the same working directory are considered - an " +
       "agent pointed at a different project would do confident work on the wrong codebase. The receiving " +
-      "agent runs at its own permission level, every handover is announced in the chat, and work is never " +
-      "passed on more than twice. When nobody is eligible, the work waits and says so.",
+      "agent runs at its own permission level, every handover is announced in the chat, and how many times " +
+      "work may be passed on is set below. When nobody is eligible, the work waits and says so.",
   },
   {
     key: "agentsFollowProjects",
@@ -77,6 +201,107 @@ export const SETTING_DEFINITIONS: SettingDefinition[] = [
       "still remove specific agents from a specific project below. Turn this off and an agent belongs " +
       "only to the project its own working directory is inside - which means a new project starts empty.",
   },
+  {
+    key: "turnIdleMinutes",
+    kind: "number",
+    min: 1,
+    max: 60,
+    unit: "minutes of silence",
+    label: "Give up on a turn that has gone quiet",
+    description:
+      "How long a turn may produce no output at all before it is treated as stuck and stopped. This is " +
+      "the limit that actually fires: a working CLI emits text, tool calls and usage constantly, so " +
+      "silence is the real signal of a hung process, and any output at all resets the clock. It does not " +
+      "measure how long the turn has run in total - that is the next setting. A turn stopped this way is " +
+      "reported as stopped by this app, never disguised as a provider failure, and keeps its Retry button.",
+  },
+  {
+    key: "maxTurnMinutes",
+    kind: "number",
+    min: 5,
+    max: 720,
+    unit: "minutes",
+    label: "Maximum length of one turn",
+    description:
+      "The hard ceiling on a single turn's run time, however much it is still producing. This only " +
+      "catches a turn that never stops talking; a genuinely stuck one is caught far sooner by the silence " +
+      "limit above. A turn resumed after an interruption inherits whatever is LEFT of this budget rather " +
+      "than a fresh one - otherwise an agent interrupted every ten minutes would never time out at all - " +
+      "with a one-minute floor so a nearly-exhausted resume is not killed on arrival.",
+  },
+  {
+    key: "interruptGraceSeconds",
+    kind: "number",
+    min: 5,
+    max: 600,
+    unit: "seconds",
+    label: "How long a question waits before it interrupts a turn",
+    description:
+      "When you ask something while an agent is working, it first gets this long to pick the question up " +
+      "on its own between tool calls, which costs nothing. Only if that window passes is the turn killed " +
+      "and resumed afterwards, which costs a real billed turn. Applies only to YOUR questions: an agent's " +
+      "question never kills another agent's turn, because that starves the answer it is waiting for. " +
+      "Raising it means fewer destroyed turns and slower answers; lowering it means the reverse.",
+  },
+  {
+    key: "maxResumes",
+    kind: "number",
+    min: 0,
+    max: 10,
+    unit: "times",
+    label: "How often work may be interrupted and resumed",
+    description:
+      "After this many interruptions, the app stops resuming a piece of work and says exactly what was " +
+      "abandoned instead of quietly dropping it - the Retry button still runs it again from the start. " +
+      "Each resume is a real billed turn that has to re-read files and rebuild context, so an agent " +
+      "getting questions faster than it can work would otherwise make no progress at all. Work is also " +
+      "abandoned once it has used the full turn budget above, whichever comes first. Set 0 to never resume.",
+  },
+  {
+    key: "maxHandovers",
+    kind: "number",
+    min: 0,
+    max: 5,
+    unit: "times",
+    label: "How often work may be handed to another agent",
+    description:
+      "Only has any effect while handover on exhausted usage is on, above. Each hop is a real billed turn " +
+      "on a fresh agent that must re-read the files first, and agents sharing one account share one real " +
+      "limit, so everybody being exhausted is the normal case. Once the limit is reached the work is left " +
+      "unfinished and said so, with the reset time when the provider gave one. Set 0 and handover is " +
+      "announced as declined every time, which is a slower way of turning the feature off.",
+  },
+  {
+    key: "maxMidTurnPosts",
+    kind: "number",
+    min: 0,
+    max: 50,
+    unit: "posts per turn",
+    label: "Mid-turn group posts one turn may make",
+    description:
+      "An agent can post into the group while it is still working, to announce what it is starting or hand " +
+      "work off. Every such post can enqueue a real, billed turn for another agent, so this caps how much " +
+      "one turn can spend narrating. Past the cap the agent is told it was refused rather than believing " +
+      "it spoke - a silent drop would leave it acting on a message nobody received. The budget resets for " +
+      "each turn, including a resumed one. Set 0 and agents only speak in their final answers.",
+  },
+  {
+    key: "defaultTrustLevel",
+    kind: "select",
+    options: [
+      { value: "plan", label: "Plan - propose, change nothing" },
+      { value: "manual", label: "Manual - ask before every change" },
+      { value: "acceptEdits", label: "Accept edits - auto-accept file edits" },
+      { value: "bypassPermissions", label: "Bypass permissions - fully unattended" },
+      { value: "auto", label: "Auto - decide for itself" },
+    ],
+    label: "Trust level a new agent starts on",
+    description:
+      "Which option the Add agent form preselects. It is a starting point, not a cap: you can still pick " +
+      "any level for any agent, and changing this never touches an agent that already exists. If the " +
+      "provider you pick does not offer this level, the form falls back to that provider's first supported " +
+      "one rather than sending something its CLI would reject.",
+  },
 ];
 
 /**
@@ -84,13 +309,36 @@ export const SETTING_DEFINITIONS: SettingDefinition[] = [
  * AppSettings. Unknown keys are dropped and a wrong-typed value falls back to the default
  * rather than being half-believed - a setting that decides whether work moves between models
  * is not a place to guess at what the user meant.
+ *
+ * Numbers are REJECTED rather than clamped when out of range, for the same reason. Clamping
+ * "0.1" up to 1 or "99999" down to 720 is guessing: the only thing we actually know about such
+ * a value is that whoever produced it was not talking about this setting. A fractional value
+ * IS rounded, because "2.5 minutes" is an unambiguous intent that the underlying timer simply
+ * expresses in whole units - and it is rounded BEFORE the range check, so rounding can never
+ * push a legal value outside its own bounds.
  */
 export function sanitizeAppSettings(value: unknown): AppSettings {
   const raw = (value ?? {}) as Record<string, unknown>;
   const out = { ...DEFAULT_APP_SETTINGS };
+  // Writing through a widened view: the union of value types means TS cannot prove that the
+  // branch matching `def.kind` produces the type of `out[def.key]`. The SETTING_DEFINITIONS
+  // entry and the AppSettings field are written together, and the tests pin the pairing.
+  const write = out as Record<string, unknown>;
   for (const def of SETTING_DEFINITIONS) {
     const incoming = raw[def.key];
-    if (def.kind === "toggle" && typeof incoming === "boolean") out[def.key] = incoming;
+    if (def.kind === "toggle") {
+      if (typeof incoming === "boolean") write[def.key] = incoming;
+    } else if (def.kind === "number") {
+      // NaN and Infinity are excluded by isFinite before rounding; a numeric string is not a
+      // number and is not coerced, matching how the boolean path refuses "true".
+      if (typeof incoming !== "number" || !Number.isFinite(incoming)) continue;
+      const rounded = Math.round(incoming);
+      if (rounded >= def.min && rounded <= def.max) write[def.key] = rounded;
+    } else {
+      if (typeof incoming === "string" && def.options.some((o) => o.value === incoming)) {
+        write[def.key] = incoming;
+      }
+    }
   }
   return out;
 }

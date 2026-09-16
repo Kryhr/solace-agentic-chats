@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  DEFAULT_APP_SETTINGS,
   isChatChannel,
   type AgentConfig,
   type AgentStatus,
@@ -540,6 +541,9 @@ export default function App() {
         <AddAgentModal
           modelCatalog={modelCatalog}
           permissionCatalog={permissionCatalog}
+          // Until the settings have loaded, the documented default - the same value the server
+          // would report - rather than a second hard-coded guess that could drift from it.
+          defaultTrustLevel={settings?.defaultTrustLevel ?? DEFAULT_APP_SETTINGS.defaultTrustLevel}
           defaultProjectPath={activeProject?.path}
           onClose={() => setShowAddAgent(false)}
           onCreate={async (config) => {

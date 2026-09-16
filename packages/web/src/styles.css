@@ -4086,6 +4086,114 @@ body {
   text-align: left;
 }
 
+/* ---- Settings: the number control --------------------------------------------------------
+   Sits in the same slot as .setting-switch (flex:0 0 auto at the right of the row) and is
+   built from the same tokens, so a list mixing switches and boxes reads as one column of
+   controls rather than two kinds of widget. The unit and the legal range live under the box
+   because the range is the one thing a user needs BEFORE typing, and a value outside it is
+   refused rather than clamped - see sanitizeAppSettings. */
+.setting-number {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-1);
+}
+
+.setting-number-input {
+  width: 92px;
+  padding: 5px var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--lh-tight);
+  text-align: right;
+  color: var(--text);
+  background: var(--surface-2);
+  /* Transparent at rest, like .select: the edge arrives on hover/focus so a column of these
+     doesn't read as a stack of form boxes. */
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  transition:
+    border-color var(--dur-2) var(--ease-in-out),
+    background-color var(--dur-2) var(--ease-in-out),
+    box-shadow var(--dur-2) var(--ease-in-out);
+}
+
+.setting-number-input:hover:not(:disabled) {
+  border-color: var(--border);
+  background: var(--surface-3);
+}
+
+.setting-number-input:focus {
+  outline: none;
+  border-color: var(--accent-border);
+  background: var(--surface-3);
+  box-shadow: var(--ring-tight);
+}
+
+/* Out of range, or empty. Shown while typing rather than on submit, because the commit happens
+   on blur - by then it is too late to be a warning. Blurring reverts to the stored value. */
+.setting-number-input.is-invalid {
+  border-color: var(--danger-border);
+  color: var(--danger);
+}
+
+.setting-number-input.is-invalid:focus {
+  box-shadow: 0 0 0 2px var(--danger-border);
+}
+
+.setting-number-input:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+/* The browser's own spinner is a pair of 10px arrows that only appear on hover and sit on top
+   of the value at this width. The box takes typed digits and arrow keys either way. */
+.setting-number-input::-webkit-outer-spin-button,
+.setting-number-input::-webkit-inner-spin-button {
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.setting-number-input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.setting-number-meta {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--text-2xs);
+  line-height: var(--lh-tight);
+  color: var(--text-faint);
+}
+
+.setting-number-unit {
+  color: var(--text-muted);
+}
+
+.setting-number-range {
+  font-family: var(--font-mono);
+}
+
+/* ---- Settings: the select control --------------------------------------------------------
+   The app's existing .select, only wider: these option labels are whole phrases ("Bypass
+   permissions - fully unattended"), not the one-word model names .select is normally sized for,
+   and at its natural width the text was being clipped by the chevron. */
+.setting-select {
+  flex: 0 0 auto;
+  max-width: 100%;
+  font-size: var(--text-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .setting-number-input {
+    transition: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .setting-switch-track,
   .setting-switch-thumb {

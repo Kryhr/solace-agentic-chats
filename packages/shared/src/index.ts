@@ -24,7 +24,14 @@ import {
   SETTING_DEFINITIONS as DEFS,
   sanitizeAppSettings as sanitizeSettings,
 } from "./settings";
-export type { AppSettings, SettingDefinition } from "./settings";
+export type {
+  AppSettings,
+  SettingDefinition,
+  ToggleSettingDefinition,
+  NumberSettingDefinition,
+  SelectSettingDefinition,
+  SettingsTrustLevel,
+} from "./settings";
 export const DEFAULT_APP_SETTINGS = DEFAULTS;
 export const SETTING_DEFINITIONS = DEFS;
 export const sanitizeAppSettings = sanitizeSettings;

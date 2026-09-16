@@ -43,6 +43,7 @@ export function AddAgentModal({
   modelCatalog,
   permissionCatalog,
   defaultProjectPath,
+  defaultTrustLevel,
   onClose,
   onCreate,
 }: {
@@ -50,12 +51,16 @@ export function AddAgentModal({
   permissionCatalog: ProviderPermissionInfo[];
   /** The path of the project the sidebar is scoped to, so a new agent lands in it by default. */
   defaultProjectPath?: string;
+  /** The app setting "Trust level a new agent starts on" - which option this form preselects.
+   * A preference, not a cap: the dropdown below still offers every level the chosen provider
+   * supports, and a provider that does not support this one falls back to its own first. */
+  defaultTrustLevel: TrustLevel;
   onClose: () => void;
   onCreate: (config: Omit<AgentConfig, "id">) => void;
 }) {
   const [handle, setHandle] = useState("");
   const [provider, setProvider] = useState<ProviderId>("claude-code");
-  const [trustLevel, setTrustLevel] = useState<TrustLevel>("bypassPermissions");
+  const [trustLevel, setTrustLevel] = useState<TrustLevel>(defaultTrustLevel);
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
 
@@ -119,7 +124,9 @@ export function AddAgentModal({
   useEffect(() => {
     setModel(initialModelFor(info));
     setEffort(effortOptionsFor(info, initialModelFor(info))[0] ?? "");
-    setTrustLevel(trustOptions.includes("bypassPermissions") ? "bypassPermissions" : (trustOptions[0] ?? "bypassPermissions"));
+    // The configured default when this provider actually offers it, otherwise that provider's
+    // own first option - never a level its CLI would reject, and never a silently higher one.
+    setTrustLevel(trustOptions.includes(defaultTrustLevel) ? defaultTrustLevel : (trustOptions[0] ?? defaultTrustLevel));
     // Custom endpoints are API-key-only; every other provider goes back to its CLI default
     // rather than silently inheriting "API key" from a provider that was only ever one.
     setAuthMode(API_KEY_ONLY.includes(provider) ? "api-key" : "cli");
