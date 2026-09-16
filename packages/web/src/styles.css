@@ -5183,3 +5183,354 @@ body {
   box-shadow: var(--ring-tight);
   border-radius: var(--radius-xs);
 }
+
+/* =========================================================================
+   ---- connect CLI flow ----
+   The screen behind "+ Add connection → Coding agent CLI", plus the two bits the sidebar
+   needed once its CLI section started listing CONNECTED providers rather than installed ones.
+
+   Spacing contract for a card: things that belong together sit --space-1 apart (a name and its
+   badge, a command and where that command came from); the card's own groups - identity,
+   sign-in, actions, result - sit --space-3 apart. That difference IS the grouping; there are no
+   rules or boxes inside a card doing it.
+
+   Every value below comes from the existing --space-* / --text-* / --radius-* / --dur-* scales.
+   ========================================================================= */
+
+/* --- the sidebar row for a connected CLI ------------------------------------------------- */
+
+/* The row carries Check AND Disconnect, so it takes .has-managed-actions and drops that pair
+   onto its own line under the name - the same layout a saved endpoint uses, for the same
+   reason: the cluster is ~96px and cannot be pinned over the name in a 234px rail.
+   `justify-self` is the part that rule is missing. Its `justify-content: flex-start` never
+   applies, because .provider-actions is a shrink-to-fit grid item with `justify-self: end`
+   from the base rule, so the buttons ended up hard right under a hard-left name - two edges
+   in one row, aligned to nothing. Scoped to CLI rows rather than changed in the shared rule,
+   so nothing else's layout moves underneath it. */
+.provider-row.credential-row.has-managed-actions.is-cli-connection .provider-actions {
+  justify-self: start;
+}
+
+/* --- the search bar. Deliberately the same instrument as the Settings filter: same shape, same
+   count, same Clear, same Escape-to-clear - two filter boxes in one app that behave differently
+   is a worse tell than either of them looking plain. Its own class because it sits on a modal's
+   --panel rather than the Settings page's ground, so it takes a surface step instead of that
+   page's border treatment. */
+.cli-search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-1);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  transition:
+    border-color var(--dur-2) var(--ease-in-out),
+    background-color var(--dur-2) var(--ease-in-out);
+}
+
+.cli-search:hover {
+  border-color: var(--border);
+}
+
+/* The whole bar takes the ring, not the bare input: the input has no border of its own, so a
+   ring on it alone reads as a stray rectangle floating inside the bar. */
+.cli-search:focus-within {
+  border-color: var(--accent-border);
+  background: var(--surface-2);
+  box-shadow: var(--ring-tight);
+}
+
+.cli-search-icon {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+
+.cli-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--space-1) 0;
+  font-family: inherit;
+  font-size: var(--text-sm);
+  line-height: var(--lh-tight);
+  color: var(--text);
+  background: none;
+  border: none;
+  outline: none;
+}
+
+.cli-search-input::placeholder {
+  color: var(--text-faint);
+}
+
+/* Safari draws its own clear affordance on type="search"; ours is a real button with a label. */
+.cli-search-input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.cli-search-count {
+  flex: 0 0 auto;
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.cli-search-clear {
+  flex: 0 0 auto;
+  padding: var(--space-1) var(--space-2);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  line-height: var(--lh-tight);
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    color var(--dur-1) var(--ease-in-out),
+    border-color var(--dur-1) var(--ease-in-out);
+}
+
+.cli-search-clear:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.cli-search-clear:active {
+  background: var(--surface-3);
+}
+
+.cli-search-clear:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-tight);
+}
+
+/* --- the cards --------------------------------------------------------------------------- */
+
+.cli-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.cli-card {
+  display: flex;
+  flex-direction: column;
+  /* The between-groups gap. Everything tighter than this is set inside a group. */
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  background: var(--surface-1);
+  min-width: 0;
+}
+
+/* A connected provider is marked with the same green the ok dot uses, on the leading edge -
+   the one place a card can carry state without competing with its own title. */
+.cli-card.is-connected {
+  border-left: 2px solid var(--ok);
+}
+
+.cli-card-id {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.cli-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.cli-card-name {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  line-height: var(--lh-tight);
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cli-card-badge {
+  flex: 0 0 auto;
+  padding: 2px var(--space-2);
+  font-size: var(--text-2xs);
+  line-height: var(--lh-tight);
+  color: var(--ok);
+  background: var(--ok-wash);
+  border: 1px solid var(--ok-border);
+  border-radius: var(--radius-full);
+}
+
+.cli-card-blurb {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: var(--lh-snug);
+  color: var(--text-muted);
+}
+
+.cli-card-signin {
+  display: flex;
+  flex-direction: column;
+  /* Label, command and provenance are one thought - tighter than the card's own group gap. */
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.cli-card-label {
+  font-size: var(--text-2xs);
+  line-height: var(--lh-tight);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* Shown where a command would be, for the CLIs that genuinely have no sign-in subcommand. Same
+   box as .command-line so the eye finds the answer in the same place either way, but not
+   monospaced - this is a sentence, and setting prose in mono dresses it up as something you
+   could paste into a terminal. */
+.cli-card-note {
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: var(--text-xs);
+  line-height: var(--lh-snug);
+  color: var(--text-secondary);
+}
+
+.cli-card-source {
+  font-size: var(--text-2xs);
+  line-height: var(--lh-snug);
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+
+.cli-card-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* What the probe printed, in the tool's own words. Dot first, on the text's first line, so a
+   two-line result stays one block rather than reading as a bullet. */
+.cli-card-result {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  line-height: var(--lh-snug);
+  overflow-wrap: anywhere;
+}
+
+.cli-card-result.is-ok {
+  color: var(--text-secondary);
+  background: var(--ok-wash);
+  border: 1px solid var(--ok-border);
+}
+
+.cli-card-result.is-fail {
+  color: var(--text-secondary);
+  background: var(--danger-wash);
+  border: 1px solid var(--danger-border);
+}
+
+/* The dot is a 6px circle on a baseline-aligned row, which lands it optically low against 13px
+   text; a hair of lift puts it on the text's own centre. */
+.cli-card-result .connection-dot {
+  position: relative;
+  top: -1px;
+}
+
+.cli-card-result-when {
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+/* A refusal: the connect did NOT happen. The same danger treatment .field-error uses, with room
+   for the install command underneath. */
+.cli-card-refusal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  line-height: var(--lh-snug);
+  color: var(--danger);
+  background: var(--danger-wash);
+  border: 1px solid var(--danger-border);
+}
+
+.cli-card-refusal .cli-card-source {
+  color: var(--danger);
+  opacity: 0.8;
+}
+
+/* --- empty states ------------------------------------------------------------------------ */
+
+/* A filter matching nothing has to say so. Quieter than the page-level .chat-empty, because
+   this one lives inside a modal that is already framed. */
+.cli-empty {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-6) var(--space-3);
+  text-align: center;
+}
+
+.cli-empty-title {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  line-height: var(--lh-tight);
+  color: var(--text-secondary);
+}
+
+.cli-empty-body {
+  font-size: var(--text-xs);
+  line-height: var(--lh-snug);
+  color: var(--text-faint);
+  text-wrap: balance;
+}
+
+/* Buttons that read as part of the sentence around them, because that is what they are. */
+.cli-inline-link,
+.connection-empty-link {
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  background: none;
+  border: none;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.cli-inline-link:hover,
+.connection-empty-link:hover {
+  color: var(--accent-strong);
+}
+
+.cli-inline-link:focus-visible,
+.connection-empty-link:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-tight);
+  border-radius: var(--radius-xs);
+}
+
+/* At phone width the actions stop sharing a line and each take a full one, so a two-word button
+   is never squeezed into two lines of one word. */
+@media (max-width: 600px) {
+  .cli-card-actions > button {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+}

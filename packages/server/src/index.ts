@@ -16,6 +16,12 @@ import { AgentManager } from "./core/agentManager";
 import { WORKSPACE_ROOT, createProject, ensureWorkspaceRoot, listProjects } from "./core/workspace";
 import { checkAllProviders, checkCliProvider, isCliProvider, testProvider } from "./core/providerStatus";
 import { checkCredential, NotCheckableError } from "./core/connectionChecks";
+import {
+  CONNECTABLE_PROVIDERS,
+  ConnectedProviderStore,
+  connectableProvider,
+  isConnectableProvider,
+} from "./core/connectedProviders";
 import { getModelCatalog } from "./core/modelCatalog";
 import { getPermissionCatalog } from "./core/permissionCatalog";
 import { debounce, loadState, saveState } from "./core/persistence";
@@ -105,6 +111,10 @@ async function main() {
   // (queue, retry, interrupt) gets them without each one having to remember to pass them. See
   // the note on setMcpServerProvider.
   const mcpServers = new McpServerStore(persisted.mcpServers);
+  // Which CLIs the user has opted into, as opposed to which happen to be installed. See
+  // core/connectedProviders.ts - an empty list here is the correct reading of an older state
+  // file, not a failure to load one.
+  const connectedClis = new ConnectedProviderStore(persisted.connectedCliProviders);
   setMcpServerProvider((agentId) => resolveMcpServers(mcpServers.list(), agentId, WORKSPACE_ROOT));
   const agents = new AgentManager(
     bus,
@@ -132,10 +142,12 @@ async function main() {
         settings: settings.get(),
         coordination: board.snapshot(),
         mcpServers: mcpServers.list(),
+        connectedCliProviders: connectedClis.list(),
       }),
     300,
   );
   mcpServers.onChange = persist;
+  connectedClis.onChange = persist;
   bus.onChange = persist;
   agents.onChange = persist;
   settings.onChange = (next) => {
@@ -558,6 +570,68 @@ async function main() {
       return { error: `"${req.params.provider}" is not a CLI provider - it has no binary to check` };
     }
     return checkCliProvider(req.params.provider);
+  });
+
+  /* ---------------------- Connected coding-agent CLIs ---------------------- */
+
+  /**
+   * The user's connected CLIs, and the catalogue the connect flow renders from.
+   *
+   * `connected` is NOT "what is installed". A binary on PATH is a fact about the machine; a
+   * connection is a decision the user made, and only the second one belongs in their sidebar.
+   * The catalogue rides along so the connect screen renders in one round trip, and carries each
+   * CLI's real SIGN-IN command (with the `--help` invocation it was read from) rather than its
+   * npm install line, which is a different step and useless to someone who already has it.
+   */
+  app.get("/api/connections/cli/connected", async () => ({
+    connected: connectedClis.list(),
+    catalog: CONNECTABLE_PROVIDERS,
+  }));
+
+  /**
+   * Connect one CLI - and this route is the reason the whole thing can be trusted.
+   *
+   * It runs the real `<bin> --version` FIRST and refuses on anything but a pass, handing back
+   * the failing check verbatim plus the install command. Nothing else in the server can add to
+   * the connected list, so there is no path by which a provider appears under "Coding agent
+   * CLI" without having been run on this machine in the last few hundred milliseconds.
+   *
+   * 409, not 400, for "it isn't installed": the request was well-formed and the answer is about
+   * the machine's state, not the request's. The body carries the ConnectionCheck itself so the
+   * UI can quote what the probe actually said instead of paraphrasing a status code.
+   */
+  app.post<{ Params: { provider: string } }>("/api/connections/cli/connected/:provider", async (req, reply) => {
+    const provider = req.params.provider;
+    if (!isConnectableProvider(provider)) {
+      reply.code(400);
+      return { error: `"${provider}" is not a coding-agent CLI - there is no binary to connect.` };
+    }
+    const check = await checkCliProvider(provider);
+    if (!check.ok) {
+      reply.code(409);
+      return {
+        error: `${connectableProvider(provider)?.name ?? provider} is not on this machine's PATH, so it was not connected.`,
+        check,
+        installCommand: connectableProvider(provider)?.installCommand,
+      };
+    }
+    const added = connectedClis.connect(provider);
+    return { connected: connectedClis.list(), check, added };
+  });
+
+  /**
+   * Disconnect one CLI. Removes it from the list and does nothing else: no binary is
+   * uninstalled, no credential is deleted and nothing is signed out - which is exactly what the
+   * UI says, so pressing this can never lose anything that isn't one line of JSON.
+   */
+  app.delete<{ Params: { provider: string } }>("/api/connections/cli/connected/:provider", async (req, reply) => {
+    const provider = req.params.provider;
+    if (!isConnectableProvider(provider)) {
+      reply.code(400);
+      return { error: `"${provider}" is not a coding-agent CLI.` };
+    }
+    const removed = connectedClis.disconnect(provider);
+    return { connected: connectedClis.list(), removed };
   });
 
   /**

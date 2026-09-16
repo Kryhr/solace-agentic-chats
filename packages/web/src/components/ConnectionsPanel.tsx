@@ -16,10 +16,13 @@ import {
   checkCliConnection,
   checkCredentialConnection,
   deleteCredential,
+  disconnectCli,
+  fetchConnectedClis,
   fetchCredentials,
   fetchGithubConnection,
   fetchProviderStatuses,
   NotCheckableError,
+  type ConnectableProvider,
 } from "../api";
 import { BRAND_ICONS } from "./brandIcons";
 import { ProviderIcon, providerLabel } from "./ProviderIcon";
@@ -37,6 +40,14 @@ import { AddConnectionModal } from "./AddConnectionModal";
  *    single kind can read as "what Connections is for". The panel used to bury its only add
  *    button inside the API-keys section, which made the whole surface look like a place to
  *    paste API keys.
+ *
+ * 1b. Installed is not connected. The "Coding agent CLI" section lists exactly the providers
+ *    the user opted into, and nothing else. It used to list every CLI binary found on PATH,
+ *    which meant a machine with six of them installed produced six rows in a 268px rail when
+ *    the user thought of three as theirs. Having a program on your PATH is a fact about your
+ *    computer; a connection is a decision, and only the decision belongs here. The list is
+ *    persisted server-side (see core/connectedProviders.ts) and is empty until something is
+ *    connected - including on an upgrade from before it existed.
  *
  * 2. Nothing is green that wasn't checked. A row's state is a real ConnectionCheck or it is
  *    "Not checked", and those look different. Both carry the time, because every one of these
@@ -233,6 +244,20 @@ export function ConnectionsPanel({
   const [credentials, setCredentials] = useState<CredentialMeta[] | null>(null);
   const [checks, setChecks] = useState<Record<string, CheckState>>({});
   const [showAdd, setShowAdd] = useState(false);
+  /** null while the server has not answered yet - distinct from [], which is the real and very
+   * common answer "you have connected nothing". Showing the empty state during the fetch would
+   * tell a user with three connected CLIs that they have none, for one frame. */
+  const [connectedClis, setConnectedClis] = useState<ProviderId[] | null>(null);
+  const [cliCatalog, setCliCatalog] = useState<ConnectableProvider[]>([]);
+
+  useEffect(() => {
+    fetchConnectedClis()
+      .then(({ connected, catalog }) => {
+        setConnectedClis(connected);
+        setCliCatalog(catalog);
+      })
+      .catch(() => setConnectedClis([]));
+  }, []);
 
   useEffect(() => {
     fetchProviderStatuses()
@@ -408,10 +433,40 @@ export function ConnectionsPanel({
     );
   };
 
-  // Present on this machine, proven by its own --version having run. A provider whose check has
-  // not finished yet is treated as absent rather than shown optimistically, so the list never
-  // claims something is there before it is known to be.
-  const installedClis = (statuses ?? []).filter((s) => s.installed);
+  /** Remove a CLI from the connected list. Nothing is uninstalled and nothing is signed out -
+   * this is one entry leaving one JSON array, which is what the button's tooltip says. */
+  const removeCli = async (provider: ProviderId) => {
+    const next = await disconnectCli(provider);
+    setConnectedClis(next);
+    setChecks((c) => {
+      // Its check result described a row that no longer exists; keeping it would re-seed a
+      // stale "Working 14:02" if the same CLI is connected again later.
+      const nextChecks = { ...c };
+      delete nextChecks[`cli:${provider}`];
+      return nextChecks;
+    });
+  };
+
+  /** Called when the modal connects or disconnects something. `verified` is the check that
+   * authorised a connection; seeding the row from it means a freshly-connected CLI shows the
+   * probe that just passed rather than the page-load snapshot, which can be minutes old. */
+  const applyConnectedChange = (next: ProviderId[], verified?: { provider: ProviderId; check: ConnectionCheck }) => {
+    setConnectedClis(next);
+    if (verified) setChecks((c) => ({ ...c, [`cli:${verified.provider}`]: { status: "done", check: verified.check } }));
+  };
+
+  /** What the user has CONNECTED - not what is installed. Rendered in the order they connected
+   * them, which is the server's order. A connected provider whose binary has since gone missing
+   * still appears, with a failing check: silently dropping it would hide the breakage. */
+  const connectedCliRows = (connectedClis ?? []).map((provider) => {
+    const catalogEntry = cliCatalog.find((c) => c.provider === provider);
+    return {
+      provider,
+      status: (statuses ?? []).find((s) => s.provider === provider),
+      label: catalogEntry?.name ?? providerLabel(provider),
+      installCommand: catalogEntry?.installCommand,
+    };
+  });
 
   if (statuses === null) {
     return (
@@ -444,39 +499,57 @@ export function ConnectionsPanel({
 
       <div className="connection-list">
         {/* --- CLI / subscription agents. First, because they are the point of the app.
-            Only the ones actually PRESENT on this machine are listed. Showing all of them with
-            "not installed" beside each turned a fresh install into a wall of things the user
-            does not have and mostly does not want - the list read as a checklist rather than as
-            what is connected. Someone who has installed none now sees an empty section telling
-            them what to do, and each CLI appears the moment it really exists. `installed` comes
-            from running the CLI's own --version, so this is not a guess. --- */}
+            ONLY the ones the user has connected. Not the ones installed: this section used to
+            list a row per binary found on PATH, which turned a developer machine with six CLIs
+            on it into six rows in a 268px rail when they thought of three as theirs. Having a
+            program installed is a fact about the computer; connecting it is a decision, and
+            only the decision is a connection. Connecting happens in "+ Add connection" above,
+            where it is gated on the CLI's own --version having just passed. --- */}
         {shows("cli") && <SectionHead id="cli" />}
-        {shows("cli") && installedClis.length === 0 && (
+        {shows("cli") && connectedClis !== null && connectedCliRows.length === 0 && (
           <div className="provider-hint connection-empty">
-            No coding agent CLIs found on this machine yet. Install one - Claude Code, Codex, Gemini, Qwen, Copilot or
-            OpenCode - and it will appear here automatically.
+            No coding agent CLIs connected yet. Press{" "}
+            <button type="button" className="connection-empty-link" onClick={() => setShowAdd(true)}>
+              + Add connection
+            </button>{" "}
+            and pick Coding agent CLI to connect one.
           </div>
         )}
         {shows("cli") &&
-          installedClis.map((s) => {
-          const state = stateOf(`cli:${s.provider}`);
+          connectedCliRows.map(({ provider, status, label, installCommand }) => {
+          const state = stateOf(`cli:${provider}`);
+          // Both of these follow the LATEST check, not the page-load snapshot. A row that has
+          // just been checked and passed must not also be printing "not on PATH any more" from
+          // a probe that timed out several minutes ago - the two would contradict each other on
+          // the same row, and the older one would be the one that looked authoritative.
+          const failing = state.status === "done" && !state.check.ok;
           return (
-            <div key={s.provider} className="provider-row credential-row is-testable">
+            // has-managed-actions, like the saved-endpoint rows: this row carries Check AND
+            // Disconnect, and that pair is too wide to pin over the name in the rail.
+            <div key={provider} className="provider-row credential-row is-testable has-managed-actions is-cli-connection">
               <span className="provider-glyph">
-                <ProviderIcon provider={s.provider} size={20} />
+                <ProviderIcon provider={provider} size={20} />
               </span>
               <span className="provider-name">
-                {providerLabel(s.provider)}
-                {s.installed && s.version && <span className="credential-sub">{s.version}</span>}
+                {label}
+                {!failing && status?.installed && status.version && <span className="credential-sub">{status.version}</span>}
               </span>
               <span className="provider-actions">
-                <CheckControl state={state} onCheck={() => runCliCheck(s.provider)} title={`Run --version for ${providerLabel(s.provider)}`} />
+                <CheckControl state={state} onCheck={() => runCliCheck(provider)} title={`Run --version for ${label}`} />
+                <button
+                  className="btn-ghost btn-xs provider-delete"
+                  onClick={() => removeCli(provider)}
+                  title="Remove it from this list. Nothing is uninstalled, and you stay signed in to it."
+                >
+                  Disconnect
+                </button>
               </span>
-              {!s.installed && s.installCommand && (
-                // The real command, not a sentence about installing. This row is the most
-                // common reason a new user has nothing working, so it gets the actual fix.
+              {failing && installCommand && (
+                // Connected, but the last real check could not find it. The actual command, not
+                // a sentence about installing - this is the most common reason turns start
+                // failing, so the row carries the fix.
                 <div className="provider-hint">
-                  Not installed — <code>{s.installCommand}</code>
+                  Not on PATH any more — <code>{installCommand}</code>
                 </div>
               )}
             </div>
@@ -635,7 +708,9 @@ ${c.notes}` : ""}`
 
       {showAdd && (
         <AddConnectionModal
-          statuses={statuses}
+          cliCatalog={cliCatalog}
+          connectedClis={connectedClis ?? []}
+          onConnectedClisChange={applyConnectedChange}
           github={github}
           credentials={all}
           onSaved={(saved) => setCredentials((c) => [...(c ?? []), saved])}

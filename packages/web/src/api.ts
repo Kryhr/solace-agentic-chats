@@ -240,6 +240,69 @@ export async function checkCliConnection(provider: ProviderId): Promise<Connecti
   return data;
 }
 
+/* --------------------- Connected coding-agent CLIs ---------------------- */
+
+/**
+ * One CLI the user can connect, exactly as the server describes it. Mirrors
+ * server/core/connectedProviders.ts - notably `signInCommand`, which is the SIGN-IN command,
+ * not the npm install line, and `signInSource`, which records the `--help` output it was read
+ * from so the UI can show where the command came from rather than asking to be believed.
+ */
+export interface ConnectableProvider {
+  provider: ProviderId;
+  name: string;
+  blurb: string;
+  signInCommand?: string;
+  signInNote?: string;
+  signInSource: string;
+  installCommand: string;
+}
+
+/** The connected list plus the catalogue to offer, in one round trip. */
+export async function fetchConnectedClis(): Promise<{ connected: ProviderId[]; catalog: ConnectableProvider[] }> {
+  const res = await fetch("/api/connections/cli/connected");
+  if (!res.ok) throw new Error(`Could not read your connected CLIs (${res.status})`);
+  return res.json();
+}
+
+/**
+ * Thrown when connecting was REFUSED because the CLI is not on this machine's PATH. Its own
+ * type because that is not a network failure and not a bug: the server ran the real
+ * `--version`, it did not answer, and nothing was connected. Carries what the probe printed
+ * and the install command, so the UI can quote the machine rather than paraphrase it.
+ */
+export class CliNotInstalledError extends Error {
+  constructor(
+    message: string,
+    readonly detail?: string,
+    readonly installCommand?: string,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * Connect one CLI. The server runs `<bin> --version` before adding anything and refuses on a
+ * failure, so a resolved promise here always means a real probe passed just now - this call is
+ * the only way a provider ever reaches the sidebar's "Coding agent CLI" section.
+ */
+export async function connectCli(provider: ProviderId): Promise<{ connected: ProviderId[]; check: ConnectionCheck }> {
+  const res = await fetch(`/api/connections/cli/connected/${provider}`, { method: "POST" });
+  const data = await res.json();
+  if (res.status === 409) throw new CliNotInstalledError(data.error ?? "That CLI is not installed.", data.check?.detail, data.installCommand);
+  if (!res.ok) throw new Error(data.error ?? `Could not connect that CLI (${res.status})`);
+  return data;
+}
+
+/** Disconnect one CLI. Removes it from the list and nothing else - nothing is uninstalled and
+ * nothing is signed out. */
+export async function disconnectCli(provider: ProviderId): Promise<ProviderId[]> {
+  const res = await fetch(`/api/connections/cli/connected/${provider}`, { method: "DELETE" });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? `Could not disconnect that CLI (${res.status})`);
+  return data.connected;
+}
+
 /** Thrown for the entries where there is genuinely nothing to verify - a stored password.
  * Kept as its own type so the UI can say that instead of painting the row red, which would
  * claim a failure that never happened. */
