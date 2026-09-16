@@ -206,6 +206,15 @@ export function sessionKey(cwd: string): string {
   return resolve(cwd).toLowerCase().replace(/[\/]+$/, "");
 }
 
+/**
+ * NOTE on the limits in this file: each of the exported MAX_* / *_MS constants below is now the
+ * DEFAULT for a user-visible setting (shared/src/settings.ts), not the only value in play. Every
+ * place that enforces one reads it through `this.settings.get()` at the moment it is enforced,
+ * exactly as handoverOnUsageExhausted is - never cached at boot - so a change made in one tab
+ * applies to a turn that starts seconds later. The constants stay here, and stay the defaults,
+ * so behaviour is unchanged for anyone who never opens Settings, and so the pure helpers below
+ * remain callable (and testable) without a SettingsStore.
+ */
 export const MAX_TURN_MS = 2 * 60 * 60 * 1000;
 
 /**
@@ -256,14 +265,14 @@ const END_THREAD_MARKER = /\[no-reply\]/i;
  * enqueue a real, billed turn for another agent, so an agent that decides to narrate its whole
  * working into the group would spend the user's money doing it. Eight is enough for genuine
  * coordination (announce, ask, hand off, answer) and far short of a transcript. */
-const MAX_MID_TURN_POSTS = 8;
+export const MAX_MID_TURN_POSTS = 8;
 
 /** How long a QUESTION may sit undelivered in pendingInbound before the running turn is killed
  * to answer it. Tuned to be longer than the gap between two tool calls of a working agent (which
  * is seconds) and shorter than a human's patience waiting on an answer. Anything that expires
  * this has, in practice, not touched a solace tool in a minute - i.e. cooperative delivery was
  * never going to reach it in time. */
-const INTERRUPT_GRACE_MS = 50 * 1000;
+export const INTERRUPT_GRACE_MS = 50 * 1000;
 
 /** How many times one piece of work may be interrupted and resumed before we stop and say so.
  * Each resume is a real billed turn that re-reads files and re-establishes context, so an agent
@@ -275,16 +284,38 @@ export const MAX_RESUMES = 3;
  * REMAINING budget, never a fresh one: with a fresh 15 minutes each time, an agent interrupted
  * every ten minutes would never time out at all. The floor keeps a near-exhausted resume usable
  * instead of killing it on arrival. Exported for tests - it is the one bound here whose
- * arithmetic being wrong is silently expensive rather than loudly broken. */
-export function resumeBudgetMs(resume: QueuedTurn["resume"]): number {
-  if (!resume) return MAX_TURN_MS;
-  return Math.max(60_000, MAX_TURN_MS - resume.elapsedMs);
+ * arithmetic being wrong is silently expensive rather than loudly broken.
+ *
+ * `maxTurnMs` is passed in by the caller from the LIVE setting (maxTurnMinutes) so this stays a
+ * pure function; it defaults to the constant so existing callers and tests are unchanged. */
+/** A duration in the largest unit that still says something true about it. Only used in the
+ * "we stopped this turn" message, where the number is the user's own configured limit being
+ * quoted back at them and must therefore match what they typed. */
+export function formatDuration(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 90) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  const hours = minutes / 60;
+  // One decimal only when it is not a whole number, so "2h" does not become "2.0h".
+  return `${Number.isInteger(hours) ? hours : hours.toFixed(1)}h`;
+}
+
+export function resumeBudgetMs(resume: QueuedTurn["resume"], maxTurnMs: number = MAX_TURN_MS): number {
+  if (!resume) return maxTurnMs;
+  return Math.max(60_000, maxTurnMs - resume.elapsedMs);
 }
 
 /** Has this piece of work run out of resumes, or out of total run time across them? Either one
- * ends the resume chain - see scheduleResume, which then reports exactly what was abandoned. */
-export function resumeExhausted(count: number, elapsedMs: number): boolean {
-  return count > MAX_RESUMES || elapsedMs >= MAX_TURN_MS;
+ * ends the resume chain - see scheduleResume, which then reports exactly what was abandoned.
+ *
+ * Both bounds are passed in from the live settings (maxResumes, maxTurnMinutes) and default to
+ * the constants, for the same reason as resumeBudgetMs above. */
+export function resumeExhausted(
+  count: number,
+  elapsedMs: number,
+  maxResumes: number = MAX_RESUMES,
+  maxTurnMs: number = MAX_TURN_MS,
+): boolean {
+  return count > maxResumes || elapsedMs >= maxTurnMs;
 }
 
 /**
@@ -741,6 +772,30 @@ export class AgentManager {
         runtime.pendingInbound = runtime.queue.filter((t) => pendingIds.has(t.id));
       }
     }
+  }
+
+  /**
+   * The turn-shaping limits, in the units the code enforces them in, read from the settings
+   * store AT THE MOMENT OF THE CALL.
+   *
+   * Deliberately a method and not a field: a field would be the boot-time snapshot this whole
+   * design exists to avoid, and the settings are edited from a browser tab while the server is
+   * running. Every caller below invokes it at the point of enforcement, so a turn that starts
+   * five seconds after a change is governed by the new value.
+   *
+   * Minutes/seconds are the units the Settings page speaks; milliseconds are the units
+   * setTimeout speaks. Converting here, once, keeps the conversion out of the call sites.
+   */
+  private limits() {
+    const s = this.settings.get();
+    return {
+      maxTurnMs: s.maxTurnMinutes * 60_000,
+      idleMs: s.turnIdleMinutes * 60_000,
+      maxResumes: s.maxResumes,
+      maxHandovers: s.maxHandovers,
+      maxMidTurnPosts: s.maxMidTurnPosts,
+      interruptGraceMs: s.interruptGraceSeconds * 1000,
+    };
   }
 
   /** A snapshot of every agent's provider-side conversation id, for persistence.ts. */
@@ -1379,13 +1434,20 @@ export class AgentManager {
     }
 
     const posts = (turn.midTurnPosts ??= []);
-    if (posts.length >= MAX_MID_TURN_POSTS) {
+    // Read live, per post, not per turn: lowering the cap mid-turn takes effect on the very next
+    // post rather than at the next turn boundary, which is what someone turning the volume down
+    // on a chatty run actually wants.
+    const { maxMidTurnPosts } = this.limits();
+    if (posts.length >= maxMidTurnPosts) {
       // Explicitly refused rather than silently dropped: an agent that believes it told the
       // group something it did not tell them is worse than one that knows it was blocked.
       return {
         ok: false,
         reason: "capped",
-        error: `mid-turn group posts are capped at ${MAX_MID_TURN_POSTS} per turn and this turn has used all of them - say the rest in your final answer for this turn`,
+        error:
+          maxMidTurnPosts === 0
+            ? "mid-turn group posts are turned off in this app's settings - say it in your final answer for this turn instead"
+            : `mid-turn group posts are capped at ${maxMidTurnPosts} per turn and this turn has used all of them - say the rest in your final answer for this turn`,
       };
     }
     posts.push(trimmed);
@@ -1705,7 +1767,7 @@ ${text}` : text;
     runtime.interruptTimer = setTimeout(() => {
       runtime.interruptTimer = undefined;
       this.interruptIfStillPending(agentId);
-    }, Math.max(0, INTERRUPT_GRACE_MS - (Number.isFinite(waited) ? waited : 0)));
+    }, Math.max(0, this.limits().interruptGraceMs - (Number.isFinite(waited) ? waited : 0)));
   }
 
   /**
@@ -1749,13 +1811,18 @@ ${text}` : text;
     const elapsedMs = (turn.resume?.elapsedMs ?? 0) + Math.max(0, ranForMs);
     const ofTurnId = turn.resume?.ofTurnId ?? turn.id;
 
-    if (resumeExhausted(count, elapsedMs)) {
+    // Read live at the moment the decision is made, so raising the allowance in a tab lets work
+    // that was about to be abandoned carry on instead.
+    const { maxResumes, maxTurnMs } = this.limits();
+    if (resumeExhausted(count, elapsedMs, maxResumes, maxTurnMs)) {
       // Never silently drop work: name exactly what was abandoned, and leave it where the
       // existing manual Retry action can pick it up unchanged.
       const why =
-        count > MAX_RESUMES
-          ? `it has now been interrupted ${MAX_RESUMES + 1} times`
-          : `it has already used its full ${Math.round(MAX_TURN_MS / 60000)} minutes of run time across interruptions`;
+        count > maxResumes
+          ? maxResumes === 0
+            ? "resuming interrupted work is turned off in this app's settings"
+            : `it has now been interrupted ${maxResumes + 1} times`
+          : `it has already used its full ${Math.round(maxTurnMs / 60000)} minutes of run time across interruptions`;
       this.bus.postMessage({
         id: nanoid(),
         channel: ownChannel,
@@ -1846,10 +1913,16 @@ ${text}` : text;
     };
 
     const count = (turn.handover?.count ?? 0) + 1;
-    if (count > MAX_HANDOVERS) {
+    // Same live read as the enabled check at the top of this method - one settings snapshot per
+    // failure, taken when the failure happens.
+    const { maxHandovers } = this.limits();
+    if (count > maxHandovers) {
       say(
-        `This work has already been handed over ${MAX_HANDOVERS} times and every agent that has had it ran ` +
-          `out of usage, so it is not being passed on again. It was NOT finished: "${describeWork(turn)}".` +
+        (maxHandovers === 0
+          ? `Handing work on is limited to ${maxHandovers} times in this app's settings, so this is not being passed on. `
+          : `This work has already been handed over ${maxHandovers} times and every agent that has had it ran ` +
+            `out of usage, so it is not being passed on again. `) +
+          `It was NOT finished: "${describeWork(turn)}".` +
           resetNote,
       );
       return "declined";
@@ -1933,7 +2006,12 @@ ${text}` : text;
     runtime.pendingInbound = runtime.pendingInbound.filter((t) => t.id !== turn.id);
 
     const turnStartedAt = Date.now();
-    const turnBudgetMs = resumeBudgetMs(turn.resume);
+    // Both limits are read here, as the turn begins, rather than from a value captured at boot.
+    // A turn already running keeps the budget it started with (changing a timeout under a live
+    // setTimeout would be a surprise in both directions); the next turn to start picks up the
+    // new one, which is the "applies to a turn starting five seconds later" guarantee.
+    const { maxTurnMs, idleMs } = this.limits();
+    const turnBudgetMs = resumeBudgetMs(turn.resume, maxTurnMs);
 
     runtime.busy = true;
     runtime.currentTurn = turn;
@@ -2064,10 +2142,10 @@ ${text}` : text;
         this.approvals?.expireForAgent(agentId);
       };
       turnTimeout = setTimeout(() => giveUp("ceiling"), turnBudgetMs);
-      idleTimeout = setTimeout(() => giveUp("idle"), MAX_TURN_IDLE_MS);
+      idleTimeout = setTimeout(() => giveUp("idle"), idleMs);
       const noteActivity = () => {
         clearTimeout(idleTimeout);
-        idleTimeout = setTimeout(() => giveUp("idle"), MAX_TURN_IDLE_MS);
+        idleTimeout = setTimeout(() => giveUp("idle"), idleMs);
       };
       await adapter.runTurn({
         cwd: turnCwd,
@@ -2198,8 +2276,11 @@ ${text}` : text;
         // "we stopped it".
         runtime.lastError =
           timedOutBecause === "ceiling"
-            ? `turn stopped after ${Math.round(turnBudgetMs / 3600000)}h - it hit this app's maximum turn length while still producing output`
-            : `turn stopped: no output for ${Math.round(MAX_TURN_IDLE_MS / 60000)} minutes, so it was treated as stuck`;
+            ? // Reported in whichever unit is not a lie. The budget used to be a fixed two hours,
+              // so "2h" was always right; it is now configurable down to five minutes, where
+              // rounding to hours would print "turn stopped after 0h".
+              `turn stopped after ${formatDuration(turnBudgetMs)} - it hit this app's maximum turn length while still producing output`
+            : `turn stopped: no output for ${Math.round(idleMs / 60000)} minutes, so it was treated as stuck`;
         post(replyChannel, `error: ${runtime.lastError}`, { agentKind: "error" });
       } else if (runtime.abortKind === "stop" && this.agents.has(runtime.config.id)) {
         post(ownChannel, "_stopped before this turn finished_", { agentKind: "progress" });

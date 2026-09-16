@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react";
-import type { AgentConfig, AppSettings, ProjectMeta, SettingDefinition } from "@solace/shared";
+import type {
+  AgentConfig,
+  AppSettings,
+  NumberSettingDefinition,
+  ProjectMeta,
+  SelectSettingDefinition,
+  SettingDefinition,
+} from "@solace/shared";
 import { fetchSettings, setProjectMembership, updateSettings } from "../api";
 import { ProviderIcon } from "./ProviderIcon";
 
@@ -46,16 +53,22 @@ export function SettingsPage({
     // Fetched once on mount; later changes arrive over the socket.
   }, []);
 
-  const handleToggle = async (def: SettingDefinition, next: boolean) => {
+  /**
+   * Save one setting, whatever kind of control it came from.
+   *
+   * Optimistic, then corrected by whatever the server ACTUALLY stored - which matters more now
+   * than it did with only toggles: the server rejects an out-of-range number and keeps the
+   * documented default instead, and this is what makes the box snap back to show that, rather
+   * than displaying a value the server never accepted.
+   */
+  const save = async (def: SettingDefinition, next: AppSettings[typeof def.key]) => {
     if (!settings) return;
     const previous = settings;
-    // Optimistic, then corrected by whatever the server actually stored - a toggle that
-    // appears to move and then silently does not is worse than one that takes a moment.
     onSettingsChange({ ...settings, [def.key]: next });
     setSavingKey(def.key);
     setError(null);
     try {
-      onSettingsChange(await updateSettings({ [def.key]: next }));
+      onSettingsChange(await updateSettings({ [def.key]: next } as Partial<AppSettings>));
     } catch (err) {
       onSettingsChange(previous);
       setError((err as Error).message);
@@ -118,20 +131,39 @@ export function SettingsPage({
                   </label>
                   <div className="setting-entry-desc">{def.description}</div>
                 </div>
-                <button
-                  id={`setting-${def.key}`}
-                  type="button"
-                  role="switch"
-                  aria-checked={settings[def.key]}
-                  className="setting-switch"
-                  disabled={savingKey === def.key}
-                  onClick={() => void handleToggle(def, !settings[def.key])}
-                >
-                  <span className="setting-switch-track" aria-hidden="true">
-                    <span className="setting-switch-thumb" />
-                  </span>
-                  <span className="setting-switch-state">{settings[def.key] ? "On" : "Off"}</span>
-                </button>
+                {def.kind === "toggle" ? (
+                  <button
+                    id={`setting-${def.key}`}
+                    type="button"
+                    role="switch"
+                    aria-checked={settings[def.key] as boolean}
+                    className="setting-switch"
+                    disabled={savingKey === def.key}
+                    onClick={() => void save(def, !settings[def.key])}
+                  >
+                    <span className="setting-switch-track" aria-hidden="true">
+                      <span className="setting-switch-thumb" />
+                    </span>
+                    <span className="setting-switch-state">{settings[def.key] ? "On" : "Off"}</span>
+                  </button>
+                ) : def.kind === "number" ? (
+                  <NumberControl
+                    def={def}
+                    value={settings[def.key] as number}
+                    busy={savingKey === def.key}
+                    onCommit={(next) => void save(def, next)}
+                  />
+                ) : (
+                  <SelectControl
+                    def={def}
+                    value={settings[def.key] as string}
+                    busy={savingKey === def.key}
+                    // The control can only ever emit one of def.options, and sanitizeAppSettings
+                    // checks that same list again on the server, so the cast is narrowing a
+                    // string TS cannot see is already constrained - not trusting free input.
+                    onCommit={(next) => void save(def, next as AppSettings[typeof def.key])}
+                  />
+                )}
               </div>
             ))
           )}
@@ -194,5 +226,108 @@ export function SettingsPage({
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * A number setting: a box, the unit it is measured in, and the legal range said out loud.
+ *
+ * Holds a DRAFT string rather than writing on every keystroke. Typing "120" through a
+ * write-per-keystroke input would PATCH "1", then "12", then "120" - and since the server
+ * rejects anything outside the range rather than clamping it, the intermediate "1" would be
+ * refused and snap the box back mid-word. So: edit freely, save on blur or Enter, revert on
+ * Escape. The draft is dropped whenever the saved value changes underneath (another tab), which
+ * is the same rule the toggles follow.
+ */
+function NumberControl({
+  def,
+  value,
+  busy,
+  onCommit,
+}: {
+  def: NumberSettingDefinition;
+  value: number;
+  busy: boolean;
+  onCommit: (next: number) => void;
+}) {
+  const [draft, setDraft] = useState<string>(String(value));
+  // Re-sync when the stored value changes for any reason other than this box: another tab, or
+  // the server correcting a value it refused.
+  useEffect(() => setDraft(String(value)), [value]);
+
+  const parsed = Number(draft.trim());
+  const valid = draft.trim() !== "" && Number.isFinite(parsed) && parsed >= def.min && parsed <= def.max;
+
+  const commit = () => {
+    // An empty or out-of-range box is not a request to store something odd - it is an abandoned
+    // edit. Put the real value back rather than sending one we know will be refused.
+    if (!valid) {
+      setDraft(String(value));
+      return;
+    }
+    if (Math.round(parsed) !== value) onCommit(Math.round(parsed));
+  };
+
+  return (
+    <div className="setting-number">
+      <input
+        id={`setting-${def.key}`}
+        className={`setting-number-input ${valid ? "" : "is-invalid"}`}
+        type="number"
+        inputMode="numeric"
+        min={def.min}
+        max={def.max}
+        step={1}
+        value={draft}
+        disabled={busy}
+        aria-describedby={`setting-${def.key}-range`}
+        aria-invalid={!valid}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+          if (e.key === "Escape") {
+            setDraft(String(value));
+            e.currentTarget.blur();
+          }
+        }}
+      />
+      <div className="setting-number-meta">
+        <span className="setting-number-unit">{def.unit}</span>
+        <span className="setting-number-range" id={`setting-${def.key}-range`}>
+          {def.min}&ndash;{def.max}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** A setting with a fixed set of choices. Saves immediately: unlike the number box there is no
+ * half-typed state to protect, and every option it offers is one the server already accepts. */
+function SelectControl({
+  def,
+  value,
+  busy,
+  onCommit,
+}: {
+  def: SelectSettingDefinition;
+  value: string;
+  busy: boolean;
+  onCommit: (next: string) => void;
+}) {
+  return (
+    <select
+      id={`setting-${def.key}`}
+      className="select setting-select"
+      value={value}
+      disabled={busy}
+      onChange={(e) => onCommit(e.target.value)}
+    >
+      {def.options.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
+    </select>
   );
 }
