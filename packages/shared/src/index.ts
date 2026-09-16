@@ -35,6 +35,13 @@ export type { CommandDefinition } from "./commands";
 export const COMMAND_DEFINITIONS = COMMANDS;
 export const helpText = help;
 
+// Same re-binding rule again - see the comments above.
+import { emptyCoordination as emptyCoord, normalizePath as normPath, pathCoveredBy as covered } from "./coordination";
+export type { Block, Contract, CoordinationState, FileClaim } from "./coordination";
+export const emptyCoordination = emptyCoord;
+export const normalizePath = normPath;
+export const pathCoveredBy = covered;
+
 export type ProviderId =
   | "claude-code"
   | "codex-cli"
