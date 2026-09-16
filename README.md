@@ -13,7 +13,7 @@ You need [Node.js 20+](https://nodejs.org). Copy-paste this:
 git clone https://github.com/Kryhr/solace-agentic-chats.git
 cd solace-agentic-chats
 npm install
-npm run dev
+npm start
 ```
 
 Then open **<http://localhost:5173>**. That's the whole setup.
@@ -51,7 +51,7 @@ Not on the list? **Add any OpenAI-compatible endpoint** by URL, hosted or local.
 | The backend API | `http://localhost:4310` | `PORT=4310` |
 | Your projects on disk | `~/Desktop/solace-workspace` | `SOLACE_WORKSPACE_ROOT=/some/path` |
 
-`npm run dev` starts the backend and the UI together; stop both with `Ctrl-C`. Both bind to
+`npm start` runs the backend and the UI together; stop both with `Ctrl-C`. Both bind to
 `127.0.0.1` only, so nothing is reachable from your network.
 
 ## First run

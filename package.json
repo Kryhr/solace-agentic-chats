@@ -7,7 +7,10 @@
     "packages/*"
   ],
   "scripts": {
-    "//predev": "packages/server imports @solace/shared from its BUILT dist, so a clone that has never run a build cannot start the server: `npm run dev` died with MODULE_NOT_FOUND for @solace/shared while the web dev server came up fine, leaving a new user looking at a UI that could never reach a backend. npm runs predev automatically, so the one documented command now works on a fresh clone. It costs ~2s on every later start, which is the right trade against a broken first run.",
+    "//start": "`npm start` is the documented way to run Solace. It was `npm run dev`, which was actively misleading: \"dev\" reads as development mode, and running the app is what everybody does - contributors and users alike. `dev` is kept below as an alias so anyone used to it, and any existing doc or script, still works.",
+    "//prestart": "packages/server imports @solace/shared from its BUILT dist, so a clone that has never run a build cannot start the server: it died with MODULE_NOT_FOUND for @solace/shared while the web dev server came up fine, leaving a new user looking at a UI that could never reach a backend. npm runs prestart automatically, so the one documented command works on a fresh clone. It costs ~2s on every later start, which is the right trade against a broken first run.",
+    "prestart": "npm run build --workspace=packages/shared",
+    "start": "concurrently -n server,web -c blue,green \"npm:server\" \"npm:web\"",
     "predev": "npm run build --workspace=packages/shared",
     "dev": "concurrently -n server,web -c blue,green \"npm:server\" \"npm:web\"",
     "//pretest": "Same reason as predev: the server test suite imports @solace/shared and mass-fails without dist, which reads as dozens of unrelated broken tests.",
