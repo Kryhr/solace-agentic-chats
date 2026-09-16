@@ -52,9 +52,11 @@ export function isCliProvider(provider: ProviderId): provider is CliProviderId {
 
 interface VersionProbe {
   ok: boolean;
-  /** stdout's first non-empty line when ok; otherwise the most useful thing the failure gave
-   * us. Always something the CLI or the OS said, never a phrase invented here. */
   output: string;
+  /** The binary genuinely is not on PATH (ENOENT). Only this justifies an install hint. */
+  notFound?: boolean;
+  /** It was there and did not answer in time. Says nothing about whether it is installed. */
+  timedOut?: boolean;
 }
 
 /**
@@ -76,10 +78,19 @@ function probeVersion(bin: string): Promise<VersionProbe> {
       const child = spawnCli(bin, ["--version"], { stdio: ["ignore", "pipe", "pipe"] });
       child.stdout?.on("data", (chunk) => (stdout += chunk.toString()));
       child.stderr?.on("data", (chunk) => (stderr += chunk.toString()));
+      // 5s was too short and the consequence was worse than the wait. Measured on a real
+      // machine: gemini --version takes 4.4-7.2s and copilot 3.6-5.3s, and a COLD first run
+      // right after an install is slower still - the binary is being unpacked. A probe that
+      // timed out was recorded as installed:false, so the app told the user to reinstall
+      // software that was already there and working. Reported by the user for opencode.
       const timeout = setTimeout(() => {
         child.kill();
-        resolve({ ok: false, output: `\`${bin} --version\` did not answer within 5s` });
-      }, 5000);
+        resolve({
+          ok: false,
+          timedOut: true,
+          output: `\`${bin} --version\` did not answer within ${PROBE_TIMEOUT_MS / 1000}s`,
+        });
+      }, PROBE_TIMEOUT_MS);
       child.on("close", (code) => {
         clearTimeout(timeout);
         const first = (text: string) => text.split(/\r?\n/).map((l) => l.trim()).find((l) => l.length > 0) ?? "";
@@ -92,13 +103,20 @@ function probeVersion(bin: string): Promise<VersionProbe> {
       });
       child.on("error", (err) => {
         clearTimeout(timeout);
-        resolve({ ok: false, output: (err as Error).message });
+        // ENOENT is the one error that really does mean "not on PATH". Anything else (EACCES,
+        // EBUSY, a broken shim) is a failure to RUN it, not proof it is absent.
+        const missing = (err as NodeJS.ErrnoException).code === "ENOENT";
+        resolve({ ok: false, notFound: missing, output: (err as Error).message });
       });
     } catch (err) {
       resolve({ ok: false, output: (err as Error).message });
     }
   });
 }
+
+/** Long enough for a cold start on a slow machine. The cost of waiting is a spinner; the cost
+ * of being too short is telling someone their working install is missing. */
+const PROBE_TIMEOUT_MS = 20_000;
 
 export async function checkAllProviders(): Promise<ProviderStatus[]> {
   const providers = Object.keys(CLI_BIN) as CliProviderId[];
@@ -107,7 +125,10 @@ export async function checkAllProviders(): Promise<ProviderStatus[]> {
   return providers.map((provider, i) => ({
     provider,
     installed: probes[i].ok,
-    detail: probes[i].ok ? undefined : INSTALL_HINT[provider],
+    // Only offer the install command when the binary genuinely could not be found. A timeout or
+    // a crash means something IS there and did not answer - saying "install it" then is both
+    // wrong and actively unhelpful, because reinstalling will not fix it.
+    detail: probes[i].ok ? undefined : probes[i].notFound ? INSTALL_HINT[provider] : probes[i].output,
     version: probes[i].ok ? probes[i].output : undefined,
     checkedAt,
     installCommand: INSTALL_COMMAND[provider],
