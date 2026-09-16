@@ -131,8 +131,21 @@ ${state.check.detail}` : ""}`
 /** The detail line under a row: whatever the tool or endpoint actually said. Only rendered
  * once a check has really run, so an unchecked row stays quiet rather than explaining itself. */
 function CheckDetail({ state }: { state: CheckState }) {
-  if (state.status === "done") return <div className="provider-hint">{state.check.detail}</div>;
-  if (state.status === "error") return <div className="provider-hint">{state.message}</div>;
+  // title carries the full text: the visible line is clamped to two rows because this is
+  // whatever the endpoint said, in a ~234px column, and it was rendering taller than the
+  // connection it described.
+  if (state.status === "done")
+    return (
+      <div className="provider-hint" title={state.check.detail}>
+        {state.check.detail}
+      </div>
+    );
+  if (state.status === "error")
+    return (
+      <div className="provider-hint" title={state.message}>
+        {state.message}
+      </div>
+    );
   return null;
 }
 
@@ -355,7 +368,7 @@ export function ConnectionsPanel() {
           />
           {c.hasKey !== false && <RevealSecret id={c.id} what="API key" />}
           <button
-            className="btn-ghost btn-xs"
+            className="btn-ghost btn-xs provider-delete"
             onClick={() => remove(c.id)}
             title={
               isEndpointProvider(c.provider)

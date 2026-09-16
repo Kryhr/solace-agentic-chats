@@ -1193,12 +1193,22 @@ body {
   animation: breathe 1.4s var(--ease-in-out) infinite;
 }
 
+/* Clamped, because this is whatever the endpoint actually said and the sidebar is ~234px wide.
+   A successful Ollama check returns "listed 3 models (deepseek-v4-flash:cloud, glm-5.3:cloud,
+   qwen3.5:9b)", which wrapped to three lines of 11px text and doubled the row's height - the
+   check result ended up larger than the connection it described. The full text is still
+   available on hover, so nothing is lost, only folded. */
 .provider-hint {
   grid-column: 2 / -1;
   font-size: var(--text-2xs);
   line-height: var(--lh-snug);
   color: var(--text-faint);
-  margin-top: 2px;
+  margin-top: var(--space-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 /* --- Saved API-key connections (custom OpenAI-compatible endpoints) ------------------- */
@@ -4203,4 +4213,59 @@ body {
 
 .member-chip-handle {
   font-weight: 500;
+}
+
+/* Delete is revealed on hover, like Check, rather than sitting in the resting row.
+   In a 234px sidebar a permanent "Delete" button squeezed the connection's own URL down to
+   "http://127.0.0.1:1143…" - the row spent its width on a destructive action nobody needs to
+   see until they want it, and truncated the one piece of information it exists to show.
+   Kept in the layout flow (not absolutely positioned) so revealing it never reflows the row,
+   and focus-visible keeps it reachable by keyboard. */
+.provider-delete {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-2) var(--ease-in-out);
+}
+.provider-row:hover .provider-delete,
+.provider-row:focus-within .provider-delete {
+  opacity: 1;
+  pointer-events: auto;
+}
+.provider-delete:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+
+/* A saved connection's address had ~50px to render in, so "http://127.0.0.1:11434/v1" showed as
+   "http://127.0.0.1:1143…": of the row's 234px, the actions column held 130 - the status slot
+   reserved 92px for text that is usually "Not checked", and the Delete button reserved another
+   51 even while hidden. The row was spending its width on controls and truncating the one thing
+   it exists to identify.
+
+   The actions are lifted out of the grid flow entirely and pinned top-right, so the name column
+   gets the whole row. The name's first line keeps clear of them with padding; the address line
+   below sits under the buttons and reclaims that width with a matching negative margin, because
+   nothing is drawn there once the row is at rest. */
+.credential-row {
+  position: relative;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.credential-row .provider-actions {
+  position: absolute;
+  top: 6px;
+  right: var(--space-2);
+}
+
+.credential-row .provider-name {
+  padding-right: 92px;
+}
+
+.credential-row .credential-sub {
+  margin-right: -92px;
+}
+
+.credential-row .provider-status {
+  max-width: 64px;
 }
