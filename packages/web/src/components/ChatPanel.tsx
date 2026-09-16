@@ -84,7 +84,11 @@ export function ChatPanel({
     if (!el) return;
     stickToBottom.current = true;
     setScrolledUp(false);
-    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    // Instant, not smooth. A long transcript is tens of thousands of pixels tall - a smooth
+    // scroll over that distance takes many seconds and was still at the top when the button had
+    // already disappeared, so it read as a dead button. This is a "take me to the newest
+    // message" control, and arriving there immediately is the whole point.
+    el.scrollTop = el.scrollHeight;
   };
 
   const shouldAnimate = trackEntrance(history.map((m) => m.id));
