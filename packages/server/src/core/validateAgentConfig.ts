@@ -65,7 +65,9 @@ export function validateNewAgentConfig(
   };
 }
 
-type AgentPatch = Partial<Pick<AgentConfig, "trustLevel" | "currentTask" | "model" | "effort" | "authMode" | "credentialId">>;
+type AgentPatch = Partial<
+  Pick<AgentConfig, "trustLevel" | "currentTask" | "model" | "effort" | "authMode" | "credentialId" | "cwd">
+>;
 
 /**
  * PATCH /api/agents/:id used to apply `req.body` with zero validation via `Object.assign` -
@@ -106,6 +108,22 @@ export function validateAgentPatch(body: Partial<Record<string, unknown>>): { er
   if ("effort" in body) {
     if (typeof body.effort !== "string") return { error: "effort must be a string" };
     patch.effort = body.effort;
+  }
+
+  // An agent's folder could be set at creation and never changed, so an agent whose folder was
+  // renamed, moved or deleted was stuck pointing at somewhere that no longer exists and failed
+  // every turn with no way to fix it short of deleting and re-adding the agent. Validated
+  // exactly as creation does - same containment rule, same resolution - because this writes the
+  // directory a real CLI is about to be spawned in.
+  if ("cwd" in body) {
+    const cwd = typeof body.cwd === "string" ? body.cwd.trim() : "";
+    if (!cwd) return { error: "cwd must be a non-empty string" };
+    const resolvedRoot = resolve(WORKSPACE_ROOT);
+    const resolvedCwd = resolve(cwd);
+    if (resolvedCwd !== resolvedRoot && !resolvedCwd.startsWith(resolvedRoot + sep)) {
+      return { error: "cwd must be inside the workspace root" };
+    }
+    patch.cwd = resolvedCwd;
   }
 
   if ("credentialId" in body) {
