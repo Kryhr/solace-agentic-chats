@@ -297,6 +297,8 @@ export function SettingsPage({
             <p className="settings-section-note">
               Extra tools your agents can use - reading a Roblox place, driving a browser, searching a codebase.
               Each one is registered here and can be turned on per agent, so an agent only sees the tools it needs.
+              They are spawned per turn alongside Solace's own group-chat bridge; nothing here is written to your
+              CLI's own config files.
             </p>
             <McpPanel agents={agents} />
           </section>

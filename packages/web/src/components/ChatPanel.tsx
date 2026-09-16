@@ -14,6 +14,7 @@ import { stopAgent } from "../api";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 import { useEntranceTracker } from "../lib/useEntranceTracker";
 import { displayText, renderKind } from "../lib/messageKind";
+import { MessageText } from "./MessageText";
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -234,7 +235,9 @@ export function ChatPanel({
                   ))}
                   <span className="meta-time">{formatTime(m.createdAt)}</span>
                 </div>
-                <div className={`body ${toolUse ? "tool-use" : ""} ${errorLine ? "error-line" : ""}`}>{text}</div>
+                <div className={`body ${toolUse ? "tool-use" : ""} ${errorLine ? "error-line" : ""}`}>
+                  <MessageText text={text} />
+                </div>
               </div>
             </div>
           );

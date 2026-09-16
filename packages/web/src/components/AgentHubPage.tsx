@@ -10,6 +10,7 @@ import { ModelPicker, ModelSourceNote, ResolvedModelNote } from "./ModelPicker";
 import { permissionOptionsFor, TRUST_LABELS } from "../lib/permissionOptions";
 import { formatProviderError } from "../lib/errorFormat";
 import { buildTranscript, displayText, renderKind } from "../lib/messageKind";
+import { MessageText } from "./MessageText";
 
 function formatTokens(n?: number): string {
   if (n === undefined) return "–";
@@ -277,7 +278,9 @@ export function AgentHubPage({
                 <ProviderIcon provider={agent.provider} size={22} />
               )}
               <div className="message">
-                <div className={`body ${kind === "error" ? "error-line" : ""}`}>{displayText(m.text)}</div>
+                <div className={`body ${kind === "error" ? "error-line" : ""}`}>
+                  <MessageText text={displayText(m.text)} />
+                </div>
               </div>
             </div>
           );

@@ -249,7 +249,7 @@ export function ConnectionsPanel({
               status: "done",
               check: {
                 ok: s.installed,
-                detail: s.installed ? `\`--version\` reported ${s.version}` : (s.detail ?? "not found on PATH"),
+                detail: s.installed ? `--version reported ${s.version}` : (s.detail ?? "not found on PATH"),
                 checkedAt: s.checkedAt,
               },
             };
@@ -366,8 +366,12 @@ export function ConnectionsPanel({
   const endpointRow = (c: ApiKeyCredentialMeta) => {
     const state = stateOf(`cred:${c.id}`);
     const name = connectionDisplayName(c);
+    // has-managed-actions: unlike a CLI row, which only ever carries the status/Check swap, a
+    // saved endpoint also carries Reveal and Delete. That cluster is ~190px wide, which does not
+    // fit beside the name in the 234px sidebar rail - it used to be pinned on top of it, drawing
+    // "Reveal" literally over the connection's name. See styles.css.
     return (
-      <div key={c.id} className="provider-row credential-row is-testable">
+      <div key={c.id} className="provider-row credential-row is-testable has-managed-actions">
         <span className="provider-glyph">
           <ProviderIcon provider={c.provider} size={20} connectionName={name} />
         </span>
@@ -449,7 +453,7 @@ export function ConnectionsPanel({
                 {s.installed && s.version && <span className="credential-sub">{s.version}</span>}
               </span>
               <span className="provider-actions">
-                <CheckControl state={state} onCheck={() => runCliCheck(s.provider)} title={`Run \`--version\` for ${providerLabel(s.provider)}`} />
+                <CheckControl state={state} onCheck={() => runCliCheck(s.provider)} title={`Run --version for ${providerLabel(s.provider)}`} />
               </span>
               {!s.installed && s.installCommand && (
                 // The real command, not a sentence about installing. This row is the most
@@ -483,7 +487,7 @@ export function ConnectionsPanel({
               </span>
             </span>
             <span className="provider-actions">
-              <CheckControl state={stateOf("github")} onCheck={runGithubCheck} title="Re-run `gh auth status`" />
+              <CheckControl state={stateOf("github")} onCheck={runGithubCheck} title="Re-run gh auth status" />
             </span>
             {!github.authenticated && github.fixCommand && (
               <div className="provider-hint">

@@ -187,14 +187,12 @@ export function McpPanel({ agents }: { agents: AgentConfig[] }) {
 
   return (
     <section className="mcp-panel">
+      {/* No title or blurb of its own. This panel has exactly one caller - the "MCP servers"
+          section of Settings - which already heads it with that name and, since this header was
+          emptied, the whole description too. Carrying a second <h2> and a second paragraph here
+          printed the heading twice, one under the other, with two blurbs saying much the same
+          thing, and nested an h2 inside that section's h3. */}
       <header className="mcp-panel-head">
-        <div>
-          <h2>MCP servers</h2>
-          <p className="mcp-sub">
-            Extra tools for your agents, spawned per turn alongside Solace's own group-chat bridge. Nothing here is written
-            to your CLI's own config files.
-          </p>
-        </div>
         <button className="mcp-add" onClick={() => openDraft({ ...EMPTY_DRAFT })}>
           + Add server
         </button>
