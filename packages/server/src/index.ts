@@ -244,7 +244,7 @@ async function main() {
       return { error: "chat not found" };
     }
     const channel = { chatId: chat.id };
-    const handled = await tryHandleCommand(req.body.text, { channel, agents, bus, chats, archive });
+    const handled = await tryHandleCommand(req.body.text, { channel, agents, bus, chats, archive, board });
     if (!handled) agents.submitMessage(chat.id, "user", "you", req.body.text);
     return { ok: true };
   });
@@ -373,7 +373,7 @@ async function main() {
 
   app.post<{ Params: { id: string }; Body: { text: string } }>("/api/agents/:id/chat", async (req) => {
     const channel = { agentId: req.params.id };
-    const handled = await tryHandleCommand(req.body.text, { channel, agents, bus, chats, archive });
+    const handled = await tryHandleCommand(req.body.text, { channel, agents, bus, chats, archive, board });
     if (!handled) agents.submitDirectMessage(req.params.id, req.body.text);
     return { ok: true };
   });

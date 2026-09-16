@@ -1,4 +1,6 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync, accessSync, constants } from "node:fs";
+import { lookup } from "node:dns/promises";
+import { connect } from "node:net";
 import type { ConnectionCheck, SshCredentialMeta } from "@solace/shared";
 import { getCredentialSecrets, listCredentials } from "./credentials";
 import { discoverModels } from "./modelDiscovery";
@@ -65,49 +67,245 @@ function extractIds(text: string): string[] {
   }
 }
 
-/**
- * A deploy target's check, and the one place where being clear about what was NOT proven
- * matters most. Solace stores a reference to a key file; whether the far-end host still
- * accepts that key can only be learned by signing in, which this app will not do on its own.
- * So the check is exactly what it says it is - the file is still there, and it is a file -
- * and the detail text says so rather than letting "SSH ✓" imply a working login.
- */
-export function checkSshTarget(meta: SshCredentialMeta): ConnectionCheck {
-  const checkedAt = new Date().toISOString();
-  const path = meta.ssh.privateKeyPath;
+// ---------------------------------------------------------------------------------------
+// SSH deploy targets
+//
+// This check had never been verified end to end, and what it actually did was narrower than
+// what it said: it called existsSync + statSync and then reported the key file as "present
+// and readable" without ever having read it, which is precisely the kind of unbacked claim
+// this file exists to prevent. A key file with no read permission passed.
+//
+// What it proves now, each part separately reported and separately falsifiable:
+//   - the hostname resolves to an address (real DNS lookup);
+//   - something is listening on the target port (real TCP connect, closed immediately);
+//   - the key file exists, is a regular file, and can actually be opened for reading;
+//   - whether the host has a known_hosts entry we can genuinely see.
+//
+// What it still does NOT prove, and says so in the same breath every time: that the host
+// will accept this key. That needs a real login with real credentials, which this app does
+// not perform on a button press. A TCP connect is not a login: the socket is destroyed the
+// instant it opens, before any SSH banner exchange or authentication.
+// ---------------------------------------------------------------------------------------
 
-  if (!path) {
-    return {
-      ok: true,
-      detail: "the key for this target is stored inside Solace, so there is no key file to check. This does not prove the host accepts it.",
-      checkedAt,
-    };
-  }
-  if (!existsSync(path)) {
-    return { ok: false, detail: `no file exists at ${path} any more - the key this target points at has moved or been deleted`, checkedAt };
-  }
+const DNS_TIMEOUT_MS = 5000;
+const TCP_TIMEOUT_MS = 5000;
+
+export type SshDnsFact = { ok: true; address: string } | { ok: false; error: string };
+export type SshPortFact = { ok: true; banner?: string } | { ok: false; error: string };
+export type SshKeyFact =
+  | { state: "stored-in-solace" }
+  | { state: "ok"; path: string }
+  | { state: "missing"; path: string }
+  | { state: "not-a-file"; path: string }
+  | { state: "unreadable"; path: string; error: string };
+export type SshKnownHostsFact =
+  | { state: "not-configured" }
+  | { state: "missing"; path: string }
+  | { state: "has-entry"; path: string }
+  | { state: "no-entry"; path: string }
+  | { state: "only-hashed"; path: string }
+  | { state: "unreadable"; path: string; error: string };
+
+/** Everything the probes observed. Split from the verdict so that "what counts as a pass" is
+ * directly testable without a network - same discipline as localDiscovery's
+ * identifyProbeResponse. */
+export interface SshFacts {
+  dns: SshDnsFact;
+  port: SshPortFact;
+  key: SshKeyFact;
+  knownHosts: SshKnownHostsFact;
+}
+
+/** Opens the key file for reading and closes it again. accessSync(R_OK) rather than
+ * existsSync: a key file that exists but cannot be read is the exact case the old check
+ * called "present and readable". */
+export function inspectSshKeyFile(path: string | undefined, hasStoredKeyMaterial?: boolean): SshKeyFact {
+  if (!path) return { state: "stored-in-solace" };
+  if (!existsSync(path)) return { state: "missing", path };
   try {
-    if (!statSync(path).isFile()) {
-      return { ok: false, detail: `${path} exists but is not a file`, checkedAt };
-    }
+    if (!statSync(path).isFile()) return { state: "not-a-file", path };
+    accessSync(path, constants.R_OK);
+    return { state: "ok", path };
   } catch (err) {
-    return { ok: false, detail: `could not read ${path}: ${(err as Error).message}`, checkedAt };
+    return { state: "unreadable", path, error: (err as Error).message };
+  }
+}
+
+/**
+ * Does this known_hosts file actually pin this host?
+ *
+ * Hashed entries (`|1|salt|hash`) cannot be matched without recomputing the HMAC per line,
+ * and guessing would be worse than admitting it: a file of hashed entries reports
+ * "only-hashed" - we genuinely cannot tell - rather than "no entry", which would read as a
+ * problem the user does not have.
+ */
+export function inspectKnownHosts(path: string | undefined, host: string, port: number): SshKnownHostsFact {
+  if (!path) return { state: "not-configured" };
+  if (!existsSync(path)) return { state: "missing", path };
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (err) {
+    return { state: "unreadable", path, error: (err as Error).message };
+  }
+  const wanted = host.trim().toLowerCase();
+  // OpenSSH writes a non-22 port as [host]:port, and only then.
+  const wantedWithPort = `[${wanted}]:${port}`;
+  let sawHashed = false;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const first = line.split(/\s+/)[0];
+    if (!first) continue;
+    if (first.startsWith("|1|")) {
+      sawHashed = true;
+      continue;
+    }
+    for (const pattern of first.split(",")) {
+      const p = pattern.trim().toLowerCase();
+      if (p === wanted || p === wantedWithPort) return { state: "has-entry", path };
+    }
+  }
+  return sawHashed ? { state: "only-hashed", path } : { state: "no-entry", path };
+}
+
+/** A real DNS lookup, timeboxed, never throwing. An IP literal resolves to itself. */
+async function resolveHost(host: string): Promise<SshDnsFact> {
+  try {
+    const result = await Promise.race([
+      lookup(host),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`DNS lookup timed out after ${DNS_TIMEOUT_MS / 1000}s`)), DNS_TIMEOUT_MS)),
+    ]);
+    return { ok: true, address: result.address };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
+  }
+}
+
+/**
+ * A real TCP connect, destroyed the moment it succeeds. Deliberately NOT an SSH handshake and
+ * emphatically not a login: no credentials are sent, no key is read, nothing is offered to
+ * the far end. If the server happens to send its identification banner before we hang up we
+ * keep it, because "SSH-2.0-OpenSSH_9.6" is real evidence that the thing on that port is an
+ * SSH server rather than something else that merely accepts connections.
+ */
+function probePort(host: string, port: number): Promise<SshPortFact> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let banner = "";
+    const done = (fact: SshPortFact) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(fact);
+    };
+    const socket = connect({ host, port });
+    socket.setTimeout(TCP_TIMEOUT_MS);
+    socket.once("connect", () => {
+      // Give the server a brief moment to volunteer its banner, then hang up regardless.
+      setTimeout(() => done({ ok: true, banner: banner.trim() || undefined }), 250);
+    });
+    socket.on("data", (chunk) => {
+      banner += chunk.toString("utf8").slice(0, 120);
+      if (banner.includes("\n")) done({ ok: true, banner: banner.split("\n")[0].trim() });
+    });
+    socket.once("timeout", () => done({ ok: false, error: `no answer from ${host}:${port} within ${TCP_TIMEOUT_MS / 1000}s` }));
+    socket.once("error", (err) => done({ ok: false, error: (err as Error).message }));
+  });
+}
+
+/**
+ * Turns observed facts into the verdict. Pure, so every branch is testable without a network.
+ *
+ * `ok` is true only when nothing was actually found to be wrong. The two cases that are NOT
+ * failures but are also not proof - a key held inside Solace, and a host whose known_hosts
+ * entries are all hashed - are carried in the text rather than being allowed to flip the
+ * result either way.
+ */
+export function describeSshCheck(meta: SshCredentialMeta, facts: SshFacts, checkedAt: string): ConnectionCheck {
+  const { host, port } = meta.ssh;
+  const proved: string[] = [];
+  const problems: string[] = [];
+
+  if (facts.dns.ok) proved.push(`${host} resolves to ${facts.dns.address}`);
+  else problems.push(`${host} does not resolve: ${facts.dns.error}`);
+
+  if (facts.port.ok) {
+    proved.push(facts.port.banner ? `port ${port} answered: ${facts.port.banner}` : `port ${port} accepted a TCP connection`);
+  } else if (facts.dns.ok) {
+    // Only meaningful when we had an address to connect to; otherwise the DNS line above
+    // already says why, and repeating it as a second failure reads as two separate faults.
+    problems.push(`port ${port} did not answer: ${facts.port.error}`);
   }
 
-  const extras: string[] = [];
-  if (meta.ssh.knownHostsPath && !existsSync(meta.ssh.knownHostsPath)) {
-    extras.push(`known_hosts at ${meta.ssh.knownHostsPath} is missing`);
+  switch (facts.key.state) {
+    case "ok":
+      proved.push(`key file ${facts.key.path} opened for reading`);
+      break;
+    case "stored-in-solace":
+      proved.push("the key for this target is stored inside Solace, so there is no key file to check");
+      break;
+    case "missing":
+      problems.push(`no file exists at ${facts.key.path} any more - the key this target points at has moved or been deleted`);
+      break;
+    case "not-a-file":
+      problems.push(`${facts.key.path} exists but is not a file`);
+      break;
+    case "unreadable":
+      problems.push(`${facts.key.path} exists but could not be opened for reading: ${facts.key.error}`);
+      break;
   }
-  return {
-    // Deliberately not "connected". The key file is present and readable; that is the whole
-    // claim. Signing in to find out more is the user's to trigger, not this button's.
-    ok: extras.length === 0,
-    detail:
-      extras.length === 0
-        ? `key file ${path} is present and readable. Not a sign-in test - it does not prove ${meta.ssh.host} accepts this key.`
-        : extras.join("; "),
-    checkedAt,
+
+  switch (facts.knownHosts.state) {
+    case "has-entry":
+      proved.push(`${host} has an entry in ${facts.knownHosts.path}`);
+      break;
+    case "missing":
+      problems.push(`known_hosts at ${facts.knownHosts.path} is missing`);
+      break;
+    case "unreadable":
+      problems.push(`known_hosts at ${facts.knownHosts.path} could not be read: ${facts.knownHosts.error}`);
+      break;
+    case "no-entry":
+      problems.push(`${facts.knownHosts.path} has no entry for ${host}, so the first connection will have nothing to verify the host key against`);
+      break;
+    case "only-hashed":
+      proved.push(`${facts.knownHosts.path} uses hashed entries, so whether ${host} is pinned there cannot be read off the file`);
+      break;
+    case "not-configured":
+      proved.push("no known_hosts file is configured for this target, so ssh will use your default one");
+      break;
+  }
+
+  // Never dropped, on either outcome. The whole point of this row is that a green tick here
+  // must not be readable as "this host accepts this key".
+  const caveat = `Not a sign-in test - it does not prove ${host} accepts this key.`;
+  const body = problems.length > 0 ? problems.join("; ") : proved.join("; ");
+  return { ok: problems.length === 0, detail: `${body}. ${caveat}`, checkedAt };
+}
+
+/**
+ * A deploy target's check: the real probes, then the verdict above.
+ *
+ * DNS and a TCP connect are the two things that can be honestly established about a remote
+ * host without authenticating to it, and they are the two that catch the failures people
+ * actually hit - a renamed host, a VPN that is not up, a firewall, a moved SSH port. No
+ * credential is transmitted and no login is attempted.
+ */
+export async function checkSshTarget(meta: SshCredentialMeta): Promise<ConnectionCheck> {
+  const checkedAt = new Date().toISOString();
+  const { host, port, privateKeyPath, knownHostsPath, hasStoredKeyMaterial } = meta.ssh;
+
+  const dns = await resolveHost(host);
+  const facts: SshFacts = {
+    dns,
+    // Connecting is only meaningful once we have an address; a name that does not resolve has
+    // nothing to connect to, and reporting a synthesized socket error would be inventing one.
+    port: dns.ok ? await probePort(dns.address, port) : { ok: false, error: `${host} did not resolve` },
+    key: inspectSshKeyFile(privateKeyPath, hasStoredKeyMaterial),
+    knownHosts: inspectKnownHosts(knownHostsPath, host, port),
   };
+  return describeSshCheck(meta, facts, checkedAt);
 }
 
 /** Why a given entry cannot be checked, for the kinds where that is the honest answer. */
@@ -121,7 +319,7 @@ export async function checkCredential(workspaceRoot: string, id: string): Promis
   const meta = listCredentials(workspaceRoot).find((c) => c.id === id);
   if (!meta) throw new NotCheckableError("no saved connection with that id");
 
-  if (meta.kind === "ssh") return checkSshTarget(meta);
+  if (meta.kind === "ssh") return await checkSshTarget(meta);
 
   if (meta.kind === "login" || meta.kind === "secret") {
     // Not a failure - there is genuinely nothing to check. Signing in to a third-party

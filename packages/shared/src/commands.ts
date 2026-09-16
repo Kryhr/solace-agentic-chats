@@ -30,6 +30,13 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   { name: "task", hint: "@handle <description>", help: "set that agent's current task", scope: "both" },
   { name: "status", hint: "", help: "summarize every agent's state, model, and task", scope: "both" },
   { name: "agents", hint: "", help: "who's here: provider, model, trust level and working directory", scope: "both" },
+  // The coordination board is per chat (see CoordinationBoard's own note on why), so there is
+  // no such thing as "the board" from inside one agent's hub - hence chat-only rather than a
+  // command the menu offers everywhere and that then refuses half the time.
+  { name: "board", hint: "", help: "the coordination board: file claims, contracts, and who is blocked on what", scope: "chat" },
+  { name: "stop", hint: "[@handle]", help: "stop whatever an agent is doing right now", scope: "both" },
+  { name: "retry", hint: "[@handle]", help: "re-run the turn that last failed, exactly as it was", scope: "both" },
+  { name: "providers", hint: "", help: "which coding-agent CLIs are really installed, with the version each one printed", scope: "both" },
   { name: "trust", hint: "<level> [@handle]", help: "set the permission mode for every agent at once, or just one", scope: "both" },
   { name: "usage", hint: "", help: "real rate-limit usage each provider has actually reported", scope: "both" },
   { name: "save", hint: "", help: "save a copy of this chat to Saved chats, without clearing it", scope: "chat" },
