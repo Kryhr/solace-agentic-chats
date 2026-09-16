@@ -3697,6 +3697,26 @@ body {
   background: var(--surface-2);
 }
 
+/* In an agent's own hub, YOUR messages sit on the left with everything else.
+   Right-alignment earns its keep in the group chat, where several authors are
+   talking and the side instantly says "this one is mine". A hub is a two-party
+   transcript in a narrower column, so the same rule just pushed your prompt
+   into the middle of the page, away from the reply it belongs to, and made a
+   sequence of your own messages read as a ragged zigzag rather than a thread. */
+.hub-message.from-user {
+  flex-direction: row;
+  margin-left: 0;
+  margin-right: auto;
+  /* Wider than the group chat's 60ch: the prompt you send an agent is usually
+     the long half of the exchange, and there is no second author to distinguish
+     it from here. */
+  max-width: min(100%, 80ch);
+}
+
+.hub-message.from-user .meta {
+  flex-direction: row;
+}
+
 @media (max-width: 600px) {
   .message-row.from-user {
     max-width: 88%;
