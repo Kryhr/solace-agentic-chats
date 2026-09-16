@@ -497,7 +497,10 @@ export function isChatChannel(channel: ChatChannel): channel is { chatId: string
  * Absent on every message persisted before this existed, and on user/system messages. An agent
  * message with no kind renders as an answer, which is how the old hub already rendered it.
  */
-export type AgentMessageKind = "answer" | "progress" | "tool" | "reasoning" | "error";
+/** "announcement" is an agent telling the group something nobody needs to answer. It is the one
+ * kind that deliberately summons NOBODY: an ordinary unaddressed message gives every agent in
+ * the chat a real billed turn, so a status update used to cost three of them. */
+export type AgentMessageKind = "answer" | "progress" | "tool" | "reasoning" | "error" | "announcement";
 
 /** One tool invocation, as reported by the provider. Nothing here is invented: `name` is the
  * provider's own tool name and `detail` is its own arguments - `label` is derived from those two

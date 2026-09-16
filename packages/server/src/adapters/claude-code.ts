@@ -15,7 +15,19 @@ const BRIDGE_SCRIPT = join(__dirname, "..", "..", "src", "approval", "bridgeScri
 const SOLACE_BRIDGE_SCRIPT = join(__dirname, "..", "..", "src", "mcp", "solaceBridge.mjs");
 
 /** Claude Code addresses MCP tools as mcp__<server>__<tool>. */
-const SOLACE_TOOLS = ["mcp__solace__post_to_group", "mcp__solace__list_agents"];
+const SOLACE_TOOLS = [
+  "mcp__solace__post_to_group",
+  "mcp__solace__list_agents",
+  // Coordination tools are pre-allowed for the same reason post_to_group is: they are
+  // bookkeeping inside this app - a claim, a contract, an announcement, a wake-up - with no
+  // effect on the user's machine. get_secret is deliberately NOT here; that one reads real
+  // credentials and goes through approval.
+  "mcp__solace__claim_files",
+  "mcp__solace__release_files",
+  "mcp__solace__post_contract",
+  "mcp__solace__announce",
+  "mcp__solace__block_on",
+];
 
 /**
  * Trust level -> Claude Code's own --permission-mode flag. Our TrustLevel enum now IS Claude
