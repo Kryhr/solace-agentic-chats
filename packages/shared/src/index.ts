@@ -76,6 +76,7 @@ export type ProviderId =
   | "gemini-cli"
   | "qwen-code"
   | "copilot-cli"
+  | "opencode"
   | "custom"
   | "local";
 

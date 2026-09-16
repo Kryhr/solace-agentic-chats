@@ -13,6 +13,7 @@ const PROVIDER_STYLE: Record<Exclude<ProviderId, "custom">, { color: string; lab
   "gemini-cli": { color: "#7c93f2", label: "gemini" },
   "qwen-code": { color: "#c084e0", label: "qwen" },
   "copilot-cli": { color: "#9aa4b2", label: "copilot" },
+  opencode: { color: "#e0b341", label: "opencode" },
   local: { color: "#7fb069", label: "local" },
 };
 
@@ -44,6 +45,15 @@ function GlyphFor({ provider }: { provider: ProviderId }) {
       return (
         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
           <path d="M12 3l7.79 4.5v9L12 21l-7.79-4.5v-9L12 3z" />
+        </svg>
+      );
+    case "opencode":
+      // an open square bracket pair around a dot - "open" + a terminal agent, and
+      // deliberately distinct from codex's chevron brackets at 13px.
+      return (
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M9 4H5v16h4M15 4h4v16h-4" />
+          <circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" />
         </svg>
       );
     case "local":

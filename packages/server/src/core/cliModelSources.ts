@@ -456,6 +456,62 @@ export function parseCopilotBuiltInCatalog(body: unknown): ModelOption[] {
   return out;
 }
 
+// ---------------------------------------------------------------------------------------
+// OpenCode
+// ---------------------------------------------------------------------------------------
+
+/**
+ * `opencode models` prints the models THIS login can actually reach, one `provider/model` per
+ * line and nothing else. Verified against the installed 1.18.31 binary, whose real output on
+ * this machine was eight lines of the form:
+ *
+ *   opencode/big-pickle
+ *   opencode/nemotron-3.5-lightning-free
+ *   opencode/union-alpha
+ *
+ * This is the most authoritative source any of the CLIs here offer: unlike Claude Code's and
+ * Gemini's shipped build tables, it is a live answer scoped to the signed-in account, so a
+ * model in this list is one the user can genuinely select rather than one their CLI has merely
+ * heard of. That is why modelCatalog.ts tags it "cli-live".
+ *
+ * The provider segment before the "/" becomes the family, because that is the grouping
+ * OpenCode itself imposes - the ids are ambiguous without it, since two providers can ship
+ * models with the same trailing name. The full `provider/model` string stays the id, because
+ * that is exactly what `-m` takes.
+ *
+ * No id is invented and no line is repaired: a line that is not a plain `provider/model` pair
+ * is skipped rather than guessed at, so a future change in that output surfaces as a short
+ * list rather than as fabricated entries.
+ */
+export function parseOpencodeModels(stdout: string): ModelOption[] {
+  const out: ModelOption[] = [];
+  const seen = new Set<string>();
+  for (const raw of stdout.split(/\r?\n/)) {
+    // A BOM on the first line and ANSI colour codes both really do occur in this CLI's output.
+    const line = raw
+      .replace(/^\uFEFF/, "")
+      .replace(/\u001b\[[0-9;]*m/g, "")
+      .trim();
+    if (!line) continue;
+    const match = /^([A-Za-z0-9._-]+)\/([A-Za-z0-9._:\/-]+)$/.exec(line);
+    if (!match) continue;
+    const [id, provider, name] = match;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push({
+      id,
+      // The model segment exactly as the source spelled it. Deliberately not prettified:
+      // OpenCode states no display name, and inventing one would show the user a string their
+      // own CLI never uses.
+      label: name,
+      family: provider,
+      familyLabel: familyLabel(provider),
+      sourceIndex: 0,
+    });
+  }
+  return out;
+}
+
 /** Re-tags every option with the index of the source that produced it, and drops ids an
  * earlier (more authoritative) source already supplied. Order of `groups` is the order of
  * authority, so a live answer always wins over a shipped constant. */

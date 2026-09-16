@@ -202,7 +202,7 @@ test("/providers reports every CLI it probed, and claims only that the binary ra
   const h = harness();
   await h.run("/providers", h.chatChannel);
   const text = h.lastIn(h.chatChannel);
-  for (const provider of ["claude-code", "codex-cli", "gemini-cli", "qwen-code", "copilot-cli"]) {
+  for (const provider of ["claude-code", "codex-cli", "gemini-cli", "qwen-code", "copilot-cli", "opencode"]) {
     assert.ok(text.includes(provider), `${provider} is missing from /providers`);
   }
   // The line that keeps this row from being read as "these agents are ready to go".

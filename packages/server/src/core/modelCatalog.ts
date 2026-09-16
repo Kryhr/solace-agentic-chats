@@ -7,6 +7,7 @@ import {
   applyClaudeSections,
   claudeAliasOptions,
   mergeSourcedOptions,
+  parseOpencodeModels,
   parseClaudeAdditionalModelOptions,
   parseClaudeBuildChunk,
   parseCodexModelCatalog,
@@ -393,6 +394,50 @@ async function qwenModels(): Promise<{ models: ModelOption[]; sources: ModelCata
 }
 
 // ---------------------------------------------------------------------------------------
+// OpenCode
+// ---------------------------------------------------------------------------------------
+
+/**
+ * OpenCode is the only provider here with a plain, first-class model-listing command, so this
+ * is the simplest source in the file: run `opencode models` and read what it says.
+ *
+ * Tagged "cli-live" rather than "cli-artifact" because that is what it genuinely is - the CLI
+ * answering for the signed-in account right now, not a table compiled into the binary. The
+ * origin string says so in words, because "8 models" from a live account list and "52 models"
+ * from a shipped catalog are very different claims and the UI shows this line verbatim.
+ *
+ * No fallback list: if the command fails, this reports the failure and contributes nothing.
+ * The alternative - carrying a hardcoded roster to show when the real one cannot be read -
+ * would mean presenting model ids this app made up as though the CLI had offered them.
+ */
+async function opencodeModels(): Promise<{ models: ModelOption[]; sources: ModelCatalogSource[]; error?: string }> {
+  try {
+    const stdout = await runForStdout("opencode", ["models"], 20_000);
+    const models = parseOpencodeModels(stdout);
+    if (models.length === 0) {
+      return {
+        models: [],
+        sources: [],
+        error: "`opencode models` ran but printed no `provider/model` lines, so there was nothing to list. Run `opencode auth login` if this account is not signed in.",
+      };
+    }
+    return {
+      models: mergeSourcedOptions([models]),
+      sources: [
+        {
+          kind: "cli-live",
+          origin: "`opencode models` (the models this OpenCode login can actually reach)",
+          readAt: new Date().toISOString(),
+          count: models.length,
+        },
+      ],
+    };
+  } catch (err) {
+    return { models: [], sources: [], error: (err as Error).message };
+  }
+}
+
+// ---------------------------------------------------------------------------------------
 // Assembly + cache
 // ---------------------------------------------------------------------------------------
 // GitHub Copilot CLI
@@ -510,12 +555,13 @@ export async function getModelCatalog(): Promise<ProviderModelInfo[]> {
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.value;
 
   const codexDefault = detectCodexDefault();
-  const [claude, codex, gemini, qwen, copilot] = await Promise.all([
+  const [claude, codex, gemini, qwen, copilot, opencode] = await Promise.all([
     claudeModels().catch((err) => ({ models: [], sources: [], error: (err as Error).message })),
     codexModels().catch((err) => ({ models: [], sources: [], error: (err as Error).message })),
     geminiModels().catch((err) => ({ models: [], sources: [], error: (err as Error).message })),
     qwenModels().catch((err) => ({ models: [], sources: [], error: (err as Error).message })),
     copilotModels().catch((err) => ({ models: [], sources: [], error: (err as Error).message })),
+    opencodeModels().catch((err) => ({ models: [], sources: [], error: (err as Error).message })),
   ]);
 
   const catalog: Record<CliProviderId, ProviderModelInfo> = {
@@ -570,6 +616,23 @@ export async function getModelCatalog(): Promise<ProviderModelInfo[]> {
       // No per-machine default to read: ~/.copilot/config.json holds only first-launch and
       // login bookkeeping, and the model is chosen by Copilot's own auto-router unless --model
       // says otherwise. Left undefined rather than asserting a default that isn't written down.
+      currentDefaultModel: undefined,
+    },
+    opencode: {
+      provider: "opencode",
+      models: opencode.models,
+      sources: opencode.sources,
+      sourceError: opencode.error,
+      // `opencode run --help` documents --variant as "model variant (provider-specific
+      // reasoning effort, e.g., high, max, minimal)" and names exactly these three. It is a
+      // free-form string, not a yargs `choices` list, so this is what the CLI's own help
+      // states rather than a set it would enforce - and the help's own "provider-specific"
+      // wording means a given model may accept none of them. Listing more than OpenCode
+      // itself names would be inventing levels.
+      effortLevels: ["minimal", "high", "max"],
+      // No per-machine default to read. OpenCode stores its selected model in its own state,
+      // not in a documented config key this app can honestly parse, so this is left undefined
+      // rather than asserting a default that may not be the one in force.
       currentDefaultModel: undefined,
     },
   };
