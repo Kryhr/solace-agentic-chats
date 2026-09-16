@@ -47,7 +47,6 @@ import { ArchivesPage } from "./components/ArchivesPage";
 import { ChatPanel } from "./components/ChatPanel";
 import { ChatRail } from "./components/ChatRail";
 import { ConnectionsPanel } from "./components/ConnectionsPanel";
-import { McpPanel } from "./components/McpPanel";
 import { SettingsPage } from "./components/SettingsPage";
 import { SkillsPage } from "./components/SkillsPage";
 import { agentsInScope, chatsInScope } from "./lib/projectScope";
