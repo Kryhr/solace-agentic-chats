@@ -452,10 +452,6 @@ export default function App() {
               single kind reads as what Connections is for. See ConnectionsPanel.tsx. */}
           <ConnectionsPanel />
 
-          {/* MCP servers sit next to Connections because they are the same kind of thing: a
-              capability this machine can reach, registered once and verified before it is
-              trusted. See McpPanel.tsx. */}
-          <McpPanel agents={Object.values(agentsById)} />
         </div>
 
         <div className="sidebar-footer">

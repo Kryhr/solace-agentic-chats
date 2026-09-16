@@ -4966,3 +4966,44 @@ body {
     flex: none;
   }
 }
+
+/* ---- stop a running turn ------------------------------------------------
+   Sits beside Send, not in place of it: a turn running is not a reason you cannot
+   type something else, and swapping the button under the cursor mid-thought is how
+   people stop the wrong thing. Deliberately quieter than Send - it is the rarer
+   action, and it should not compete with the primary control for attention. */
+.stop-btn {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-1) var(--ease-in-out),
+    color var(--dur-1) var(--ease-in-out),
+    border-color var(--dur-1) var(--ease-in-out),
+    transform var(--dur-1) var(--ease-in-out);
+}
+
+/* Stopping work is destructive-adjacent, so hover states it plainly rather than
+   leaving the user to find out by clicking. */
+.stop-btn:hover {
+  background: var(--danger-wash, transparent);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.stop-btn:active {
+  transform: scale(0.94);
+}
+
+.stop-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}

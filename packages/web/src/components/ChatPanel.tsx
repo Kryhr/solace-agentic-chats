@@ -10,6 +10,7 @@ import type {
 } from "@solace/shared";
 import { ProviderIcon, UserAvatar } from "./ProviderIcon";
 import { Composer } from "./Composer";
+import { stopAgent } from "../api";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 import { useEntranceTracker } from "../lib/useEntranceTracker";
 import { displayText, renderKind } from "../lib/messageKind";
@@ -258,6 +259,13 @@ export function ChatPanel({
         placeholder={connected ? `Message ${chat.title}…` : "Reconnecting…"}
         ariaLabel={`Message ${chat.title}`}
         mentionAgents={agents}
+        busyAgents={thinkingAgents}
+        onStopAgents={(list) => {
+          // Fire-and-forget per agent: stopping is best-effort by nature (the turn may finish
+          // on its own between the click and the request arriving), and one failure must not
+          // prevent the others from being stopped.
+          for (const a of list) void stopAgent(a.id);
+        }}
         usage={{ rateLimits, providersInUse: [...new Set(agents.map((a) => a.provider))] }}
         onSend={onSend}
         onSubmitted={() => {

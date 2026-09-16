@@ -45,6 +45,8 @@ export function Composer({
   onSubmitted,
   mentionAgents,
   surface,
+  busyAgents,
+  onStopAgents,
   usage,
 }: {
   placeholder: string;
@@ -57,6 +59,11 @@ export function Composer({
   /** Where this composer is. Chat-only commands are not offered on a hub page and vice versa -
    * offering one that can only answer "that doesn't work here" is worse than not listing it. */
   surface?: "chat" | "hub";
+  /** Agents currently mid-turn in THIS chat. Supplying them turns on the stop control - an
+   * agent can run for minutes, and until now the only way to call one off was the /stop command
+   * or its own hub page. */
+  busyAgents?: AgentConfig[];
+  onStopAgents?: (agents: AgentConfig[]) => void;
   usage?: { rateLimits: ProviderRateLimit[]; providersInUse: ProviderId[] };
 }) {
   const [draft, setDraft] = useState("");
@@ -239,6 +246,25 @@ export function Composer({
             onKeyDown={onKeyDown}
           />
           {usage && <UsageMeter rateLimits={usage.rateLimits} providersInUse={usage.providersInUse} />}
+          {/* Sits beside Send rather than replacing it: a turn running is not a reason you
+              cannot say something else, and swapping the button under the cursor mid-thought is
+              how people stop the wrong thing. Only rendered while something is actually
+              running, so the resting composer is unchanged. */}
+          {busyAgents && busyAgents.length > 0 && onStopAgents && (
+            <button
+              type="button"
+              className="stop-btn"
+              onClick={() => onStopAgents(busyAgents)}
+              aria-label={
+                busyAgents.length === 1 ? `Stop ${busyAgents[0].handle}` : `Stop ${busyAgents.length} working agents`
+              }
+              title={`Stop ${busyAgents.map((a) => a.handle).join(", ")} - the work it has already done is kept`}
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+              </svg>
+            </button>
+          )}
           <button
             type="button"
             className={`send-btn ${sending ? "is-sending" : ""}`}

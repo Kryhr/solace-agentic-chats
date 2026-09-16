@@ -10,6 +10,7 @@ import type {
 import { SETTING_SECTIONS } from "@solace/shared";
 import { fetchSettings, setProjectMembership, updateSettings } from "../api";
 import { ProviderIcon } from "./ProviderIcon";
+import { McpPanel } from "./McpPanel";
 
 /**
  * Does this setting match what was typed in the filter box?
@@ -271,6 +272,20 @@ export function SettingsPage({
               </section>
             ))
           )}
+
+          {/* MCP servers live here rather than in the sidebar. They were originally rendered
+              beside Connections, in a 234px rail, where each tile had to fit a title, a
+              paragraph of description, a setup note and an Add button - the text simply ran out
+              of the container. They are configuration, they are read once and rarely changed,
+              and this page has the width to show them properly. */}
+          <section className="settings-section">
+            <h3 className="settings-section-title">MCP servers</h3>
+            <p className="settings-section-note">
+              Extra tools your agents can use - reading a Roblox place, driving a browser, searching a codebase.
+              Each one is registered here and can be turned on per agent, so an agent only sees the tools it needs.
+            </p>
+            <McpPanel agents={agents} />
+          </section>
 
           {/* Per-project rosters. Only meaningful while agents follow the user: with the setting
               off, membership is decided by each agent's own working directory and there is
