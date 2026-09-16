@@ -3,17 +3,11 @@
 **Run several AI coding agents, from different providers, on the same project at the same
 time — in a shared group chat where they can see each other's work and hand things off.**
 
-Claude Code, Codex, Copilot, Gemini, Qwen, OpenCode and five more, each signed in with your
-own subscription, each running as its own agent with its own working directory, model,
-reasoning effort and permission level. Everything runs on your machine. Nothing is sent
-anywhere except to the provider you already pay for.
+Everything runs on your machine. Nothing is sent anywhere except to the provider you choose.
 
----
+## Get started
 
-## Setup
-
-You need [Node.js 20 or newer](https://nodejs.org) and at least one coding-agent CLI already
-installed and signed in (see [the list below](#connect-a-cli)).
+You need [Node.js 20+](https://nodejs.org). Copy-paste this:
 
 ```bash
 git clone https://github.com/Kryhr/solace-agentic-chats.git
@@ -22,18 +16,45 @@ npm install
 npm run dev
 ```
 
-Then open **<http://localhost:5173>** in your browser. That is the whole setup.
+Then open **<http://localhost:5173>**. That's the whole setup.
+
+## What you can run agents on
+
+Three kinds of connection, and you can mix them freely — one agent on a Claude subscription
+and another on a model running on your own GPU, in the same chat, on the same project.
+
+**1. Coding-agent CLIs, on your own subscription** — 11 of them, no API key involved:
+
+> Claude Code · Codex CLI · GitHub Copilot CLI · Gemini CLI · Qwen Code · OpenCode ·
+> Crush · Continue · Kilo · Droid · Kimi Code
+
+**2. Hosted API endpoints**, with your API key — any OpenAI-compatible provider. 25 are
+built in with their base URLs already filled:
+
+> DeepSeek · Groq · Mistral · Together AI · Fireworks · OpenRouter · Perplexity · xAI (Grok) ·
+> Cerebras · DeepInfra · Moonshot (Kimi) · Anthropic · OpenAI · Google Gemini · Nebius ·
+> Novita · Hyperbolic · SambaNova · Baseten · Featherless · Inference.net · Parasail ·
+> Venice · Z.AI (GLM) · GMI Cloud
+
+**3. Local model servers on this machine**, keyless and free — Solace can scan for them and
+add whichever it finds:
+
+> Ollama · LM Studio · Jan · llama.cpp · vLLM · LocalAI · KoboldCpp · GPT4All
+
+Not on the list? **Add any OpenAI-compatible endpoint** by URL, hosted or local.
+
+## Where things live
 
 | What | Where | Change it with |
 |---|---|---|
-| The app (open this) | `http://localhost:5173` | — |
+| The app (open this) | `http://localhost:5173` | `SOLACE_WEB_PORT=5173` |
 | The backend API | `http://localhost:4310` | `PORT=4310` |
 | Your projects on disk | `~/Desktop/solace-workspace` | `SOLACE_WORKSPACE_ROOT=/some/path` |
 
-`npm run dev` starts the backend and the UI together and leaves them running; stop both with
-`Ctrl-C`. Both bind to `127.0.0.1` only, so nothing is reachable from your network.
+`npm run dev` starts the backend and the UI together; stop both with `Ctrl-C`. Both bind to
+`127.0.0.1` only, so nothing is reachable from your network.
 
-### First run
+## First run
 
 A fresh install starts completely empty — no agents, no connections, no projects. It stays
 empty until you add something, and everything you add is saved to disk immediately and is
@@ -53,7 +74,7 @@ Three steps to a working chat:
 
 Type `/help` in either composer for every command.
 
-### Connect a CLI
+## Installing the CLIs
 
 Install whichever you want, sign in, then add it in the app. Sign-in is always against
 **your own subscription** — Solace never asks for an API key for a CLI and never holds a
@@ -76,9 +97,9 @@ login for one.
 Every command in that table was read from that CLI's own `--help` rather than from its docs,
 and the app shows you which invocation it came from, so you can check it yourself.
 
-**No subscription?** You can point an agent at any OpenAI-compatible endpoint instead — a
-hosted one (DeepSeek, Groq, Together, …) with an API key, or a local model server (Ollama,
-LM Studio, llama.cpp, vLLM, …) with no key at all. Add those under **+ Add connection** too.
+Hosted endpoints and local model servers are added the same way — **+ Add connection** →
+**Hosted API endpoint** or **Local model server**. A local server needs no key at all, and
+the scan button finds the ones already running on this machine.
 
 ---
 
@@ -143,30 +164,26 @@ packages/
 
 ---
 
-## Where this is going
+## What's next
 
-v1.0 is the point where the thing is genuinely usable every day: agents that remember their
-work, coordinate, and run against whichever provider you already pay for. It is not the
-finished shape, and the next versions are mostly about making the group chat better rather
-than adding more providers.
+Solace is actively developed, and v1.0 is the shape it takes today: agents that remember
+their work, coordinate with each other, and run on whichever provider you already use. The
+next versions focus on making the group chat richer rather than on adding more providers.
 
-Being worked on now:
+On the way:
 
-- **Richer coordination.** The group chat works; it should be better at handing work off,
-  splitting a task across agents, and showing who is blocked on whom.
+- **Richer coordination** — better hand-offs, splitting one task across several agents, and
+  seeing at a glance who is blocked on whom.
 - **More UI control** over how agents are grouped, filtered and watched while they work.
-- **Agent Client Protocol adapters.** Kimi, Gemini and Qwen all speak ACP, which offers real
-  approval gates and per-session MCP where today's one-shot path offers neither.
+- **Agent Client Protocol adapters.** Kimi, Gemini and Qwen all speak ACP, which brings real
+  approval gates and per-session MCP.
 - **Live approval loops for more providers**, so `Manual` means the same thing everywhere.
-- **Multiple accounts per provider**, so several agents can run the same CLI under different
-  logins.
-- **Packaging as a desktop app**, instead of clone-and-run.
+- **Multiple accounts per provider**, so several agents can run one CLI under different logins.
+- **A packaged desktop app**, instead of clone-and-run.
 
-Known limits in v1.0, stated plainly: a few providers report no usage at all (their CLIs
-don't expose it); Copilot's prompt figure covers its last model call rather than a whole turn;
-and the four newest adapters were built and unit-tested against their real binaries but have
-not each completed a full turn on a signed-in account. The UI says so where it matters rather
-than papering over it.
+Where a provider's own CLI doesn't expose something — usage figures being the common one —
+Solace shows you that rather than inventing a number. As those CLIs grow the reporting, it
+picks it up.
 
 Issues and pull requests are welcome.
 
