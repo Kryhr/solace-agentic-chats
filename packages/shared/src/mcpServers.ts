@@ -187,6 +187,23 @@ export const MCP_CATALOG: CatalogMcpServer[] = [
     source: "https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking",
   },
 
+  // github.com/ahujasid/blender-mcp, fetched 2026-09-16. NOTE the PyPI package is
+  // "mcp-for-blender", NOT "blender-mcp" - the repo name and the package name differ, and
+  // guessing from the repo name gives a command that does not exist. The README's own JSON is
+  // {"command":"uvx","args":["mcp-for-blender"]}. Active: 28.7k stars, 210 commits, current
+  // releases on PyPI. Two-part setup, which is why needsLocalApp is explicit about both halves.
+  {
+    name: "blender",
+    title: "Blender",
+    blurb:
+      "Builds and edits scenes in a running Blender: create objects, assign materials, set up shaders, render.",
+    command: "uvx",
+    args: ["mcp-for-blender"],
+    needsLocalApp:
+      "Two steps, both required: install the addon once with `uvx mcp-for-blender install-addon`, then have Blender open with that addon enabled. Needs uv installed (uvx comes with it).",
+    source: "https://github.com/ahujasid/blender-mcp",
+  },
+
   // PyPI mcp-server-fetch 2026.8.18. uvx ships with uv, which is NOT installed by default.
   {
     name: "fetch",

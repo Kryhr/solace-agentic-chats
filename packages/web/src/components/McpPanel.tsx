@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentConfig, CatalogMcpServer, CredentialMeta, McpEnvEntry, McpServerConfig } from "@solace/shared";
 import {
   createMcpServer,
@@ -136,10 +136,31 @@ export function McpPanel({ agents }: { agents: AgentConfig[] }) {
 
   const alreadyAdded = useMemo(() => new Set(servers.map((s) => s.name)), [servers]);
 
+  /**
+   * The editor renders BELOW the ten-tile suggested catalogue, so on the Settings page it opened
+   * ~515px past the bottom of the window with no scroll - measured. Clicking "+ Add server"
+   * therefore looked like it did nothing at all, which is exactly how it was reported. Bring it
+   * into view and put the caret in the first field, so the button visibly does something.
+   */
+  const editorRef = useRef<HTMLDivElement>(null);
+  const [justOpened, setJustOpened] = useState(false);
+
+  useEffect(() => {
+    if (!justOpened || !editorRef.current) return;
+    // Instant, not smooth. Clearing the flag re-renders immediately, and that re-render cancels
+    // a smooth scroll before it has travelled anywhere - measured: the editor stayed at y=1415
+    // with the scroller not having moved a pixel. The same mistake was already made once with
+    // the jump-to-bottom button in ChatPanel.
+    editorRef.current.scrollIntoView({ block: "center" });
+    editorRef.current.querySelector("input")?.focus();
+    setJustOpened(false);
+  }, [justOpened]);
+
   const openDraft = (next: DraftState) => {
     setDraft(next);
     setTestResult(null);
     setError(null);
+    setJustOpened(true);
   };
 
   const save = async () => {
@@ -284,7 +305,7 @@ export function McpPanel({ agents }: { agents: AgentConfig[] }) {
       </ul>
 
       {draft && (
-        <div className="mcp-editor">
+        <div className="mcp-editor" ref={editorRef}>
           <h3>{draft.id ? `Edit ${draft.name}` : "Add an MCP server"}</h3>
 
           <label className="mcp-field">

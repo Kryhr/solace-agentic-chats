@@ -265,7 +265,11 @@ test("every catalogue entry is shaped so it can actually be registered", () => {
   // cannot tell a real package from an invented one. What it CAN pin is that no entry is
   // malformed in a way that would produce a server the user cannot save, and that every entry
   // carries the source URL that makes the claim checkable by hand later.
-  assert.ok(MCP_CATALOG.length >= 3 && MCP_CATALOG.length <= 10, "3-10 entries");
+  // The upper bound is a sanity check, not a design limit - it started at 10 because that was
+  // the size of the first research pass, and Blender made it 11. What matters is that the list
+  // stays hand-verified: a bound loose enough to grow, tight enough that a bulk import of
+  // unverified entries from some aggregator would trip it.
+  assert.ok(MCP_CATALOG.length >= 3 && MCP_CATALOG.length <= 30, `3-30 entries, got ${MCP_CATALOG.length}`);
   for (const entry of MCP_CATALOG) {
     assert.ok(MCP_SERVER_NAME_PATTERN.test(entry.name), `${entry.name} is not a registrable name`);
     assert.ok(!(RESERVED_MCP_SERVER_NAMES as readonly string[]).includes(entry.name));
