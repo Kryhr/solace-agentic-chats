@@ -358,7 +358,6 @@ export function ConnectionsPanel() {
                 which did have a key - so only an explicit false means "no key". */}
             {c.hasKey === false && " · no key"}
           </span>
-          {c.notes && <span className="credential-sub credential-notes">{c.notes}</span>}
         </span>
         <span className="provider-actions">
           <CheckControl
@@ -483,15 +482,22 @@ export function ConnectionsPanel() {
               <span className="provider-glyph ssh-glyph" aria-hidden="true">
                 SSH
               </span>
-              <span className="provider-name">
-                {`${c.ssh.username}@${c.ssh.host}:${c.ssh.port}`}
-                <span className="credential-sub" title={c.ssh.privateKeyPath ?? undefined}>
-                  {c.ssh.privateKeyPath ?? "key stored in Solace (no file path)"}
-                  {/* Shown because until this line existed there was no way at all to tell that
-                      Solace was holding the passphrase for the key file named right beside it. */}
-                  {c.ssh.hasPassphrase && " · passphrase stored here too"}
-                </span>
-                {c.notes && <span className="credential-sub credential-notes">{c.notes}</span>}
+              {/* The row identifies the target and nothing else: user@host:port. The key path is
+                  long, often absolute, and not what you scan a list for - it moves to the
+                  tooltip, along with whether Solace is also holding the passphrase, which is the
+                  one fact about it that is otherwise invisible. */}
+              <span
+                className="provider-name"
+                title={
+                  `${c.ssh.privateKeyPath ?? "Key stored in Solace (no file path)"}` +
+                  `${c.ssh.hasPassphrase ? " · passphrase stored here too" : ""}` +
+                  `${c.notes ? `
+
+${c.notes}` : ""}`
+                }
+              >
+                {`${c.ssh.username}@${c.ssh.host}`}
+                <span className="credential-sub">{`port ${c.ssh.port}`}</span>
               </span>
               <span className="provider-actions">
                 <CheckControl
@@ -522,14 +528,13 @@ export function ConnectionsPanel() {
             <span className="provider-glyph vault-glyph" aria-hidden="true">
               LOG
             </span>
-            <span className="provider-name">
+            <span className="provider-name" title={c.notes || undefined}>
               {c.label}
               <span className="credential-sub" title={c.service}>
                 {c.username} @ {c.service}
                 {!c.hasPassword && " · no password stored"}
                 {c.hasTotp && " · 2FA stored"}
               </span>
-              {c.notes && <span className="credential-sub credential-notes">{c.notes}</span>}
             </span>
             <span className="provider-actions">
               {(c.hasPassword || c.hasTotp) && <RevealSecret id={c.id} what="password" />}
@@ -547,7 +552,6 @@ export function ConnectionsPanel() {
             <span className="provider-name">
               {c.label}
               <span className="credential-sub">{c.hasValue ? "secret stored" : "empty"}</span>
-              {c.notes && <span className="credential-sub credential-notes">{c.notes}</span>}
             </span>
             <span className="provider-actions">
               {c.hasValue && <RevealSecret id={c.id} what="secret" />}
