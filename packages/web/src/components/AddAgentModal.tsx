@@ -21,7 +21,7 @@ import { effortOptionsFor, initialModelFor } from "../lib/modelOptions";
 import { ModelPicker, ModelSourceNote } from "./ModelPicker";
 import { permissionOptionsFor, TRUST_LABELS } from "../lib/permissionOptions";
 
-const PROVIDERS: ProviderId[] = ["claude-code", "codex-cli", "gemini-cli", "qwen-code", "copilot-cli", "custom", "local"];
+const PROVIDERS: ProviderId[] = ["claude-code", "codex-cli", "gemini-cli", "qwen-code", "copilot-cli", "opencode", "custom", "local"];
 const NEW_PROJECT_VALUE = "__new__";
 /** "Give it its own folder, named after the handle" - the default, so adding an agent never
  * requires answering a question about projects. */

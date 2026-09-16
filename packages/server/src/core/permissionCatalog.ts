@@ -20,6 +20,22 @@ import type { CliProviderId, ProviderPermissionInfo, TrustLevel } from "@solace/
  *   does not exist. "auto" is omitted for the reason Gemini's is - Copilot has no unattended
  *   middle ground distinct from full access, so it would just be a second, more cautious-sounding
  *   name for "bypassPermissions".
+ *   OpenCode: three of the five, and it reaches them through config rather than a flag - it
+ *   has no --permission-mode equivalent at all (see adapters/opencode.ts for the config block
+ *   and the real-turn evidence behind each claim). "plan" and "acceptEdits" are unusually
+ *   strong here because OpenCode's "deny" REMOVES a tool from the model's tool list rather
+ *   than rejecting the call: in plan mode the CLI itself reports write/edit/bash as
+ *   "unavailable tool", so it is read-only by construction rather than by refusal.
+ *   "manual" is omitted, and this is the important one: OpenCode's "ask" value is
+ *   AUTO-REJECTED in headless `run` - verified, the turn printed "permission requested: edit
+ *   (...); auto-rejecting" and the tool came back "The user rejected permission to use this
+ *   specific tool call.". It never reaches a human and there is no --permission-prompt-tool
+ *   equivalent to route it to this app's approval system, so offering "manual" would promise
+ *   a human gate that cannot exist - it would in practice be a mode where the agent is asked
+ *   to work and then silently refused every tool.
+ *   "auto" is omitted for the reason Gemini's and Copilot's are: OpenCode has no
+ *   classifier-judged middle ground distinct from full access, so it would just be a
+ *   safer-sounding second name for "bypassPermissions".
  *   Gemini CLI: four of the five map 1:1 onto --approval-mode
  *   (plan/default/auto_edit/yolo). "auto" is left out rather than faked: Gemini has no
  *   classifier-judged middle ground, so offering it would just be a second name for
@@ -31,6 +47,7 @@ const CODEX_MODES: TrustLevel[] = ["manual", "acceptEdits", "bypassPermissions",
 const GEMINI_MODES: TrustLevel[] = ["plan", "manual", "acceptEdits", "bypassPermissions"];
 const QWEN_MODES: TrustLevel[] = ["plan", "manual", "acceptEdits", "bypassPermissions", "auto"];
 const COPILOT_MODES: TrustLevel[] = ["plan", "acceptEdits", "bypassPermissions"];
+const OPENCODE_MODES: TrustLevel[] = ["plan", "acceptEdits", "bypassPermissions"];
 
 const CATALOG: Record<CliProviderId, ProviderPermissionInfo> = {
   "claude-code": { provider: "claude-code", availableModes: CLAUDE_MODES },
@@ -38,6 +55,7 @@ const CATALOG: Record<CliProviderId, ProviderPermissionInfo> = {
   "gemini-cli": { provider: "gemini-cli", availableModes: GEMINI_MODES },
   "qwen-code": { provider: "qwen-code", availableModes: QWEN_MODES },
   "copilot-cli": { provider: "copilot-cli", availableModes: COPILOT_MODES },
+  opencode: { provider: "opencode", availableModes: OPENCODE_MODES },
 };
 
 export function getPermissionCatalog(): ProviderPermissionInfo[] {

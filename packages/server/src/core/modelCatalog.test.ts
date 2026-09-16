@@ -14,7 +14,7 @@ import { clearModelCatalogCache, getModelCatalog } from "./modelCatalog";
  *   - a provider that could not be enumerated says why instead of looking empty-by-fact.
  */
 
-const PROVIDERS = ["claude-code", "codex-cli", "gemini-cli", "qwen-code", "copilot-cli"];
+const PROVIDERS = ["claude-code", "codex-cli", "gemini-cli", "qwen-code", "copilot-cli", "opencode"];
 
 test("the catalog covers every CLI provider, in a stable shape", async () => {
   const catalog = await getModelCatalog();
