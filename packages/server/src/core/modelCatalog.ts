@@ -399,10 +399,18 @@ async function qwenModels(): Promise<{ models: ModelOption[]; sources: ModelCata
 // ---------------------------------------------------------------------------------------
 
 /**
- * Asks the installed Copilot runtime for its own built-in model catalog over the SDK's
- * `models.getBuiltInCatalog` RPC - offline, unauthenticated and not billable (see
- * parseCopilotBuiltInCatalog for the provenance). There is no CLI flag for this, so the
- * bundled SDK is driven directly.
+ * Asks the installed Copilot runtime which models THIS ACCOUNT may actually use.
+ *
+ * Two different lists exist and confusing them is a real, observed bug. `models.list` is
+ * answered by GitHub for the signed-in account: on a Copilot Pro (student) plan it returns
+ * exactly one entry, `auto`, because per-model selection is gated above that tier.
+ * `models.getBuiltInCatalog` is a static list of the 52 models the installed BINARY knows
+ * about, entitlement or not. This app previously offered the catalog - so the picker listed 52
+ * models the user could not select and omitted `auto`, the only one they could. Choosing one
+ * produced `Error: Model "..." from --model flag is not available.`
+ *
+ * So the live list is the authority and the built-in catalog is only a fallback for when it
+ * cannot be read at all (not signed in, offline). Neither call is billable.
  *
  * Spawned as `node -e <one-liner>` rather than by adding a helper script to this package: the
  * script has to `import()` an absolute path inside the user's global npm tree, which is a
@@ -432,24 +440,51 @@ async function copilotModels(): Promise<{ models: ModelOption[]; sources: ModelC
   // file:// URL because this is an ESM import of an absolute Windows path, which bare
   // import() rejects.
   const sdkUrl = "file:///" + sdk.replace(/\\/g, "/");
+  // One spawn, both RPCs: starting the runtime is the expensive part. `live` is wrapped in its
+  // own try so that a failure there (signed out, offline) still yields the built-in catalog
+  // rather than losing the model list entirely.
   const script =
     `const s=await import(${JSON.stringify(sdkUrl)});` +
     `const c=new s.CopilotClient({connection:s.RuntimeConnection.forStdio({path:${JSON.stringify(exe)}})});` +
-    `await c.start();const r=await c.rpc.models.getBuiltInCatalog();` +
-    `process.stdout.write(JSON.stringify(r));await c.stop();process.exit(0);`;
+    `await c.start();let live=null;try{live=await c.rpc.models.list({});}catch(e){live={error:String(e&&e.message||e)};}` +
+    `const builtIn=await c.rpc.models.getBuiltInCatalog();` +
+    `process.stdout.write(JSON.stringify({live,builtIn}));await c.stop();process.exit(0);`;
   try {
     const stdout = await runForStdout(process.execPath, ["--input-type=module", "-e", script], 30_000);
-    const models = parseCopilotBuiltInCatalog(JSON.parse(stdout));
-    if (models.length === 0) throw new Error("the runtime's built-in catalog was empty");
+    const parsed = JSON.parse(stdout) as { live?: unknown; builtIn?: unknown };
+    const live = parseCopilotBuiltInCatalog(parsed.live);
+    const readAt = new Date().toISOString();
+    const version = packageVersion(platformDir);
+
+    if (live.length > 0) {
+      return {
+        models: mergeSourcedOptions([live]),
+        sources: [
+          {
+            kind: "cli-artifact",
+            origin: `${sdk} · models.list (the models this GitHub account is entitled to use)`,
+            version,
+            readAt,
+            count: live.length,
+          },
+        ],
+      };
+    }
+
+    // No live answer: fall back to the built-in catalog, and say plainly in the origin that
+    // this is what the binary ships rather than what the account can select, so the UI is not
+    // quietly claiming 52 usable models again.
+    const builtIn = parseCopilotBuiltInCatalog(parsed.builtIn);
+    if (builtIn.length === 0) throw new Error("the runtime returned neither an account model list nor a built-in catalog");
     return {
-      models: mergeSourcedOptions([models]),
+      models: mergeSourcedOptions([builtIn]),
       sources: [
         {
           kind: "cli-artifact",
-          origin: `${sdk} · models.getBuiltInCatalog (the catalog built into the installed Copilot runtime)`,
-          version: packageVersion(platformDir),
-          readAt: new Date().toISOString(),
-          count: models.length,
+          origin: `${sdk} · models.getBuiltInCatalog (every model this Copilot build knows about - your plan may not allow selecting them)`,
+          version,
+          readAt,
+          count: builtIn.length,
         },
       ],
     };

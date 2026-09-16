@@ -205,3 +205,21 @@ test("the model catalog parser invents nothing and reads ids only from its input
   assert.deepEqual(parseCopilotBuiltInCatalog(null), []);
   assert.deepEqual(parseCopilotBuiltInCatalog({ models: [{ notAnId: "x" }] }), []);
 });
+
+test("the account's own model list is preferred over the binary's built-in catalog", () => {
+  // The live bug: the picker offered 52 models from the installed binary's static catalog and
+  // omitted "auto" - the only one a Copilot Pro (student) account can actually select. Picking
+  // any of the 52 failed with: Model "..." from --model flag is not available.
+  const live = parseCopilotBuiltInCatalog({ models: [{ id: "auto", name: "Auto", capabilities: {} }] });
+  assert.deepEqual(
+    live.map((m) => m.id),
+    ["auto"],
+    "models.list shape parses with the same reader as the catalog",
+  );
+});
+
+test("an empty account list is distinguishable from a populated one, so the fallback can trigger", () => {
+  assert.equal(parseCopilotBuiltInCatalog({ models: [] }).length, 0);
+  assert.equal(parseCopilotBuiltInCatalog({ error: "not signed in" }).length, 0);
+  assert.equal(parseCopilotBuiltInCatalog(null).length, 0);
+});
