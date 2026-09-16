@@ -105,6 +105,84 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: { type: "object", properties: {} },
     },
     {
+      name: "claim_files",
+      description:
+        "Take ownership of the files or folders you are about to write, BEFORE you start. Other agents are " +
+        "told what you own and are instructed not to touch it. Claiming a folder covers files inside it that " +
+        "do not exist yet. If someone already owns something you asked for, you are told who - talk to them " +
+        "rather than editing it anyway.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          paths: {
+            type: "array",
+            items: { type: "string" },
+            description: "Paths or folders, relative to your working directory.",
+          },
+          note: { type: "string", description: "Optional: what you are doing with them." },
+        },
+        required: ["paths"],
+      },
+    },
+    {
+      name: "release_files",
+      description:
+        "Give up files you claimed, so somebody else can take that lane. Call this when you finish with them. " +
+        "Omit `paths` to release everything you hold.",
+      inputSchema: {
+        type: "object",
+        properties: { paths: { type: "array", items: { type: "string" } } },
+      },
+    },
+    {
+      name: "post_contract",
+      description:
+        "Publish a decision the others must build against - an API signature, a set of CSS tokens, a file " +
+        "layout. It is pinned into every agent's context from now on, so nobody has to ask you for it again " +
+        "and nobody builds against a stale version. Posting the same title again REPLACES it. Anyone who said " +
+        "they were waiting for this is woken automatically.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "Short and stable, e.g. \"checker API\" or \"design tokens\"." },
+          body: { type: "string", description: "The actual contract: names, signatures, values. Be specific." },
+        },
+        required: ["title", "body"],
+      },
+    },
+    {
+      name: "announce",
+      description:
+        "Tell everyone something that needs no answer - progress, a file landing, a heads-up. This costs NOBODY " +
+        "a turn: it is shown to the user now and folded into each other agent's context next time they run. " +
+        "Use post_to_group instead when you actually need someone to act or reply.",
+      inputSchema: {
+        type: "object",
+        properties: { text: { type: "string" } },
+        required: ["text"],
+      },
+    },
+    {
+      name: "block_on",
+      description:
+        "Say what you are waiting for, then end your turn. You will be given a new turn automatically the " +
+        "moment it lands - so do NOT idle, poll, or end without saying this, which is how work silently stalls. " +
+        "kind=contract waits for a contract whose title matches, kind=file for a path to exist, kind=agent for " +
+        "that agent to post.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          kind: { type: "string", enum: ["contract", "file", "agent"] },
+          value: {
+            type: "string",
+            description: "The contract title, the file path, or the handle (with or without a leading @).",
+          },
+          why: { type: "string", description: "Optional: what you will do once it arrives." },
+        },
+        required: ["kind", "value"],
+      },
+    },
+    {
       name: "get_secret",
       description: GET_SECRET_DESCRIPTION,
       inputSchema: {
@@ -175,6 +253,72 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { status, json } = await callServer("/internal/solace/agents", {});
       if (status === 403) return toolError("This turn is no longer the agent's in-flight turn.");
       return withInbound(JSON.stringify(json?.agents ?? []), json);
+    }
+
+    if (name === "claim_files") {
+      const paths = Array.isArray(args.paths) ? args.paths.filter((p) => typeof p === "string" && p.trim()) : [];
+      if (paths.length === 0) return toolError("claim_files needs a non-empty `paths` array.");
+      const { status, json } = await callServer("/internal/solace/claim", { paths, note: args.note });
+      if (status === 403) return toolError("This turn is no longer the agent's in-flight turn.");
+      if (json?.ok !== true) return toolError(json?.error ?? "The claim was refused.");
+      const taken = json.claimed?.length ? `You now own: ${json.claimed.join(", ")}.` : "Nothing new was claimed.";
+      // A conflict is reported rather than hidden: the agent needs to know WHO to talk to, and
+      // silently dropping the path is how two agents both end up believing they own a file.
+      const clash = json.conflicts?.length
+        ? ` Already owned by someone else: ${json.conflicts.map((c) => `${c.path} (@${c.owner})`).join(", ")}.` +
+          ` @mention them if you need a change there - do not edit it yourself.`
+        : "";
+      return withInbound(taken + clash, json);
+    }
+
+    if (name === "release_files") {
+      const paths = Array.isArray(args.paths) ? args.paths.filter((p) => typeof p === "string" && p.trim()) : undefined;
+      const { status, json } = await callServer("/internal/solace/release", { paths });
+      if (status === 403) return toolError("This turn is no longer the agent's in-flight turn.");
+      if (json?.ok !== true) return toolError(json?.error ?? "The release was refused.");
+      return withInbound(`Released ${json.released ?? 0} path(s).`, json);
+    }
+
+    if (name === "post_contract") {
+      const title = typeof args.title === "string" ? args.title.trim() : "";
+      const body = typeof args.body === "string" ? args.body.trim() : "";
+      if (!title || !body) return toolError("post_contract needs both `title` and `body`.");
+      const { status, json } = await callServer("/internal/solace/contract", { title, body });
+      if (status === 403) return toolError("This turn is no longer the agent's in-flight turn.");
+      if (json?.ok !== true) return toolError(json?.error ?? "The contract was refused.");
+      const woke = json.woken?.length ? ` Woke ${json.woken.length} agent(s) who were waiting for it.` : "";
+      return withInbound(
+        `Contract "${title}" published. Every agent now sees it in their context, so you do not need to repeat it.` +
+          woke,
+        json,
+      );
+    }
+
+    if (name === "announce") {
+      const text = typeof args.text === "string" ? args.text.trim() : "";
+      if (!text) return toolError("announce needs a non-empty `text`.");
+      const { status, json } = await callServer("/internal/solace/announce", { text });
+      if (status === 403) return toolError("This turn is no longer the agent's in-flight turn.");
+      if (json?.ok !== true) return toolError(json?.error ?? "The announcement was refused.");
+      return withInbound("Announced. Nobody was given a turn for it; they will see it on their next one.", json);
+    }
+
+    if (name === "block_on") {
+      const kind = typeof args.kind === "string" ? args.kind : "";
+      const value = typeof args.value === "string" ? args.value.trim() : "";
+      if (!["contract", "file", "agent"].includes(kind)) {
+        return toolError('block_on needs `kind` to be "contract", "file" or "agent".');
+      }
+      if (!value) return toolError("block_on needs `value` - what exactly you are waiting for.");
+      const { status, json } = await callServer("/internal/solace/block", { kind, value, why: args.why });
+      if (status === 403) return toolError("This turn is no longer the agent's in-flight turn.");
+      if (json?.ok !== true) return toolError(json?.error ?? "The block was refused.");
+      return withInbound(
+        json.wokenImmediately
+          ? "That had already happened, so you have been given a fresh turn instead of waiting."
+          : "Recorded. End your turn now - you will be given a new one automatically when it lands.",
+        json,
+      );
     }
 
     if (name === "get_secret") {

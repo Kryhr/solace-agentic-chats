@@ -403,6 +403,16 @@ export interface ToolExecutorOptions {
    * a local model's write raises the identical Allow/Deny card in the UI rather than a second,
    * parallel approval mechanism that would have to be built, styled and kept in sync. */
   requestApproval?: (description: string) => Promise<boolean>;
+  /**
+   * Who owns a path that this agent is about to write, if it is not this agent. Returns the
+   * owning handle, or undefined when the path is free.
+   *
+   * This is the ONLY place a file claim is genuinely enforced rather than advisory. A CLI agent
+   * writes with its provider's own built-in tools, which this app never sees, so for those a
+   * claim can only be stated in context and checked afterwards. An endpoint agent runs this
+   * executor for every single write, so here the claim is a real boundary.
+   */
+  ownerOfPath?: (path: string) => string | undefined;
 }
 
 export interface ToolExecutor {
@@ -433,7 +443,7 @@ function defaultRequestApproval(agentId: string, turnToken: string | undefined) 
 }
 
 export function createToolExecutor(options: ToolExecutorOptions): ToolExecutor {
-  const { cwd, trustLevel, agentId, turnToken, signal } = options;
+  const { cwd, trustLevel, agentId, turnToken, signal, ownerOfPath } = options;
   const requestApproval = options.requestApproval ?? defaultRequestApproval(agentId, turnToken);
 
   async function execute(name: string, rawArguments: string): Promise<ToolResult> {
@@ -470,6 +480,21 @@ export function createToolExecutor(options: ToolExecutorOptions): ToolExecutor {
       const approved = await requestApproval(describeForApproval(name, args)).catch(() => false);
       if (!approved) {
         return { content: "refused: the user denied this action. Do not retry it; ask them what to do instead.", isError: true };
+      }
+    }
+
+    // Somebody else's lane. Checked AFTER the permission gate and BEFORE any write, and only
+    // for tools that actually modify a file - reading another agent's file is how you build
+    // against it, and blocking that would break the collaboration this exists to protect.
+    if (ownerOfPath && (name === "write_file" || name === "edit_file") && typeof args.path === "string") {
+      const owner = ownerOfPath(args.path);
+      if (owner) {
+        return {
+          content:
+            `refused: @${owner} owns ${args.path} in this chat. Do not edit it. ` +
+            `Post to the group @mentioning @${owner} and ask them to make the change, or ask them to release it.`,
+          isError: true,
+        };
       }
     }
 

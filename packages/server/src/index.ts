@@ -16,6 +16,7 @@ import { ApprovalRegistry } from "./core/approvalRegistry";
 import { ArchiveStore } from "./core/archiveStore";
 import { SettingsStore } from "./core/settingsStore";
 import { getCopilotQuota } from "./core/copilotQuota";
+import { CoordinationBoard } from "./core/coordination";
 import { tryHandleCommand } from "./core/commands";
 import { checkGithubAuth, checkGithubConnection } from "./core/github";
 import {
@@ -46,7 +47,7 @@ import {
   rememberImportedRepo,
   withInstalledIn,
 } from "./core/skills";
-import type { ProviderId } from "@solace/shared";
+import type { Block, ProviderId } from "@solace/shared";
 
 const PORT = Number(process.env.PORT ?? 4310);
 
@@ -64,6 +65,7 @@ async function main() {
   // settings first: ChatStore reads agentsFollowProjects live, so it needs the same store
   // object every other consumer has rather than a copy taken at boot.
   const settings = new SettingsStore(persisted.settings);
+  const board = new CoordinationBoard(persisted.coordination);
   const chats = new ChatStore(persisted.chats, persisted.projects, settings);
   const agents = new AgentManager(
     bus,
@@ -74,6 +76,7 @@ async function main() {
     persisted.sessions,
     persisted.rateLimits,
     settings,
+    board,
   );
 
   const persist = debounce(
@@ -88,6 +91,7 @@ async function main() {
         chats: chats.listChats(),
         projects: chats.listProjects(),
         settings: settings.get(),
+        coordination: board.snapshot(),
       }),
     300,
   );
@@ -682,6 +686,82 @@ async function main() {
       // request from a real turn that we're refusing on purpose, so it isn't a 403.
       reply.code(result.reason === "no-turn" ? 403 : 400);
       return { ok: false, error: result.error };
+    },
+  );
+
+  /**
+   * The coordination tools. Same loopback + turn-token pair as every other /internal route.
+   *
+   * All five are pure bookkeeping inside this app - they take a lane, publish a decision, say
+   * what you are waiting for - so unlike /internal/solace/secret there is nothing here to gate
+   * behind approval. Each returns `inbound` for the same reason every solace tool does: the
+   * response is a boundary the agent chose to stop at, so it is a safe moment to hand it
+   * anything that arrived while it was working.
+   */
+  app.post<{ Body: { agentId: string; turnToken?: string; paths?: string[]; note?: string } }>(
+    "/internal/solace/claim",
+    async (req, reply) => {
+      const result = agents.claimFiles(req.body.agentId, req.body.turnToken, req.body.paths ?? [], req.body.note);
+      if (!result.ok) {
+        reply.code(403);
+        return result;
+      }
+      return { ...result, inbound: agents.takeInboundNotice(req.body.agentId, req.body.turnToken) };
+    },
+  );
+
+  app.post<{ Body: { agentId: string; turnToken?: string; paths?: string[] } }>(
+    "/internal/solace/release",
+    async (req, reply) => {
+      const result = agents.releaseFiles(req.body.agentId, req.body.turnToken, req.body.paths);
+      if (!result.ok) {
+        reply.code(403);
+        return result;
+      }
+      return { ...result, inbound: agents.takeInboundNotice(req.body.agentId, req.body.turnToken) };
+    },
+  );
+
+  app.post<{ Body: { agentId: string; turnToken?: string; title?: string; body?: string } }>(
+    "/internal/solace/contract",
+    async (req, reply) => {
+      const result = agents.postContract(req.body.agentId, req.body.turnToken, req.body.title ?? "", req.body.body ?? "");
+      if (!result.ok) {
+        // An empty title/body is a real request being refused on purpose, not an auth failure.
+        reply.code(result.error === "no matching in-flight turn" ? 403 : 400);
+        return result;
+      }
+      return { ...result, inbound: agents.takeInboundNotice(req.body.agentId, req.body.turnToken) };
+    },
+  );
+
+  app.post<{ Body: { agentId: string; turnToken?: string; text?: string } }>(
+    "/internal/solace/announce",
+    async (req, reply) => {
+      const result = agents.announce(req.body.agentId, req.body.turnToken, req.body.text ?? "");
+      if (!result.ok) {
+        reply.code(result.error === "no matching in-flight turn" ? 403 : 400);
+        return result;
+      }
+      return { ...result, inbound: agents.takeInboundNotice(req.body.agentId, req.body.turnToken) };
+    },
+  );
+
+  app.post<{ Body: { agentId: string; turnToken?: string; kind?: Block["kind"]; value?: string; why?: string } }>(
+    "/internal/solace/block",
+    async (req, reply) => {
+      const result = agents.blockOn(
+        req.body.agentId,
+        req.body.turnToken,
+        req.body.kind ?? "agent",
+        req.body.value ?? "",
+        req.body.why,
+      );
+      if (!result.ok) {
+        reply.code(result.error === "no matching in-flight turn" ? 403 : 400);
+        return result;
+      }
+      return { ...result, inbound: agents.takeInboundNotice(req.body.agentId, req.body.turnToken) };
     },
   );
 

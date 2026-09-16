@@ -122,6 +122,7 @@ export async function runCustomApiTurn(options: RunTurnOptions & CustomApiDeps):
       agentId: options.agentId,
       turnToken: options.turnToken,
       signal,
+      ownerOfPath: options.ownerOfPath,
     });
 
   const messages: Record<string, unknown>[] = [

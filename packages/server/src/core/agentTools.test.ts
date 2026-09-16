@@ -492,3 +492,30 @@ describe("tool executor", () => {
     }
   });
 });
+
+test("a write into another agent's claimed file is refused, but reading it is not", async () => {
+  // This is the ONE place a file claim is genuinely enforced: an endpoint agent runs this
+  // executor for every write. Reading stays allowed on purpose - reading another agent's file
+  // is how you build against it, and blocking that would break the collaboration.
+  const dir = mkdtempSync(join(tmpdir(), "solace-own-"));
+  writeFileSync(join(dir, "checker.py"), "owned content");
+  const exec = createToolExecutor({
+    cwd: dir,
+    trustLevel: "bypassPermissions",
+    agentId: "a2",
+    turnToken: "t",
+    ownerOfPath: (p) => (p === "checker.py" ? "claude" : undefined),
+  });
+
+  const write = await exec.execute("write_file", JSON.stringify({ path: "checker.py", content: "mine now" }));
+  assert.equal(write.isError, true);
+  assert.match(write.content, /@claude owns checker\.py/);
+  assert.equal(readFileSync(join(dir, "checker.py"), "utf-8"), "owned content", "not written");
+
+  const read = await exec.execute("read_file", JSON.stringify({ path: "checker.py" }));
+  assert.notEqual(read.isError, true);
+  assert.match(read.content, /owned content/);
+
+  const free = await exec.execute("write_file", JSON.stringify({ path: "mine.py", content: "ok" }));
+  assert.notEqual(free.isError, true, "an unclaimed path is unaffected");
+});

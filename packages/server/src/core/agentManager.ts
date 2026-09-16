@@ -18,6 +18,8 @@ import { sameWorkingDirectory, type ChatStore } from "./chatStore";
 import { parseMentions } from "./mentions";
 import { RateLimitStore } from "./rateLimits";
 import { clearCopilotQuotaCache, getCopilotQuota } from "./copilotQuota";
+import { CoordinationBoard } from "./coordination";
+import type { Block } from "@solace/shared";
 import { SettingsStore } from "./settingsStore";
 import type { ApprovalRegistry } from "./approvalRegistry";
 import { extractLiveClaims, findUnreachableClaims, unreachableClaimNotice } from "./claimCheck";
@@ -670,6 +672,9 @@ export class AgentManager {
      * documented defaults, so every existing caller (and every test) keeps working with
      * handover off, which is what off-by-default means. */
     private settings: SettingsStore = new SettingsStore(),
+    /** Claims, contracts, blocks and announcement watermarks. Defaults to an empty board so
+     * every existing caller and test keeps working with coordination simply unused. */
+    private board: CoordinationBoard = new CoordinationBoard(),
   ) {
     this.rateLimits = new RateLimitStore(initialRateLimits);
     for (const config of initialAgents) {
@@ -801,6 +806,9 @@ export class AgentManager {
     runtime?.activeController?.abort();
     if (runtime?.scheduledRetryTimeout) clearTimeout(runtime.scheduledRetryTimeout);
     this.approvals?.expireForAgent(id);
+    // Its claims would otherwise outlive it and hold a lane nobody can release, and its block
+    // would sit on the board waiting for a wake-up that can never be delivered.
+    this.board.forgetAgent(id);
     this.agents.delete(id);
     this.bus.emitEvent({ type: "agent:removed", payload: { agentId: id } });
     this.onChange?.();
@@ -1172,6 +1180,160 @@ export class AgentManager {
     }
   }
 
+  // -------------------------------------------------------------------------------------
+  // Coordination: claims, contracts, blocks, announcements
+  // -------------------------------------------------------------------------------------
+
+  /** The chat a running turn coordinates in, resolved the same way postFromCurrentTurn does so
+   * a claim and a post from one turn can never land on different boards. */
+  private coordinationContext(
+    agentId: string,
+    token: unknown,
+  ): { runtime: AgentRuntime; chatId: string } | { error: string } {
+    if (!this.verifyTurnToken(agentId, token)) return { error: "no matching in-flight turn" };
+    const runtime = this.agents.get(agentId)!;
+    const turn = runtime.currentTurn;
+    if (!turn) return { error: "no matching in-flight turn" };
+    const chatId = isChatChannel(turn.replyChannel)
+      ? turn.replyChannel.chatId
+      : this.chats.defaultChatIdFor(runtime.config);
+    if (!chatId) return { error: "there are no chats to coordinate in - the user has not created one" };
+    return { runtime, chatId };
+  }
+
+  /** Post a visible system line into a chat, so every coordination act is auditable by the user
+   * rather than happening invisibly between agents. */
+  private sayInChat(chatId: string, text: string) {
+    this.bus.postMessage({
+      id: nanoid(),
+      channel: { chatId },
+      authorId: "system",
+      authorHandle: "system",
+      mentions: [],
+      text,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  claimFiles(agentId: string, token: unknown, paths: string[], note?: string) {
+    const ctx = this.coordinationContext(agentId, token);
+    if ("error" in ctx) return { ok: false as const, error: ctx.error };
+    const { claimed, conflicts } = this.board.claim(ctx.chatId, ctx.runtime.config, paths, note);
+    if (claimed.length > 0) {
+      this.sayInChat(
+        ctx.chatId,
+        `@${ctx.runtime.config.handle} is now working in: ${claimed.join(", ")}${note ? ` (${note})` : ""}`,
+      );
+    }
+    this.onChange?.();
+    return { ok: true as const, claimed, conflicts };
+  }
+
+  releaseFiles(agentId: string, token: unknown, paths?: string[]) {
+    const ctx = this.coordinationContext(agentId, token);
+    if ("error" in ctx) return { ok: false as const, error: ctx.error };
+    const released = this.board.release(ctx.chatId, agentId, paths);
+    this.onChange?.();
+    return { ok: true as const, released };
+  }
+
+  /**
+   * Publish a contract, and wake anyone who was waiting for exactly this.
+   *
+   * The wake is the whole point: the live failure was an agent sitting idle AFTER the thing it
+   * was blocked on had landed, because the agent that landed it did not think to name them.
+   */
+  postContract(agentId: string, token: unknown, title: string, body: string) {
+    const ctx = this.coordinationContext(agentId, token);
+    if ("error" in ctx) return { ok: false as const, error: ctx.error };
+    if (!title.trim() || !body.trim()) {
+      return { ok: false as const, error: "a contract needs both a title and a body" };
+    }
+    const contract = this.board.postContract(ctx.chatId, ctx.runtime.config, title, body);
+    this.sayInChat(ctx.chatId, `@${ctx.runtime.config.handle} published the contract "${contract.title}".`);
+    const woken = this.wake(ctx.chatId, { kind: "contract", title: contract.title, by: ctx.runtime.config.handle });
+    this.onChange?.();
+    return { ok: true as const, contract, woken };
+  }
+
+  blockOn(agentId: string, token: unknown, kind: Block["kind"], value: string, why?: string) {
+    const ctx = this.coordinationContext(agentId, token);
+    if ("error" in ctx) return { ok: false as const, error: ctx.error };
+    if (!value.trim()) return { ok: false as const, error: "say what you are waiting for" };
+    const block = this.board.blockOn(ctx.chatId, ctx.runtime.config, kind, value, why);
+    this.sayInChat(
+      ctx.chatId,
+      `@${ctx.runtime.config.handle} is waiting on ${kind === "agent" ? "@" : ""}${block.value}` +
+        `${why ? ` - ${why}` : ""}. It will be woken automatically when that lands.`,
+    );
+    // Something may ALREADY satisfy this - a file that exists, a contract posted moments ago -
+    // in which case blocking would park the agent forever waiting for an event that has been
+    // and gone. Checked immediately rather than only on the next event.
+    const woken = this.wake(ctx.chatId, { kind: "files" });
+    this.onChange?.();
+    return { ok: true as const, block, wokenImmediately: woken.length > 0 };
+  }
+
+  /**
+   * An announcement: everyone should know, nobody needs to answer.
+   *
+   * An ordinary unaddressed message summons EVERY agent in the chat, so a status update costs
+   * three real billed turns. This costs none: it is posted for the user to see, and folded into
+   * each other agent's context the next time they genuinely run.
+   */
+  announce(agentId: string, token: unknown, text: string) {
+    const ctx = this.coordinationContext(agentId, token);
+    if ("error" in ctx) return { ok: false as const, error: ctx.error };
+    const trimmed = typeof text === "string" ? text.trim() : "";
+    if (!trimmed) return { ok: false as const, error: "announcement text was empty" };
+    this.bus.postMessage({
+      id: nanoid(),
+      channel: { chatId: ctx.chatId },
+      authorId: ctx.runtime.config.id,
+      authorHandle: ctx.runtime.config.handle,
+      mentions: [],
+      text: trimmed,
+      model: ctx.runtime.lastResolvedModel ?? ctx.runtime.config.model,
+      createdAt: new Date().toISOString(),
+      agentKind: "announcement",
+    });
+    this.onChange?.();
+    return { ok: true as const };
+  }
+
+  /**
+   * Turn every satisfied block into a real turn for that agent.
+   *
+   * The woken agent is given the reason rather than a bare nudge, because it has been idle and
+   * its own CLI session may or may not still remember why it stopped - see resumePrompt for the
+   * same reasoning about not trusting a session to carry context across a gap.
+   */
+  private wake(chatId: string, event: Parameters<CoordinationBoard["resolve"]>[1]): string[] {
+    const anyAgent = this.listAgents()[0];
+    const cwd = anyAgent ? this.chats.workingDirectoryFor(anyAgent, chatId) : process.cwd();
+    const woken = this.board.resolve(chatId, event, cwd);
+    for (const { block, because } of woken) {
+      if (!this.agents.has(block.agentId)) continue;
+      this.sayInChat(chatId, `@${block.handle} is unblocked: ${because}.`);
+      this.enqueueTurn(
+        block.agentId,
+        `[solace] You said you were waiting on "${block.value}"${block.why ? ` (${block.why})` : ""}. ` +
+          `That has now happened: ${because}. Pick your work back up from there. ` +
+          `If you are still blocked on something else, say so and call block_on again.`,
+        { chatId },
+        { kind: "work" },
+      );
+    }
+    return woken.map((w) => w.block.agentId);
+  }
+
+  /** Called after a turn ends: a turn that wrote files may have satisfied a "file" block that
+   * nothing else would ever re-check. */
+  private wakeOnFiles(chatId: string | undefined) {
+    if (!chatId) return;
+    this.wake(chatId, { kind: "files" });
+  }
+
   /**
    * An agent speaking into the group chat WHILE its turn is still running, via the solace MCP
    * bridge (mcp/solaceBridge.mjs). Until this existed, only an agent's final message of a
@@ -1343,7 +1505,68 @@ ${text}` : text;
         : "";
     // The house style rides along with the context block, so it follows the same
     // send-once-per-session rule and costs nothing on every later turn.
-    return `${identity}${roster}\n\n${HOUSE_STYLE}]\n\n[group chat message from ${fromHandle}]: ${text}`;
+    const coordination = this.coordinationBlock(chatId, self);
+    return `${identity}${roster}${coordination}\n\n${HOUSE_STYLE}]\n\n[group chat message from ${fromHandle}]: ${text}`;
+  }
+
+  /**
+   * The board, rendered into the one place every group turn passes through.
+   *
+   * Everything here replaces something that was previously carried in conversation and lost:
+   * contracts stop being re-asked, claims stop being merely agreed, and announcements arrive
+   * without having cost anybody a turn. Emits nothing at all when the board is empty, so a chat
+   * that never coordinates pays no prompt tax for the feature existing.
+   */
+  private coordinationBlock(chatId: string, self: AgentConfig): string {
+    const state = this.board.forChat(chatId);
+    const parts: string[] = [];
+
+    if (state.contracts.length > 0) {
+      parts.push(
+        ` Agreed contracts (build against these; do not ask for them again): ` +
+          state.contracts.map((c) => `"${c.title}" by @${c.handle}: ${c.body}`).join(" | ") +
+          `.`,
+      );
+    }
+
+    const owned = state.claims.filter((c) => c.agentId !== self.id);
+    if (owned.length > 0) {
+      parts.push(
+        ` Files other agents own: ` +
+          owned.map((c) => `@${c.handle} -> ${c.paths.join(", ")}${c.note ? ` (${c.note})` : ""}`).join(" | ") +
+          `. Do not edit those; if you need a change there, @mention the owner and ask.`,
+      );
+    }
+    const mine = state.claims.find((c) => c.agentId === self.id);
+    if (mine) parts.push(` You own: ${mine.paths.join(", ")}.`);
+
+    // Announcements are the whole reason that message kind exists: shown once, here, instead of
+    // having summoned this agent for a real billed turn when they were posted.
+    const announcements = this.board.unseenAnnouncements(
+      chatId,
+      self.id,
+      this.bus
+        .getHistoryFor({ chatId })
+        .filter((m) => m.agentKind === "announcement" && m.authorId !== self.id)
+        .map((m) => ({ createdAt: m.createdAt, authorHandle: m.authorHandle, text: m.text })),
+    );
+    if (announcements.length > 0) {
+      parts.push(
+        ` Since your last turn: ` +
+          announcements.map((a) => `@${a.authorHandle}: ${a.text.replace(/\s+/g, " ").slice(0, 400)}`).join(" | ") +
+          `. No reply is expected to these.`,
+      );
+      this.board.markAnnouncementsSeen(chatId, self.id, announcements[announcements.length - 1].createdAt);
+    }
+
+    if (parts.length === 0) return "";
+    return (
+      parts.join("") +
+      ` Coordination tools, if available: "claim_files" to take a lane before you start writing, ` +
+      `"post_contract" to publish a decision others build against, "announce" to tell everyone something ` +
+      `that needs no answer (it costs nobody a turn), and "block_on" to say what you are waiting for - ` +
+      `you will be woken automatically when it lands, so do NOT sit idle waiting.`
+    );
   }
 
   /** Options object rather than a growing positional tail: this had already reached five
@@ -1861,6 +2084,11 @@ ${text}` : text;
         baseUrl,
         turnToken: runtime.activeTurnToken,
         sessionId: turnSessionId,
+        // Only the endpoint adapters act on this - see RunTurnOptions.ownerOfPath for why a
+        // claim cannot be enforced for a CLI that writes with its own built-in tools.
+        ownerOfPath: chatTurnId
+          ? (path: string) => this.board.conflictsFor(chatTurnId, agentId, [path])[0]?.owner
+          : undefined,
         signal: controller.signal,
         onEvent: (event) => {
           noteActivity();
@@ -1943,6 +2171,10 @@ ${text}` : text;
       // so on an event - so this is the moment to go and ask. Deliberately inside the finally:
       // a turn that errored or was killed still spent the request.
       if (runtime.config.provider === "copilot-cli") this.refreshCopilotQuota();
+      // A turn that wrote files may have satisfied a "file" block. Nothing else would ever
+      // re-check it: the agent waiting on that path is idle by definition, so without this the
+      // wake never happens and we are back to the stall this feature exists to remove.
+      this.wakeOnFiles(chatTurnId);
     }
 
     // Captured before the cleanup at the bottom clears abortKind, and used to suppress the

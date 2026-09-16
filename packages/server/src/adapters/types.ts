@@ -68,6 +68,13 @@ export interface RunTurnOptions {
    * action, agent removal, and (see agentManager) interrupting one turn to answer another
    * agent's question. The reason lives on the caller, not here. */
   signal?: AbortSignal;
+  /**
+   * Who owns a path in this turn's chat, if not this agent. Only the endpoint adapters use it:
+   * they run this app's own tool executor for every write, so a file claim is a real boundary
+   * there. A CLI writes with its provider's own tools, which this app never sees, so nothing
+   * can be enforced for those - see CoordinationBoard.conflictsFor.
+   */
+  ownerOfPath?: (path: string) => string | undefined;
 }
 
 /**

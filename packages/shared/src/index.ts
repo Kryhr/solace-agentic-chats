@@ -35,6 +35,13 @@ export type { CommandDefinition } from "./commands";
 export const COMMAND_DEFINITIONS = COMMANDS;
 export const helpText = help;
 
+// Same re-binding rule again - see the comments above.
+import { emptyCoordination as emptyCoord, normalizePath as normPath, pathCoveredBy as covered } from "./coordination";
+export type { Block, Contract, CoordinationState, FileClaim } from "./coordination";
+export const emptyCoordination = emptyCoord;
+export const normalizePath = normPath;
+export const pathCoveredBy = covered;
+
 export type ProviderId =
   | "claude-code"
   | "codex-cli"
@@ -490,7 +497,10 @@ export function isChatChannel(channel: ChatChannel): channel is { chatId: string
  * Absent on every message persisted before this existed, and on user/system messages. An agent
  * message with no kind renders as an answer, which is how the old hub already rendered it.
  */
-export type AgentMessageKind = "answer" | "progress" | "tool" | "reasoning" | "error";
+/** "announcement" is an agent telling the group something nobody needs to answer. It is the one
+ * kind that deliberately summons NOBODY: an ordinary unaddressed message gives every agent in
+ * the chat a real billed turn, so a status update used to cost three of them. */
+export type AgentMessageKind = "answer" | "progress" | "tool" | "reasoning" | "error" | "announcement";
 
 /** One tool invocation, as reported by the provider. Nothing here is invented: `name` is the
  * provider's own tool name and `detail` is its own arguments - `label` is derived from those two

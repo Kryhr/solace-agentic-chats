@@ -10,6 +10,7 @@ import {
   type ChatMessage,
   type ChatMeta,
   type ProjectMeta,
+  type CoordinationState,
   type ProviderRateLimit,
 } from "@solace/shared";
 import type { ChatArchive } from "./archiveStore";
@@ -53,6 +54,11 @@ export interface PersistedState {
    * none. Absent on any state file written before Settings existed, which reads as the
    * documented defaults - see sanitizeAppSettings. */
   settings: AppSettings;
+  /** Per-chat coordination boards: file claims, published contracts, who is waiting on what,
+   * and which announcements each agent has already been shown. Absent on any state file written
+   * before coordination existed, which restores as empty boards rather than undefined - see
+   * CoordinationBoard's constructor. */
+  coordination: Record<string, CoordinationState>;
 }
 
 const EMPTY_STATE: PersistedState = {
@@ -65,6 +71,7 @@ const EMPTY_STATE: PersistedState = {
   chats: [],
   projects: [],
   settings: { ...DEFAULT_APP_SETTINGS },
+  coordination: {},
 };
 
 function statePath(workspaceRoot: string): string {
@@ -186,6 +193,13 @@ export function loadState(workspaceRoot: string): PersistedState {
       rateLimits: sanitizePersistedRateLimits(parsed.rateLimits),
       // Likewise for settings: no key means "never configured", which is the defaults.
       settings: sanitizeAppSettings(parsed.settings),
+      // And likewise for coordination: no key means no board has ever been used. Guarded on
+      // shape rather than presence so a hand-edited array (or null) restores as empty boards
+      // instead of throwing on the first Object.entries.
+      coordination:
+        parsed.coordination && typeof parsed.coordination === "object" && !Array.isArray(parsed.coordination)
+          ? (parsed.coordination as Record<string, CoordinationState>)
+          : {},
     };
   } catch {
     // An unreadable state file already means everything is gone; at least hand back a usable
