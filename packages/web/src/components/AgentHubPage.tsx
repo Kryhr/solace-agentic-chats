@@ -11,11 +11,7 @@ import { permissionOptionsFor, TRUST_LABELS } from "../lib/permissionOptions";
 import { formatProviderError } from "../lib/errorFormat";
 import { buildTranscript, displayText, renderKind } from "../lib/messageKind";
 import { MessageText } from "./MessageText";
-
-function formatTokens(n?: number): string {
-  if (n === undefined) return "–";
-  return n.toLocaleString();
-}
+import { TokenUsageBar } from "./TokenUsageBar";
 
 export function AgentHubPage({
   agent,
@@ -54,10 +50,6 @@ export function AgentHubPage({
   const effortOptions = effortOptionsFor(modelInfo, agent.model);
   const trustOptions = permissionOptionsFor(permissionInfo);
   const error = status?.lastError ? formatProviderError(status.lastError) : null;
-  const totalIn = status?.totalUsage?.inputTokens ?? 0;
-  const totalOut = status?.totalUsage?.outputTokens ?? 0;
-  const totalTokens = totalIn + totalOut;
-  const inPct = totalTokens > 0 ? Math.round((totalIn / totalTokens) * 100) : 50;
   // Collapsed by default: the hub is a conversation, and a wall of pickers plus provenance
   // text above the first message made you scroll past the settings to read it.
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -189,21 +181,9 @@ export function AgentHubPage({
         </div>
       )}
 
-      {totalTokens > 0 && (
-        <div className="hub-usage-bar">
-          <div className="usage-meter" title={`${formatTokens(totalIn)} in / ${formatTokens(totalOut)} out this session`}>
-            <div className="usage-meter-in" style={{ width: `${inPct}%` }} />
-          </div>
-          <span className="usage-meter-label">
-            {formatTokens(totalIn)} in · {formatTokens(totalOut)} out this session
-            {status?.totalUsage?.totalCostUsd !== undefined
-              ? ` · $${status.totalUsage.totalCostUsd.toFixed(4)}${
-                  agent.authMode === "api-key" ? " (actual)" : " (≈ API-equivalent, you're not billed per-token)"
-                }`
-              : ""}
-          </span>
-        </div>
-      )}
+      {/* Renders only what the provider reported, and renders an unreported figure as an em
+          dash rather than a zero - see TokenUsageBar. */}
+      <TokenUsageBar usage={status?.totalUsage} authMode={agent.authMode} />
       {error && (
         <div className="hub-error-banner" title={error.full} role="alert">
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">

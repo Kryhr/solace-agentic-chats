@@ -1,7 +1,8 @@
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync, copyFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { TrustLevel } from "@solace/shared";
+import type { TrustLevel, TurnUsage } from "@solace/shared";
+import { isEmptyUsage, num, put } from "../core/usage";
 import { killCliTree, spawnCli } from "../core/spawnCli";
 import { mcpServersForAgent, type ResolvedMcpServer } from "../core/mcpServers";
 import type { AdapterEvent, ProviderAdapter, RunTurnOptions } from "./types";
@@ -262,6 +263,41 @@ export interface CrushSessionDetail {
  * message per turn, so that boundary is exact, and unlike in-memory bookkeeping it still holds
  * after a server restart mid-conversation.
  */
+/**
+ * Crush's session totals, mapped onto TurnUsage.
+ *
+ * Crush is the one provider here that publishes NO per-turn figure at all. `crush run` emits no
+ * machine-readable stream, and the only structured numbers are on the session record read back
+ * by `crush session show --json`, which is cumulative for the whole conversation. Reported as-is
+ * rather than differenced, because the numbers Crush itself shows in `crush stats` are these -
+ * but marked `scope: "session"` so the running total upstream replaces rather than adds them.
+ * Without that mark an agent's third turn claimed roughly three times the tokens Crush would
+ * show for the same session, because Crush had already done the adding.
+ *
+ * What is NOT here is as load-bearing as what is. Crush's own SQLite schema, read out of the
+ * shipped crush.exe, is the complete list of what it stores per session:
+ *
+ *   CREATE TABLE IF NOT EXISTS sessions (
+ *     id TEXT PRIMARY KEY, parent_session_id TEXT, title TEXT NOT NULL,
+ *     message_count INTEGER ..., prompt_tokens INTEGER ..., completion_tokens INTEGER ...,
+ *     cost REAL ..., updated_at INTEGER, created_at INTEGER);
+ *
+ * So there are no cache buckets and no reasoning count to report, and `total_tokens` in the JSON
+ * is Crush's own field rather than something derived here. `cost` is a real dollar figure that
+ * Crush computes from its own provider rate card, so it maps to totalCostUsd.
+ */
+export function crushUsage(meta: CrushSessionMeta | undefined): TurnUsage | undefined {
+  if (!meta) return undefined;
+  const usage: TurnUsage = {};
+  put(usage, "inputTokens", num(meta.prompt_tokens));
+  put(usage, "outputTokens", num(meta.completion_tokens));
+  put(usage, "totalTokens", num((meta as { total_tokens?: unknown }).total_tokens));
+  put(usage, "totalCostUsd", num(meta.cost));
+  if (isEmptyUsage(usage)) return undefined;
+  usage.scope = "session";
+  return usage;
+}
+
 export function eventsFromSession(detail: CrushSessionDetail): AdapterEvent[] {
   const events: AdapterEvent[] = [];
   const messages = detail.messages ?? [];
@@ -308,20 +344,8 @@ export function eventsFromSession(detail: CrushSessionDetail): AdapterEvent[] {
     }
   }
 
-  const meta = detail.meta;
-  if (meta && (meta.prompt_tokens != null || meta.completion_tokens != null)) {
-    // Crush's totals are CUMULATIVE for the whole session, not per-turn. Reported as-is rather
-    // than differenced: the numbers Crush itself shows in `crush stats` are these, and inventing
-    // a per-turn delta would disagree with the user's own CLI.
-    events.push({
-      type: "usage",
-      usage: {
-        inputTokens: meta.prompt_tokens,
-        outputTokens: meta.completion_tokens,
-        totalCostUsd: meta.cost,
-      },
-    });
-  }
+  const usage = crushUsage(detail.meta);
+  if (usage) events.push({ type: "usage", usage });
   return events;
 }
 

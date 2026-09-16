@@ -4,6 +4,7 @@ import * as readline from "node:readline";
 import { join } from "node:path";
 import type { TrustLevel, TurnUsage } from "@solace/shared";
 import { killCliTree, spawnCli } from "../core/spawnCli";
+import { addStepFinishUsage } from "../core/usage";
 import { mcpServersForAgent, type ResolvedMcpServer } from "../core/mcpServers";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 
@@ -229,16 +230,6 @@ export function buildOpencodeArgs(opts: {
   ];
 }
 
-/** Sums the per-step token counts OpenCode reports into one per-turn total. */
-function addStepUsage(total: TurnUsage | undefined, tokens: unknown, cost: unknown): TurnUsage {
-  const t = (tokens ?? {}) as { input?: unknown; output?: unknown };
-  const next: TurnUsage = { ...(total ?? {}) };
-  if (typeof t.input === "number") next.inputTokens = (next.inputTokens ?? 0) + t.input;
-  if (typeof t.output === "number") next.outputTokens = (next.outputTokens ?? 0) + t.output;
-  if (typeof cost === "number") next.totalCostUsd = (next.totalCostUsd ?? 0) + cost;
-  return next;
-}
-
 export const opencodeAdapter: ProviderAdapter = {
   id: "opencode",
   async runTurn({ cwd, prompt, trustLevel, model, effort, agentId, turnToken, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
@@ -336,7 +327,7 @@ export const opencodeAdapter: ProviderAdapter = {
               // usage for the turn (runtime.lastUsage = event.usage). Emitting per step would
               // make a six-step turn report only its last step's tokens. Every number here is
               // one the CLI itself printed; nothing is derived.
-              turnUsage = addStepUsage(turnUsage, part.tokens, part.cost);
+              turnUsage = addStepFinishUsage(turnUsage, part.tokens, part.cost);
               break;
             }
             default:

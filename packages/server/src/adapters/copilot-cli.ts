@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import * as readline from "node:readline";
 import { join } from "node:path";
-import type { TrustLevel } from "@solace/shared";
+import type { TrustLevel, TurnUsage } from "@solace/shared";
 import { killCliTree, spawnCli } from "../core/spawnCli";
+import { addUsage, isEmptyUsage, num, put } from "../core/usage";
 import { mcpServersForAgent, type ResolvedMcpServer } from "../core/mcpServers";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 
@@ -287,6 +288,146 @@ export function isNotSignedInError(stderr: string): boolean {
 export const COPILOT_LOGIN_HINT =
   "GitHub Copilot CLI is installed but not signed in. Run `copilot login` in a terminal, then try again.";
 
+/**
+ * Copilot's `assistant.usage` event - one per model call, on builds that emit it.
+ *
+ * Shape read verbatim off the shipped app.js (@github/copilot 1.1.21), which builds it as
+ *
+ *   emitEphemeral("assistant.usage", { model, ...inputTokens?, ...outputTokens?,
+ *     ...cacheReadTokens?, ...cacheWriteTokens?, ...reasoningTokens?, ...cost?, ...duration?,
+ *     initiator, ...copilotUsage? })
+ *
+ * and cross-checked against the CLI's own shipped JSON schema (schemas/session-events.schema.json,
+ * definition AssistantUsageData). Every token field is spread in conditionally, so an absent
+ * field genuinely means "not reported" rather than zero.
+ *
+ * `cost` there is NOT dollars - the schema calls it "Model multiplier cost for billing purposes"
+ * - and `copilotUsage.totalNanoAiu` is a nano-AI-unit figure. Both are carried as otherCosts
+ * rather than as totalCostUsd, because neither is a price and nobody outside GitHub knows the
+ * conversion rate.
+ *
+ * NOT LIVE-VERIFIED. On the build probed here (1.1.21, `--output-format json`) a complete real
+ * turn emitted no `assistant.usage` line at all - see copilotTurnUsage. This function exists so
+ * that when Copilot does emit it, the numbers are read correctly instead of ignored.
+ */
+export function copilotCallUsage(raw: unknown): TurnUsage | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const d = raw as Record<string, unknown>;
+  const usage: TurnUsage = {};
+  put(usage, "inputTokens", num(d.inputTokens));
+  put(usage, "outputTokens", num(d.outputTokens));
+  put(usage, "cacheReadTokens", num(d.cacheReadTokens));
+  put(usage, "cacheWriteTokens", num(d.cacheWriteTokens));
+  put(usage, "reasoningTokens", num(d.reasoningTokens));
+  // "Number of output tokens used for reasoning" - i.e. already inside outputTokens.
+  if (usage.reasoningTokens !== undefined) usage.reasoningCountedInOutput = true;
+  if (usage.cacheReadTokens !== undefined || usage.cacheWriteTokens !== undefined) {
+    // Copilot's inputTokens is the whole prompt count with cache reads inside it, matching its
+    // own promptCacheBreakState record where prompt_tokens comfortably exceeds cache_read for
+    // the same model call.
+    usage.cacheCountedInInput = true;
+  }
+  const copilotUsage = d.copilotUsage;
+  const nano =
+    typeof copilotUsage === "object" && copilotUsage !== null
+      ? num((copilotUsage as Record<string, unknown>).totalNanoAiu)
+      : undefined;
+  if (nano !== undefined) usage.otherCosts = [{ amount: nano, unit: "nano-AIU" }];
+  return isEmptyUsage(usage) ? undefined : usage;
+}
+
+/**
+ * Copilot's `session.usage_checkpoint` - the only place this build states any token count.
+ *
+ * Captured live from `--output-format json` on 1.1.21, trimmed into
+ * __fixtures__/copilot-run.jsonl:
+ *
+ *   {"type":"session.usage_checkpoint","data":{"totalNanoAiu":185454000,"totalPremiumRequests":1,
+ *     "modelCacheState":[...],
+ *     "promptCacheBreakState":[{"conversation":"main","models":{"mai-code-1.1-flash":{
+ *        ..., "prompt_tokens":11425, "cache_read":1280, "cache_write":0,
+ *        "cache_details_reported":true, ...}}}]}}
+ *
+ * Two things the previous adapter got wrong here. It emitted a separate "usage" event for every
+ * conversation and every model in that array, so whichever came last silently won; and it
+ * presented `prompt_tokens` as the turn's input tokens with no output tokens at all, which the
+ * UI then rendered as a confident "0 out".
+ *
+ * What this block actually is, per the CLI's own schema, is a "per-conversation prompt-cache-break
+ * detector baseline" - the state of the LAST model call on each conversation, not a sum over the
+ * turn. So only the `main` conversation is read (a sub-agent conversation is a separate baseline,
+ * not an addend), and the result is stamped with a caveat saying precisely that: a figure that
+ * covers one call of a six-call turn must not be shown as if it covered the turn.
+ *
+ * `totalNanoAiu` and `totalPremiumRequests` on this event are session-cumulative, so they are
+ * deliberately not taken from here; the result event's per-turn premium count is used instead.
+ */
+export function copilotCheckpointUsage(raw: unknown): TurnUsage | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const states = (raw as Record<string, unknown>).promptCacheBreakState;
+  if (!Array.isArray(states)) return undefined;
+  const main =
+    states.find((s) => (s as Record<string, unknown>)?.conversation === "main") ??
+    (states.length === 1 ? states[0] : undefined);
+  const models = (main as { models?: Record<string, unknown> } | undefined)?.models;
+  if (!models || typeof models !== "object") return undefined;
+  const usage: TurnUsage = {};
+  for (const value of Object.values(models)) {
+    if (typeof value !== "object" || value === null) continue;
+    const m = value as Record<string, unknown>;
+    put(usage, "inputTokens", num(m.prompt_tokens));
+    put(usage, "cacheReadTokens", num(m.cache_read));
+    put(usage, "cacheWriteTokens", num(m.cache_write));
+  }
+  if (isEmptyUsage(usage)) return undefined;
+  // prompt_tokens on this record is the whole prompt for that call, cache_read included.
+  if (usage.cacheReadTokens !== undefined || usage.cacheWriteTokens !== undefined) usage.cacheCountedInInput = true;
+  usage.caveat =
+    "Copilot publishes no output-token count in its JSON stream, and the prompt figure it does " +
+    "publish covers only the last model call of the turn.";
+  return usage;
+}
+
+/**
+ * Copilot's terminal `result` event. Captured live:
+ *
+ *   {"type":"result", ..., "usage":{"premiumRequests":1,"totalApiDurationMs":1587,
+ *     "sessionDurationMs":4465,"codeChanges":{"linesAdded":0,"linesRemoved":0,...}}}
+ *
+ * No tokens and no dollars anywhere in it. A premium request is the unit GitHub actually bills
+ * the user in, so it is reported as that unit rather than dropped or converted into a dollar
+ * figure this app would be inventing.
+ */
+export function copilotResultUsage(raw: unknown): TurnUsage | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const premium = num((raw as Record<string, unknown>).premiumRequests);
+  if (premium === undefined) return undefined;
+  return { otherCosts: [{ amount: premium, unit: "premium request" }] };
+}
+
+/**
+ * Combines Copilot's three usage-bearing events into the one report for the turn.
+ *
+ * `assistant.usage` is preferred whenever it appears, because it is the only source with a real
+ * output-token count and it is per-call, so summing it covers the whole turn. It was NOT
+ * observed on the build probed here: a complete real turn through `--output-format json`
+ * emitted session.usage_checkpoint, model.call_finished and result, and no assistant.usage line.
+ * The checkpoint's partial figures are therefore the fallback, carrying their own caveat.
+ *
+ * The premium-request count from `result` is merged into whichever of the two is used, because
+ * it is the only per-turn cost figure Copilot states at all.
+ */
+export function copilotTurnUsage(
+  callUsage: TurnUsage | undefined,
+  checkpointUsage: TurnUsage | undefined,
+  resultUsage: TurnUsage | undefined,
+): TurnUsage | undefined {
+  const tokens = callUsage ?? checkpointUsage;
+  if (!tokens) return resultUsage;
+  if (!resultUsage) return tokens;
+  return addUsage(tokens, resultUsage);
+}
+
 export const copilotCliAdapter: ProviderAdapter = {
   id: "copilot-cli",
   async runTurn({
@@ -357,6 +498,11 @@ export const copilotCliAdapter: ProviderAdapter = {
       signal?.addEventListener("abort", onAbort);
 
       let reportedModel: string | undefined;
+      // Three different events carry three different parts of Copilot's accounting; see
+      // copilotTurnUsage for why all three are read and why none of them alone is enough.
+      let callUsage: TurnUsage | undefined;
+      let checkpointUsage: TurnUsage | undefined;
+      let resultUsage: TurnUsage | undefined;
       // Copilot streams reasoning as many tiny deltas and then never restates it whole, so it
       // is accumulated per reasoningId and flushed once, rather than emitting one "reasoning"
       // event per word.
@@ -437,10 +583,11 @@ export const copilotCliAdapter: ProviderAdapter = {
             break;
           }
           case "result": {
-            // Terminal event. Copilot reports AI-credit consumption and wall-clock time, but no
-            // input/output token counts and no dollar cost on this event, so TurnUsage carries
+            // Terminal event. Copilot reports premium-request consumption and wall-clock time
+            // here, but no input/output token counts and no dollar cost, so TurnUsage carries
             // only what was actually stated - nothing is derived from a rate card this app has
             // no way to know is current.
+            resultUsage = copilotResultUsage(event.usage);
             const sid = event.sessionId;
             if (typeof sid === "string" && sid && sid !== resolvedSessionId) {
               // Belt and braces: if the CLI ever rejects our id or forks the session, the stream
@@ -469,21 +616,14 @@ export const copilotCliAdapter: ProviderAdapter = {
             break;
           }
           case "session.usage_checkpoint": {
-            // The only place real token counts appear. Copilot nests them inside its prompt
-            // cache bookkeeping, one entry per conversation per model; the main conversation's
-            // entry is the turn's own usage.
-            const states = data.promptCacheBreakState;
-            if (!Array.isArray(states)) break;
-            for (const raw of states) {
-              const models = (raw as { models?: Record<string, unknown> })?.models;
-              if (!models) continue;
-              for (const value of Object.values(models)) {
-                const m = value as { prompt_tokens?: unknown };
-                if (typeof m?.prompt_tokens === "number") {
-                  onEvent({ type: "usage", usage: { inputTokens: m.prompt_tokens } });
-                }
-              }
-            }
+            // Session-wide accounting plus a per-call prompt figure; see copilotCheckpointUsage.
+            checkpointUsage = copilotCheckpointUsage(data);
+            break;
+          }
+          case "assistant.usage": {
+            // The one event carrying real per-call token counts, when a build emits it at all.
+            const call = copilotCallUsage(data);
+            if (call) callUsage = addUsage(callUsage ?? {}, call);
             break;
           }
           default:
@@ -506,6 +646,10 @@ export const copilotCliAdapter: ProviderAdapter = {
       child.on("close", (code) => {
         signal?.removeEventListener("abort", onAbort);
         flushReasoning();
+        // Emitted once at the end rather than per event: agentManager takes each "usage" event
+        // as THE usage for the turn, and Copilot spreads its figures across three events.
+        const turnUsage = copilotTurnUsage(callUsage, checkpointUsage, resultUsage);
+        if (turnUsage) onEvent({ type: "usage", usage: turnUsage });
         if (aborted) {
           // Why it was aborted is the caller's knowledge, not ours - see AdapterEvent.cancelled.
           onEvent({ type: "cancelled" });

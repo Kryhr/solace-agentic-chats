@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as readline from "node:readline";
 import { join } from "node:path";
-import type { TrustLevel } from "@solace/shared";
+import type { TrustLevel, TurnUsage } from "@solace/shared";
+import { isEmptyUsage, num, put } from "../core/usage";
 import { killCliTree, spawnCli } from "../core/spawnCli";
 import { mcpServersForAgent, type ResolvedMcpServer } from "../core/mcpServers";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
@@ -172,6 +173,44 @@ export function buildGeminiArgs(opts: {
   ];
 }
 
+/**
+ * Gemini's `result` stats block, mapped onto TurnUsage.
+ *
+ * NOT LIVE-VERIFIED: `gemini` on this machine is not signed in ("Please set an Auth method"), so
+ * no real turn could be run. The shape below is read off the installed bundle instead
+ * (@google/gemini-cli, bundle/chunk-S4PJ76PA.js, `convertToStreamStats`), which builds the
+ * object literally as:
+ *
+ *   { total_tokens, input_tokens, output_tokens, cached, input, duration_ms, tool_calls, models }
+ *
+ * summing per-model metrics where input_tokens = tokens.prompt, output_tokens = tokens.candidates
+ * and cached = tokens.cached.
+ *
+ * Three consequences, all of which the previous two-field mapping lost:
+ *
+ *   - `cached` is Gemini's cachedContentTokenCount, which Gemini counts INSIDE promptTokenCount.
+ *     Hence cacheCountedInInput: true - adding it to input_tokens would double-count.
+ *   - `total_tokens` is tokens.total, i.e. Gemini's totalTokenCount, which also covers thought
+ *     tokens and tool tokens that the stream never itemises. It is therefore NOT input+output and
+ *     is passed through as the provider's own figure rather than recomputed.
+ *   - Gemini tracks a `thoughts` count internally but does not put it in the stream, so no
+ *     reasoningTokens is reported. Absent, not zero.
+ *
+ * No cost: gemini reports tokens per model and in aggregate but never a price, so totalCostUsd
+ * stays absent rather than being derived from a rate card this app cannot know is current.
+ */
+export function geminiUsage(raw: unknown): TurnUsage | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const stats = raw as Record<string, unknown>;
+  const usage: TurnUsage = {};
+  put(usage, "inputTokens", num(stats.input_tokens));
+  put(usage, "outputTokens", num(stats.output_tokens));
+  put(usage, "cacheReadTokens", num(stats.cached));
+  put(usage, "totalTokens", num(stats.total_tokens));
+  if (usage.cacheReadTokens !== undefined) usage.cacheCountedInInput = true;
+  return isEmptyUsage(usage) ? undefined : usage;
+}
+
 export const geminiCliAdapter: ProviderAdapter = {
   id: "gemini-cli",
   async runTurn({ cwd, prompt, trustLevel, model, agentId, turnToken, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
@@ -286,16 +325,8 @@ export const geminiCliAdapter: ProviderAdapter = {
                 reportedError = true;
                 onEvent({ type: "error", message: String(event.error.message) });
               }
-              const stats = event.stats;
-              if (stats && (typeof stats.input_tokens === "number" || typeof stats.output_tokens === "number")) {
-                // No cost field: gemini reports tokens per model and in aggregate but never a
-                // price, so totalCostUsd stays absent rather than being derived from a rate
-                // card this app has no way to know is current.
-                onEvent({
-                  type: "usage",
-                  usage: { inputTokens: stats.input_tokens, outputTokens: stats.output_tokens },
-                });
-              }
+              const usage = geminiUsage(event.stats);
+              if (usage) onEvent({ type: "usage", usage });
               break;
             }
             default:

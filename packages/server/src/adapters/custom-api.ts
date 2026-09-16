@@ -1,3 +1,5 @@
+import type { TurnUsage } from "@solace/shared";
+import { addUsage, isEmptyUsage, num } from "../core/usage";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 import { AGENT_TOOLS, createToolExecutor, toolsWireFormat, type ToolExecutor } from "../core/agentTools";
 
@@ -130,9 +132,8 @@ export async function runCustomApiTurn(options: RunTurnOptions & CustomApiDeps):
     { role: "user", content: prompt },
   ];
 
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let sawUsage = false;
+  /** Undefined until the endpoint actually reports something - see emitUsage. */
+  let usage: TurnUsage | undefined;
   /** Flipped off only when the endpoint itself rejects the `tools` parameter. */
   let toolsEnabled = true;
   let anyToolCalled = false;
@@ -140,7 +141,7 @@ export async function runCustomApiTurn(options: RunTurnOptions & CustomApiDeps):
   const emitUsage = () => {
     // Not every OpenAI-compatible endpoint honours stream_options.include_usage. If none came
     // back, say nothing at all rather than reporting a fabricated zero-token turn.
-    if (sawUsage) onEvent({ type: "usage", usage: { inputTokens, outputTokens } });
+    if (usage && !isEmptyUsage(usage)) onEvent({ type: "usage", usage });
   };
 
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration += 1) {
@@ -222,12 +223,10 @@ export async function runCustomApiTurn(options: RunTurnOptions & CustomApiDeps):
 
     let turn: AssistantTurn;
     try {
-      turn = await readAssistantTurn(response, onEvent, (usage) => {
-        sawUsage = true;
+      turn = await readAssistantTurn(response, onEvent, (reported) => {
         // Summed, not overwritten: a multi-iteration turn made several billed requests and
         // reporting only the last one's numbers would understate the turn by most of its cost.
-        inputTokens += usage.input;
-        outputTokens += usage.output;
+        usage = addUsage(usage ?? {}, reported);
       });
     } catch (err) {
       if (signal?.aborted || (err as Error).name === "AbortError") {
@@ -345,10 +344,44 @@ export function looksLikeToolRejection(status: number, body: string): boolean {
  * `stream: true` (several local runtimes do exactly that, and the old code showed the user
  * nothing at all when it happened).
  */
+/**
+ * Reads an OpenAI-shaped `usage` object off an arbitrary endpoint's response.
+ *
+ * This is the only adapter pointed at endpoints nobody here can inspect, so everything is
+ * shape-guarded and nothing is defaulted: an endpoint that omits `prompt_tokens` gets no
+ * inputTokens, not an inputTokens of 0. The two `*_details` sub-objects are OpenAI's own
+ * breakdown fields - `cached_tokens` is part of `prompt_tokens` and `reasoning_tokens` is part
+ * of `completion_tokens`, which is what the two "counted in" flags record.
+ *
+ * No cost of any kind. A custom endpoint's price is unknown by construction.
+ */
+function openAiUsage(raw: unknown): TurnUsage | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const u = raw as Record<string, any>;
+  const usage: TurnUsage = {};
+  const input = num(u.prompt_tokens);
+  if (input !== undefined) usage.inputTokens = input;
+  const output = num(u.completion_tokens);
+  if (output !== undefined) usage.outputTokens = output;
+  const total = num(u.total_tokens);
+  if (total !== undefined) usage.totalTokens = total;
+  const cached = num(u.prompt_tokens_details?.cached_tokens);
+  if (cached !== undefined) {
+    usage.cacheReadTokens = cached;
+    usage.cacheCountedInInput = true;
+  }
+  const reasoning = num(u.completion_tokens_details?.reasoning_tokens);
+  if (reasoning !== undefined) {
+    usage.reasoningTokens = reasoning;
+    usage.reasoningCountedInOutput = true;
+  }
+  return isEmptyUsage(usage) ? undefined : usage;
+}
+
 async function readAssistantTurn(
   response: Response,
   onEvent: RunTurnOptions["onEvent"],
-  onUsage: (usage: { input: number; output: number }) => void,
+  onUsage: (usage: TurnUsage) => void,
 ): Promise<AssistantTurn> {
   const contentType = response.headers?.get?.("content-type") ?? "";
   if (!response.body || (contentType.includes("application/json") && !contentType.includes("event-stream"))) {
@@ -356,9 +389,8 @@ async function readAssistantTurn(
     const message = payload?.choices?.[0]?.message ?? {};
     const content = typeof message.content === "string" ? message.content : "";
     if (content.trim()) onEvent({ type: "text", text: content });
-    if (payload?.usage) {
-      onUsage({ input: payload.usage.prompt_tokens ?? 0, output: payload.usage.completion_tokens ?? 0 });
-    }
+    const reported = openAiUsage(payload?.usage);
+    if (reported) onUsage(reported);
     return {
       content,
       toolCalls: normaliseToolCalls(message.tool_calls),
@@ -419,9 +451,8 @@ async function readAssistantTurn(
           }
         }
         if (choice?.finish_reason) finishReason = choice.finish_reason;
-        if (event.usage) {
-          onUsage({ input: event.usage.prompt_tokens ?? 0, output: event.usage.completion_tokens ?? 0 });
-        }
+        const reported = openAiUsage(event.usage);
+        if (reported) onUsage(reported);
       }
     }
   } finally {

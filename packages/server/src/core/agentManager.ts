@@ -17,6 +17,7 @@ import { ChatBus } from "./chatBus";
 import { sameWorkingDirectory, type ChatStore } from "./chatStore";
 import { parseMentions } from "./mentions";
 import { RateLimitStore } from "./rateLimits";
+import { addUsage } from "./usage";
 import { clearCopilotQuotaCache, getCopilotQuota } from "./copilotQuota";
 import { CoordinationBoard } from "./coordination";
 import { buildSkillsPointer } from "./skills";
@@ -704,16 +705,10 @@ function scrubSecrets(text: string): { text: string; redacted: boolean } {
   return { text: out, redacted };
 }
 
-function addUsage(total: TurnUsage, delta: TurnUsage): TurnUsage {
-  return {
-    inputTokens: (total.inputTokens ?? 0) + (delta.inputTokens ?? 0),
-    outputTokens: (total.outputTokens ?? 0) + (delta.outputTokens ?? 0),
-    totalCostUsd:
-      total.totalCostUsd === undefined && delta.totalCostUsd === undefined
-        ? undefined
-        : (total.totalCostUsd ?? 0) + (delta.totalCostUsd ?? 0),
-  };
-}
+// addUsage lives in core/usage.ts now, next to the per-provider extraction it has to agree with.
+// It is not a plain field-wise sum any more: every field stays absent unless a provider actually
+// reported it, and a session-cumulative report (Crush) replaces the running total instead of
+// being added to it. See the doc comment there.
 
 /**
  * Owns the set of configured agents and routes turns to them, both in the shared group chat
