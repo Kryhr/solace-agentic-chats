@@ -408,6 +408,11 @@ export function ConnectionsPanel({
     );
   };
 
+  // Present on this machine, proven by its own --version having run. A provider whose check has
+  // not finished yet is treated as absent rather than shown optimistically, so the list never
+  // claims something is there before it is known to be.
+  const installedClis = (statuses ?? []).filter((s) => s.installed);
+
   if (statuses === null) {
     return (
       <section className="sidebar-group">
@@ -438,10 +443,22 @@ export function ConnectionsPanel({
       )}
 
       <div className="connection-list">
-        {/* --- CLI / subscription agents. First, because they are the point of the app. --- */}
+        {/* --- CLI / subscription agents. First, because they are the point of the app.
+            Only the ones actually PRESENT on this machine are listed. Showing all of them with
+            "not installed" beside each turned a fresh install into a wall of things the user
+            does not have and mostly does not want - the list read as a checklist rather than as
+            what is connected. Someone who has installed none now sees an empty section telling
+            them what to do, and each CLI appears the moment it really exists. `installed` comes
+            from running the CLI's own --version, so this is not a guess. --- */}
         {shows("cli") && <SectionHead id="cli" />}
+        {shows("cli") && installedClis.length === 0 && (
+          <div className="provider-hint connection-empty">
+            No coding agent CLIs found on this machine yet. Install one - Claude Code, Codex, Gemini, Qwen, Copilot or
+            OpenCode - and it will appear here automatically.
+          </div>
+        )}
         {shows("cli") &&
-          statuses.map((s) => {
+          installedClis.map((s) => {
           const state = stateOf(`cli:${s.provider}`);
           return (
             <div key={s.provider} className="provider-row credential-row is-testable">
