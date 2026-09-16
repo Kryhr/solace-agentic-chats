@@ -363,7 +363,9 @@ export async function checkCredential(workspaceRoot: string, id: string): Promis
  */
 async function checkOpenAiCompatible(baseUrl: string, apiKey: string | undefined, checkedAt: string): Promise<ConnectionCheck> {
   try {
-    const result = await discoverModels(baseUrl, apiKey);
+    // force: a check must hit the network. See discoverModels' own note - without this the
+    // 60s cache answered, and the fresh checkedAt below made a dead endpoint read as "Working".
+    const result = await discoverModels(baseUrl, apiKey, { force: true });
     const shown = result.models.slice(0, 3).join(", ");
     return {
       ok: true,

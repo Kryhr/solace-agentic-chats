@@ -90,16 +90,40 @@ function looksLikeOpenAiModelList(body: unknown): boolean {
  * `modelsBody` is only consulted for the runtimes whose own health endpoint is not
  * self-identifying (confirmViaModels).
  */
+/** Does this body name the runtime it claims to be from? Used only for auth-refusing replies,
+ * where the status code alone proves nothing. Deliberately conservative: an empty or unreadable
+ * body is not an identification. */
+function identifiesItself(runtimeId: string, body: unknown): boolean {
+  const text = typeof body === "string" ? body : JSON.stringify(body ?? "");
+  if (!text) return false;
+  const runtime = LOCAL_RUNTIMES.find((r) => r.id === runtimeId);
+  const needles = [runtimeId, runtime?.name ?? ""].filter(Boolean).map((n) => n.toLowerCase());
+  const haystack = text.toLowerCase();
+  return needles.some((n) => haystack.includes(n));
+}
+
 export function identifyProbeResponse(
   runtimeId: string,
   status: number,
   body: unknown,
   modelsBody?: unknown,
 ): ProbeVerdict {
-  if (status === 401 || status === 403) return "authenticated";
-
   const runtime = LOCAL_RUNTIMES.find((r) => r.id === runtimeId);
   if (!runtime) return "unidentified";
+
+  // A 401/403 used to mean "this runtime is here and wants a key" - reported BEFORE any body
+  // was looked at. But every HTTP server that refuses anonymous callers answers this way, so a
+  // corporate proxy on port 1337 was reported as Jan, with Jan's icon and an Add button, while
+  // the panel's own copy above it promised we "only report one when the reply actually
+  // identifies that runtime". Verified with a plain server returning 403 and a body saying it
+  // had nothing to do with LLMs.
+  //
+  // An auth-refusing server can only be claimed as a runtime when its own body still names it -
+  // which the per-runtime cases below decide. Anything else is unidentified: something is
+  // listening, but we cannot say what, and saying nothing is the honest answer.
+  if (status === 401 || status === 403) {
+    return identifiesItself(runtimeId, body) ? "authenticated" : "unidentified";
+  }
 
   switch (runtimeId) {
     case "ollama":

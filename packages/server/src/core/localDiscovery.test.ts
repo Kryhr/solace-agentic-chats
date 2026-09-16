@@ -56,13 +56,25 @@ test("vLLM and LocalAI are confirmed only by the follow-up model list", () => {
   assert.equal(identifyProbeResponse("vllm", 200, "", { error: "not found" }), "unidentified");
 });
 
-test("401/403 means running-but-authenticated, not absent", () => {
-  // Jan, LocalAI, vLLM and LM Studio all support an optional API key; a refusal is evidence
-  // something is there, and reporting it as nothing would hide a server the user set up.
+test("401/403 alone is NOT an identification", () => {
+  // This test previously asserted the opposite, and the opposite was a real bug: EVERY HTTP
+  // server that refuses anonymous callers answers 401/403, so a corporate proxy on port 1337
+  // returning "Forbidden - nothing to do with LLMs" was reported as Jan, complete with Jan's
+  // icon and an Add button - while the panel's own copy promised we only report a runtime when
+  // the reply actually identifies it. An empty body proves only that something is listening.
   for (const status of [401, 403]) {
-    assert.equal(identifyProbeResponse("jan", status, ""), "authenticated");
-    assert.equal(identifyProbeResponse("vllm", status, ""), "authenticated");
-    assert.equal(identifyProbeResponse("lmstudio", status, ""), "authenticated");
+    assert.equal(identifyProbeResponse("jan", status, ""), "unidentified");
+    assert.equal(identifyProbeResponse("vllm", status, ""), "unidentified");
+    assert.equal(identifyProbeResponse("lmstudio", status, "Forbidden - corporate proxy"), "unidentified");
+  }
+});
+
+test("an auth-refusing server that still names itself IS identified", () => {
+  // The case the old behaviour existed to serve, kept: these runtimes support an optional key,
+  // and one that refuses anonymously but says who it is should not be hidden from the user.
+  for (const status of [401, 403]) {
+    assert.equal(identifyProbeResponse("jan", status, { error: "Jan requires an API key" }), "authenticated");
+    assert.equal(identifyProbeResponse("lmstudio", status, "LM Studio: unauthorized"), "authenticated");
   }
 });
 

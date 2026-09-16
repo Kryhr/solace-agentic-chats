@@ -31,7 +31,20 @@ function extractModelIds(body: unknown): string[] {
 
 export class ModelDiscoveryError extends Error {}
 
-export async function discoverModels(baseUrl: string, apiKey?: string): Promise<ModelDiscoveryResult> {
+export async function discoverModels(
+  baseUrl: string,
+  apiKey?: string,
+  /**
+   * Skip the cache and really go to the network.
+   *
+   * The Check button MUST pass this. It previously shared the 60s cache with model-list
+   * population, and connectionChecks stamps a fresh `checkedAt` onto whatever comes back - so
+   * pressing Check on an endpoint that had died seconds ago reported "Working - checked 11:36"
+   * for a request that never left the process. A check is the user asking "is this alive right
+   * now"; answering it from a cache is the one thing it must not do.
+   */
+  opts: { force?: boolean } = {},
+): Promise<ModelDiscoveryResult> {
   const root = baseUrl.trim().replace(/\/+$/, "");
   if (!root) throw new ModelDiscoveryError("this connection has no base URL saved");
 
@@ -44,7 +57,7 @@ export async function discoverModels(baseUrl: string, apiKey?: string): Promise<
   // which was collision-safe but made git treat this file as binary.
   const cacheKey = JSON.stringify([root, apiKey ?? ""]);
   const hit = cache.get(cacheKey);
-  if (hit && hit.expiresAt > Date.now()) return hit.result;
+  if (!opts.force && hit && hit.expiresAt > Date.now()) return hit.result;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
