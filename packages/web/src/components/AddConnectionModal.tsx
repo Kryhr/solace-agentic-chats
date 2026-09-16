@@ -1,11 +1,12 @@
 import { useState } from "react";
 import type {
   CatalogProvider,
+  ConnectionCheck,
   ConnectorKindId,
   CredentialMeta,
   GithubConnection,
   LocalServerFinding,
-  ProviderStatus,
+  ProviderId,
 } from "@solace/shared";
 import { CONNECTOR_KINDS, searchCatalog } from "@solace/shared";
 import {
@@ -18,7 +19,9 @@ import {
   type SecretCredentialDraft,
   type SshCredentialDraft,
 } from "../api";
-import { ProviderIcon, providerLabel } from "./ProviderIcon";
+import { ProviderIcon } from "./ProviderIcon";
+import { ConnectCliPanel } from "./ConnectCliPanel";
+import type { ConnectableProvider } from "../api";
 
 /**
  * The one way into every kind of connection this app can hold.
@@ -29,9 +32,14 @@ import { ProviderIcon, providerLabel } from "./ProviderIcon";
  * CONNECTOR_KINDS, and every kind is a peer of every other. A new connector type is a new
  * entry in that shared list plus a case below, not a redesign of this file.
  *
- * Two of the kinds are deliberately *not* forms. A CLI agent and GitHub are not things Solace
- * can add - they are programs the user installs and signs into themselves. Pretending
- * otherwise with a form that can only fail would be worse than showing the real command.
+ * GitHub is deliberately *not* a form. It is a program the user installs and signs into
+ * themselves, and pretending otherwise with a form that can only fail would be worse than
+ * showing the real command.
+ *
+ * The CLI kind is the one that DOES do something here, and it lives in its own file - see
+ * ConnectCliPanel. Connecting a CLI is a real, persisted opt-in gated on that CLI's own
+ * --version having just passed; it is not the read-only "here is what is installed" report
+ * that used to live in this file, and it is not the same claim as being signed in.
  */
 
 /** A command the user is meant to run somewhere else. Shown as the literal text to copy, not
@@ -79,13 +87,21 @@ const EMPTY_LOGIN_DRAFT: LoginCredentialDraft = { label: "", service: "", userna
 const EMPTY_SECRET_DRAFT: SecretCredentialDraft = { label: "", value: "", notes: "" };
 
 export function AddConnectionModal({
-  statuses,
+  cliCatalog,
+  connectedClis,
+  onConnectedClisChange,
   github,
   credentials,
   onSaved,
   onClose,
 }: {
-  statuses: ProviderStatus[];
+  /** Every CLI that can be connected, with its real sign-in command. Comes from the server. */
+  cliCatalog: ConnectableProvider[];
+  /** The ones the user has actually connected - NOT the ones installed on this machine. */
+  connectedClis: ProviderId[];
+  /** `verified` carries the check that authorised a connection, so the sidebar's new row shows
+   * that check rather than the older page-load snapshot. See ConnectCliPanel. */
+  onConnectedClisChange: (next: ProviderId[], verified?: { provider: ProviderId; check: ConnectionCheck }) => void;
   github: GithubConnection | null;
   credentials: CredentialMeta[];
   onSaved: (c: CredentialMeta) => void;
@@ -95,7 +111,9 @@ export function AddConnectionModal({
   const [kind, setKind] = useState<ConnectorKindId | null>(null);
 
   const counts: Record<ConnectorKindId, number> = {
-    cli: statuses.filter((s) => s.installed).length,
+    // Connected, not installed. The count beside "Coding agent CLI" has to mean the same thing
+    // the sidebar section under it means, or the chooser promises rows that aren't there.
+    cli: connectedClis.length,
     github: github?.authenticated ? 1 : 0,
     "local-server": credentials.filter((c) => c.kind === "api-key" && c.provider === "local").length,
     "hosted-api": credentials.filter((c) => c.kind === "api-key" && c.provider !== "local").length,
@@ -125,7 +143,9 @@ export function AddConnectionModal({
           </div>
         )}
 
-        {kind === "cli" && <CliGuide statuses={statuses} />}
+        {kind === "cli" && (
+          <ConnectCliPanel catalog={cliCatalog} connected={connectedClis} onConnectedChange={onConnectedClisChange} />
+        )}
         {kind === "github" && <GithubGuide github={github} />}
         {(kind === "local-server" || kind === "hosted-api") && (
           <EndpointForm local={kind === "local-server"} onSaved={onSaved} onDone={onClose} />
@@ -139,57 +159,6 @@ export function AddConnectionModal({
           </button>
         </div>
       </div>
-    </div>
-  );
-}
-
-/**
- * Not a form. A coding-agent CLI is installed and signed in outside this app, so the honest
- * thing to show is its real state on this machine plus the real command for the state it is
- * in. The install state here is a genuine check - the server ran `<bin> --version` - and the
- * version string it printed is shown as the evidence.
- */
-function CliGuide({ statuses }: { statuses: ProviderStatus[] }) {
-  return (
-    <div className="guide">
-      <p className="field-note">
-        These run against your own subscription, on this machine. Solace shells out to them - it never holds a login for them,
-        so signing in happens in a terminal, once, and then they are available here.
-      </p>
-      {statuses.map((s) => (
-        <div className="guide-block" key={s.provider}>
-          <div className="guide-block-head">
-            <ProviderIcon provider={s.provider} size={20} />
-            <span className="guide-block-title">{providerLabel(s.provider)}</span>
-            <span className={`provider-status ${s.installed ? "is-ok" : ""}`}>{s.installed ? "Installed" : "Not installed"}</span>
-          </div>
-          {s.installed ? (
-            <>
-              <div className="field-note">
-                {/* The version string, verbatim. This is what makes "Installed" a fact rather
-                    than a claim - it is the line the CLI itself printed. */}
-                Reported <code>{s.version}</code>
-                {s.checkedAt && ` · checked ${new Date(s.checkedAt).toLocaleTimeString()}`}
-              </div>
-              {s.loginCommand && (
-                <>
-                  <div className="field-note">
-                    Installed is not the same as signed in - Solace can't see that without running a real turn. If turns fail with
-                    an auth error, sign in again with:
-                  </div>
-                  <CommandLine command={s.loginCommand} />
-                </>
-              )}
-            </>
-          ) : (
-            <>
-              <div className="field-note">Install it, then sign in:</div>
-              {s.installCommand && <CommandLine command={s.installCommand} />}
-              {s.loginCommand && <CommandLine command={s.loginCommand} />}
-            </>
-          )}
-        </div>
-      ))}
     </div>
   );
 }

@@ -9,12 +9,14 @@ import {
   type AppSettings,
   type ChatMessage,
   type ChatMeta,
+  type CliProviderId,
   type ProjectMeta,
   type CoordinationState,
   type ProviderRateLimit,
 } from "@solace/shared";
 import type { McpServerConfig } from "@solace/shared";
 import { sanitizeMcpServers } from "./mcpServers";
+import { sanitizeConnectedProviders } from "./connectedProviders";
 import type { ChatArchive } from "./archiveStore";
 import type { PersistedAgentQueue } from "./agentManager";
 
@@ -65,6 +67,11 @@ export interface PersistedState {
    * turn (see core/mcpServers.ts). Absent on any state file written before this existed, which
    * restores as none - i.e. exactly the behaviour that file already had. */
   mcpServers: McpServerConfig[];
+  /** The coding-agent CLIs the user has explicitly connected, in the order they connected
+   * them. Absent on any state file written before connecting was a thing, which restores as
+   * NONE connected - not as "every CLI on this machine", which is the behaviour the connected
+   * list exists to replace. See core/connectedProviders.ts. */
+  connectedCliProviders: CliProviderId[];
 }
 
 const EMPTY_STATE: PersistedState = {
@@ -79,6 +86,7 @@ const EMPTY_STATE: PersistedState = {
   settings: { ...DEFAULT_APP_SETTINGS },
   coordination: {},
   mcpServers: [],
+  connectedCliProviders: [],
 };
 
 function statePath(workspaceRoot: string): string {
@@ -211,6 +219,9 @@ export function loadState(workspaceRoot: string): PersistedState {
       // claiming the reserved "solace" name would shadow the group-chat bridge, so it is
       // dropped on load rather than trusted because it happened to be on disk.
       mcpServers: sanitizeMcpServers(parsed.mcpServers),
+      // No key means the file predates connecting, which reads as none connected. Defaulting
+      // to "all the installed ones" here would quietly re-create the sidebar this replaced.
+      connectedCliProviders: sanitizeConnectedProviders(parsed.connectedCliProviders),
     };
   } catch {
     // An unreadable state file already means everything is gone; at least hand back a usable

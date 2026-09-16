@@ -44,6 +44,7 @@ test("saveState never leaves a partially-written file that loadState would treat
       settings: {} as never,
       coordination: {},
       mcpServers: [],
+      connectedCliProviders: [],
     });
 
     // Simulate a crash landing DURING the next save: the temp file is half-written and the
