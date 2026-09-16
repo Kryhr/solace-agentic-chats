@@ -36,6 +36,11 @@ function withPending(manager: AgentManager, agentId: string, pending: unknown[])
   inner.agents.get(agentId)!.pendingInbound = pending;
 }
 
+function setCurrentTurn(manager: AgentManager, agentId: string, turn: Record<string, unknown>) {
+  const inner = manager as unknown as { agents: Map<string, { currentTurn?: unknown }> };
+  inner.agents.get(agentId)!.currentTurn = turn;
+}
+
 function harness() {
   const agents = [agent("a1", "claude"), agent("a2", "codex")];
   const manager = new AgentManager(new ChatBus(), new ChatStore(), agents);
@@ -51,14 +56,21 @@ test("an operator question arms the interrupt", () => {
   assert.equal(armFor(manager, "a1"), true);
 });
 
-test("an agent's question never arms the interrupt", () => {
+test("an agent's question arms the interrupt, but only once per turn", () => {
+  // Both extremes were live failures. Interrupting on every agent question killed claude four
+  // times in a row so it finished nothing; interrupting on none of them let it work straight
+  // through eight @mentions while the others sat blocked. It stops once, answers, carries on.
   const manager = harness();
   withPending(manager, "a1", [{ ...QUESTION, addressedBy: { id: "a2", handle: "codex" } }]);
-  assert.equal(armFor(manager, "a1"), false, "codex asking must not kill claude's turn");
+  assert.equal(armFor(manager, "a1"), true);
+
+  setCurrentTurn(manager, "a1", { agentInterruptUsed: true });
+  assert.equal(armFor(manager, "a1"), false, "the allowance is spent for this turn");
 });
 
-test("a pile of agent questions still never arms it", () => {
-  // The exact live shape: four in a row, from two different agents.
+test("a pile of agent questions is still only one interruption", () => {
+  // The exact live shape: four in a row, from two different agents. They are answered together
+  // in the one turn that follows, not one interruption each.
   const manager = harness();
   withPending(manager, "a1", [
     { ...QUESTION, addressedBy: { id: "a2", handle: "codex" } },
@@ -66,7 +78,16 @@ test("a pile of agent questions still never arms it", () => {
     { ...QUESTION, addressedBy: { id: "a2", handle: "codex" } },
     { ...QUESTION, addressedBy: { id: "a3", handle: "copilot" } },
   ]);
+  assert.equal(armFor(manager, "a1"), true);
+  setCurrentTurn(manager, "a1", { agentInterruptUsed: true });
   assert.equal(armFor(manager, "a1"), false);
+});
+
+test("the operator is never subject to the once-per-turn cap", () => {
+  const manager = harness();
+  setCurrentTurn(manager, "a1", { agentInterruptUsed: true });
+  withPending(manager, "a1", [{ ...QUESTION }]);
+  assert.equal(armFor(manager, "a1"), true, "their question still stops the turn");
 });
 
 test("an operator question mixed in with agent chatter still arms it", () => {

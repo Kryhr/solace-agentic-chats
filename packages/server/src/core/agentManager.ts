@@ -77,6 +77,19 @@ export interface QueuedTurn {
    * MAX_HANDOVERS); `agentIds` is every agent that has already had it, INCLUDING the original,
    * so it can never be handed back to somebody who already failed at it. */
   handover?: { ofTurnId: string; count: number; agentIds: string[] };
+  /**
+   * The group message this turn was created for, kept apart from the rendered prompt.
+   *
+   * Needed so several messages that arrived while the agent was busy can be merged into ONE
+   * turn instead of run as several. Merging rendered prompts is not an option: each carries a
+   * full copy of the context block (identity, roster, coordination, house style, the skills
+   * pointer), so eight of them would send that block eight times to say eight sentences.
+   */
+  groupMessage?: { from: string; text: string };
+  /** Set once this turn has already been stopped for another AGENT's question. The operator is
+   * never subject to this; it exists so agent traffic can interrupt real work at most once
+   * instead of repeatedly, which is what previously starved an agent into finishing nothing. */
+  agentInterruptUsed?: boolean;
 }
 
 /** A snapshot of one agent's still-outstanding work, for persistence.ts - see
@@ -253,6 +266,12 @@ const HOUSE_STYLE = [
   "- Prose over bullet soup. Use a list when the content is genuinely a list, not as a default layout.",
   "- No preamble, no filler, no restating instructions back. Start with the substance.",
   "- Keep it proportionate: a one-line change deserves a one-line report.",
+  // Observed live: codex reported its own work as "codex removed the superseded prototype
+  // files after verifying they were unreferenced". Every message already carries its author's
+  // name in the UI, so narrating yourself in the third person reads like a report ABOUT
+  // somebody else - and in a room where several agents are doing similar work, it is genuinely
+  // ambiguous whether the speaker did it or is describing what a teammate did.
+  "- Write about your own work in the first person: \"I removed the dead files\", not \"codex removed the dead files\". Your name is already on the message. Use other agents' handles only when you mean THEM.",
   "If you have post_to_group, send a short update when you start something substantial, when you",
   "commit to a direction, and when you hand work off - so the others are not waiting in the dark.",
 ].join("\n");
@@ -273,6 +292,13 @@ export const MAX_MID_TURN_POSTS = 8;
  * is seconds) and shorter than a human's patience waiting on an answer. Anything that expires
  * this has, in practice, not touched a solace tool in a minute - i.e. cooperative delivery was
  * never going to reach it in time. */
+/** How long a turn is protected from ANOTHER AGENT's question before it is stopped to answer
+ * it. Far longer than the operator's grace: an agent's question is rarely urgent enough to be
+ * worth destroying a half-finished piece of work, but leaving it unanswered for the whole of a
+ * long build leaves the asker blocked. Four minutes is long enough to finish a file and short
+ * enough that nobody waits a whole build for an acknowledgement. */
+export const AGENT_QUESTION_GRACE_MS = 4 * 60 * 1000;
+
 export const INTERRUPT_GRACE_MS = 50 * 1000;
 
 /** How many times one piece of work may be interrupted and resumed before we stop and say so.
@@ -602,6 +628,8 @@ interface EnqueueOptions {
    * queue<->pendingInbound pairing survive rather than being silently re-generated. */
   id?: string;
   receivedAt?: string;
+  /** See QueuedTurn.groupMessage - carried so queued messages can be coalesced. */
+  groupMessage?: { from: string; text: string };
   /** Is this a message that has just ARRIVED from someone, as opposed to work being re-run?
    * Only arriving traffic is eligible for mid-turn delivery and for escalating to an interrupt.
    * Defaults to false so no internal caller can accidentally opt into killing a turn. */
@@ -1232,6 +1260,7 @@ export class AgentManager {
         // message, and every agent final answer coming back through here) gets classified.
         kind: opts.declaredKind ?? classifyIncoming(displayText),
         inbound: true,
+        groupMessage: { from: authorHandle, text: displayText },
       });
     }
   }
@@ -1665,6 +1694,7 @@ ${text}` : text;
       receivedAt: opts.receivedAt ?? new Date().toISOString(),
       resume: opts.resume,
       handover: opts.handover,
+      groupMessage: opts.groupMessage,
     };
     runtime.queue.push(turn);
     // A message that arrives while the agent is ALREADY mid-turn is the only kind that can be
@@ -1775,16 +1805,44 @@ ${text}` : text;
    */
   private armInterruptTimer(runtime: AgentRuntime) {
     if (runtime.interruptTimer) return;
-    const oldest = runtime.pendingInbound
-      .filter((t) => t.kind === "question" && !t.addressedBy)
-      .sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt))[0];
+    const candidates = runtime.pendingInbound
+      .filter((t) => t.kind === "question")
+      .sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt));
+    const fromOperator = candidates.filter((t) => !t.addressedBy);
+    const fromAgents = candidates.filter((t) => t.addressedBy);
+
+    // The operator's question always arms, at the configured grace. Theirs is a redirection of
+    // the work and they are sitting there waiting for it.
+    let oldest = fromOperator[0];
+    let graceMs = this.limits().interruptGraceMs;
+
+    // An agent's question arms too, but only ONCE per turn and only after a much longer wait.
+    //
+    // Both extremes were observed live and both were wrong. When every agent question
+    // interrupted at 50s, claude was killed four times in a row, finished nothing, and posted
+    // nothing - while the agents waiting on it kept asking, which is what kept killing it. When
+    // none of them could interrupt, claude worked straight through eight @mentions without
+    // acknowledging any of them, and the others sat blocked on an answer that was minutes away.
+    //
+    // So: a running turn is protected for AGENT_QUESTION_GRACE_MS, which is long enough to
+    // finish a real piece of work, and after that it stops once to answer everything waiting.
+    // The once-per-turn cap is what makes it an interruption rather than a livelock - a second
+    // pile-up waits for the turn that answers the first.
+    if (!oldest && fromAgents[0] && !runtime.currentTurn?.agentInterruptUsed) {
+      oldest = fromAgents[0];
+      graceMs = AGENT_QUESTION_GRACE_MS;
+    }
     if (!oldest) return;
+
     const waited = Date.now() - Date.parse(oldest.receivedAt);
     const agentId = runtime.config.id;
-    runtime.interruptTimer = setTimeout(() => {
-      runtime.interruptTimer = undefined;
-      this.interruptIfStillPending(agentId);
-    }, Math.max(0, this.limits().interruptGraceMs - (Number.isFinite(waited) ? waited : 0)));
+    runtime.interruptTimer = setTimeout(
+      () => {
+        runtime.interruptTimer = undefined;
+        this.interruptIfStillPending(agentId);
+      },
+      Math.max(0, graceMs - (Number.isFinite(waited) ? waited : 0)),
+    );
   }
 
   /**
@@ -1795,15 +1853,22 @@ ${text}` : text;
   private interruptIfStillPending(agentId: string) {
     const runtime = this.agents.get(agentId);
     if (!runtime) return;
-    // Same rule as armInterruptTimer: only an operator question justifies killing a turn. This
-    // is checked again here rather than trusted from arming time, because the pending set can
-    // change during the grace period - the operator's question may have been delivered
-    // cooperatively, leaving only agent chatter behind, which must not cause an abort.
-    if (!runtime.pendingInbound.some((t) => t.kind === "question" && !t.addressedBy)) return;
+    // Re-checked here rather than trusted from arming time, because the pending set can change
+    // during the grace period - the question may have been delivered cooperatively in the
+    // meantime, and aborting a turn for something already answered is pure waste.
+    const stillWaiting = runtime.pendingInbound.filter((t) => t.kind === "question");
+    if (stillWaiting.length === 0) return;
+    const onlyFromAgents = stillWaiting.every((t) => t.addressedBy);
+    if (onlyFromAgents && runtime.currentTurn?.agentInterruptUsed) return;
     // Nothing is actually running, so the question is about to be picked off the queue as a
     // normal turn within moments. Deliberately does NOT re-arm: re-arming on an already-expired
     // deadline is a zero-delay timer loop, and there is nothing here left to fix anyway.
     if (!runtime.busy || !runtime.activeController) return;
+    // Spend the once-per-turn allowance before aborting, so the resumed turn cannot be
+    // interrupted again by the next agent question that arrives while it is catching up.
+    if (runtime.currentTurn && stillWaiting.every((t) => t.addressedBy)) {
+      runtime.currentTurn.agentInterruptUsed = true;
+    }
     runtime.abortKind = "interrupt";
     runtime.activeController.abort();
     // A killed turn must not leave a live approval card for it in the UI - same reasoning, and
@@ -1879,6 +1944,54 @@ ${text}` : text;
       text: `Paused this work to answer a question first - it will resume straight afterwards: "${describeWork(turn)}"`,
       createdAt: new Date().toISOString(),
     });
+    this.onChange?.();
+  }
+
+  /**
+   * Fold every other group message already waiting for this agent, in this same chat, into the
+   * turn that is about to start.
+   *
+   * Observed live: claude was @mentioned eight times while it was mid-build. Each mention
+   * enqueued its own turn, so it answered them one at a time, in sequence, minutes apart and
+   * charged eight times - and each of those turns carried its own full copy of the context
+   * block to deliver one sentence. Answering all eight in one turn is faster, cheaper, and a
+   * better answer, because the agent can see that several of them are about the same thing.
+   *
+   * Only ARRIVED group traffic for the SAME chat is merged. A resume, a handover and a hub turn
+   * each mean something specific about what the agent should be doing and merging them would
+   * lose that. Order is preserved, because arrival order is the promise made to whoever sent
+   * them.
+   */
+  private coalesceQueuedMessages(runtime: AgentRuntime, turn: QueuedTurn) {
+    if (!turn.groupMessage || !isChatChannel(turn.replyChannel) || turn.resume || turn.handover) return;
+    const chatId = turn.replyChannel.chatId;
+    const mergeable = runtime.queue.filter(
+      (t) =>
+        t.groupMessage &&
+        !t.resume &&
+        !t.handover &&
+        isChatChannel(t.replyChannel) &&
+        t.replyChannel.chatId === chatId,
+    );
+    if (mergeable.length === 0) return;
+
+    const ids = new Set(mergeable.map((t) => t.id));
+    runtime.queue = runtime.queue.filter((t) => !ids.has(t.id));
+    runtime.pendingInbound = runtime.pendingInbound.filter((t) => !ids.has(t.id));
+
+    const all = [turn, ...mergeable];
+    // The rendered prompt already ends with this turn's own message; everything else is appended
+    // after it rather than re-rendering the context block, which is the whole point.
+    const extra = mergeable
+      .map((t) => `[group chat message from ${t.groupMessage!.from}]: ${t.groupMessage!.text}`)
+      .join("\n\n");
+    turn.prompt =
+      `${turn.prompt}\n\n${extra}\n\n` +
+      `[solace] ${all.length} messages arrived for you while you were working, all shown above in the order ` +
+      `they were sent. Answer them together in this one turn - several may be about the same thing. Nothing ` +
+      `else is queued behind them.`;
+
+    if (all.some((t) => t.kind === "question")) turn.kind = "question";
     this.onChange?.();
   }
 
@@ -2016,6 +2129,7 @@ ${text}` : text;
     if (!runtime || runtime.busy) return;
     const turn = runtime.queue.shift();
     if (turn === undefined) return;
+    this.coalesceQueuedMessages(runtime, turn);
     const { prompt, replyChannel, mentionChainDepth, addressedBy } = turn;
     // It is about to run as a real turn, so it is no longer a candidate for being handed to a
     // running turn as text - without this it could be delivered a second time, as prose, after

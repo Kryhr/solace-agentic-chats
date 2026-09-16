@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AgentConfig,
   AgentStatus,
@@ -45,6 +45,9 @@ export function ChatPanel({
 }) {
   const historyRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
+  /** Shown once the reader has scrolled far enough up that new messages are arriving off-screen.
+   * A ref alone cannot drive this - it has to be state for the button to appear and disappear. */
+  const [scrolledUp, setScrolledUp] = useState(false);
 
   const agentById = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
   // Scoped to THIS chat. "Is this agent busy?" and "is this agent busy here?" are different
@@ -68,7 +71,20 @@ export function ChatPanel({
   const onHistoryScroll = () => {
     const el = historyRef.current;
     if (!el) return;
-    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottom.current = fromBottom < 80;
+    // Deliberately a longer distance than the stick threshold: between 80px and a screenful the
+    // reader can still see the newest message, so offering to scroll them somewhere they are
+    // already looking would be noise.
+    setScrolledUp(fromBottom > el.clientHeight * 0.5);
+  };
+
+  const jumpToBottom = () => {
+    const el = historyRef.current;
+    if (!el) return;
+    stickToBottom.current = true;
+    setScrolledUp(false);
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   };
 
   const shouldAnimate = trackEntrance(history.map((m) => m.id));
@@ -223,6 +239,16 @@ export function ChatPanel({
         ))}
       </div>
 
+      {/* Sits just above the composer, centred on the transcript, and only exists while the
+          reader is far enough up that new messages are landing off-screen. */}
+      {scrolledUp && (
+        <button className="jump-to-bottom" onClick={jumpToBottom} aria-label="Jump to the newest message">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 5v14M19 12l-7 7-7-7" />
+          </svg>
+        </button>
+      )}
+
       <Composer
         surface="chat"
         placeholder={connected ? `Message ${chat.title}…` : "Reconnecting…"}
@@ -235,6 +261,7 @@ export function ChatPanel({
           // the reader had scrolled up to review earlier history - snap back to the bottom so
           // the message they just sent (and the reply that follows) is visible.
           stickToBottom.current = true;
+          setScrolledUp(false);
           requestAnimationFrame(() => {
             if (historyRef.current) historyRef.current.scrollTop = historyRef.current.scrollHeight;
           });
