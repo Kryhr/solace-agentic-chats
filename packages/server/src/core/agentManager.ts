@@ -1358,14 +1358,39 @@ ${text}` : text;
     if (!runtime || !this.verifyTurnToken(agentId, token)) return undefined;
     if (runtime.pendingInbound.length === 0) return undefined;
 
+    // An agent answering a question finishes THAT answer before it is shown another one.
+    //
+    // Without this, a turn opened by "@claude what is the contract?" gets three more questions
+    // pasted into it the moment it calls post_to_group, and the answer that comes back is a
+    // blend addressing all four - which is why the live run produced replies like "Same stale
+    // context replaying - already resolved" instead of one clean answer per question. Work and
+    // FYI still ride along: those are context for what it is already doing, not competing
+    // demands on the same reply. Anything held back stays queued and runs as its own turn
+    // straight afterwards, so nothing is lost - it is answered one at a time instead of at once.
+    //
+    // Only ANOTHER AGENT's question is held back. The operator's always goes through, because
+    // they are redirecting the work and waiting on the answer; making them queue behind agent
+    // chatter is the starvation this whole change exists to prevent, pointed at the one person
+    // who cannot be told to wait.
+    const answeringAQuestion = runtime.currentTurn?.kind === "question";
+    const eligible = answeringAQuestion
+      ? runtime.pendingInbound.filter((t) => !(t.kind === "question" && t.addressedBy))
+      : runtime.pendingInbound;
+    if (eligible.length === 0) return undefined;
+
     // Sorted by arrival rather than trusting array order: a restore rebuilds this array from a
     // saved list, and an interrupt reorders `queue` underneath it. Arrival order is the promise
     // made to whoever sent these, so it is read off the turns themselves.
-    const delivered = [...runtime.pendingInbound].sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt));
-    runtime.pendingInbound = [];
+    const delivered = [...eligible].sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt));
     const deliveredIds = new Set(delivered.map((t) => t.id));
+    runtime.pendingInbound = runtime.pendingInbound.filter((t) => !deliveredIds.has(t.id));
     runtime.queue = runtime.queue.filter((t) => !deliveredIds.has(t.id));
-    this.clearInterruptTimer(runtime);
+    // Only stand the interrupt down once no operator question is still waiting: a held-back
+    // agent question never armed it, but an operator question that arrived during this delivery
+    // still needs its grace period to run out rather than be silently disarmed.
+    if (!runtime.pendingInbound.some((t) => t.kind === "question" && !t.addressedBy)) {
+      this.clearInterruptTimer(runtime);
+    }
 
     const lines = delivered.map((t) => {
       const who = promptAuthorHandle(t);
@@ -1392,13 +1417,29 @@ ${text}` : text;
     runtime.interruptTimer = undefined;
   }
 
-  /** Arm the preemptive fallback for the OLDEST pending question, if one isn't armed already.
+  /**
+   * Arm the preemptive fallback for the OLDEST pending question, if one isn't armed already.
    * Anchored to that question's own receivedAt rather than to "now", so a question doesn't get
-   * its grace period extended every time some later message shows up behind it. */
+   * its grace period extended every time some later message shows up behind it.
+   *
+   * ONLY the operator's questions can do this. An agent's question never kills another agent's
+   * turn, because doing so starves the very answer it is asking for. Observed live, in a
+   * three-agent run: claude never calls a solace tool mid-turn (its transcript is Bash and Read),
+   * so cooperative delivery could never reach it, so every question from codex or copilot
+   * expired the grace period and hard-aborted its turn. It was interrupted four times in a row,
+   * finished nothing, and posted NOTHING to the group - while the other two, blocked waiting on
+   * it, kept asking, which is what kept killing it. A livelock where the asking is the thing
+   * preventing the answer.
+   *
+   * Agent questions still arrive: they stay in pendingInbound for cooperative delivery, and
+   * otherwise run as ordinary queued turns the moment the current one ends. They are delayed,
+   * never dropped - which is the right trade, because an agent waiting a few minutes for a real
+   * answer beats one getting an instant answer to a turn that was destroyed to produce it.
+   */
   private armInterruptTimer(runtime: AgentRuntime) {
     if (runtime.interruptTimer) return;
     const oldest = runtime.pendingInbound
-      .filter((t) => t.kind === "question")
+      .filter((t) => t.kind === "question" && !t.addressedBy)
       .sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt))[0];
     if (!oldest) return;
     const waited = Date.now() - Date.parse(oldest.receivedAt);
@@ -1417,7 +1458,11 @@ ${text}` : text;
   private interruptIfStillPending(agentId: string) {
     const runtime = this.agents.get(agentId);
     if (!runtime) return;
-    if (!runtime.pendingInbound.some((t) => t.kind === "question")) return; // already delivered
+    // Same rule as armInterruptTimer: only an operator question justifies killing a turn. This
+    // is checked again here rather than trusted from arming time, because the pending set can
+    // change during the grace period - the operator's question may have been delivered
+    // cooperatively, leaving only agent chatter behind, which must not cause an abort.
+    if (!runtime.pendingInbound.some((t) => t.kind === "question" && !t.addressedBy)) return;
     // Nothing is actually running, so the question is about to be picked off the queue as a
     // normal turn within moments. Deliberately does NOT re-arm: re-arming on an already-expired
     // deadline is a zero-delay timer loop, and there is nothing here left to fix anyway.
