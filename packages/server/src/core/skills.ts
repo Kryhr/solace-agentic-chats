@@ -297,7 +297,7 @@ const SKILL_BLURB_CHARS = 150;
  *
  * Returns "" when there are no skills, so a machine with none pays nothing for the feature.
  */
-export function buildSkillsIndex(skills: SkillInfo[] = listAllSkills()): string {
+export function buildSkillsCatalogue(skills: SkillInfo[] = listAllSkills()): string {
   if (skills.length === 0) return "";
   // Skills nearly all live under one root (76 of 96 in ~/.claude/skills, the rest under an
   // imported repo), so the root is stated once rather than repeated on all 96 lines - that
@@ -315,7 +315,9 @@ export function buildSkillsIndex(skills: SkillInfo[] = listAllSkills()): string 
     return `- ${s.name}${where}: ${short}`;
   });
   return (
-    `[skills available to you: ${skills.length} of them, already on this machine. Each is a folder containing ` +
+    `# Skills available on this machine (${skills.length})
+
+Each is a folder containing ` +
     `SKILL.md, which you can read with your normal file-reading tool. Unless a line gives a different path, a ` +
     `skill lives at ${mainRoot}${sep}<name>${sep}SKILL.md.\n\n` +
     `Use them WITHOUT being asked. Before you start a piece of work, look down this list for anything that ` +
@@ -325,5 +327,45 @@ export function buildSkillsIndex(skills: SkillInfo[] = listAllSkills()): string 
     `to miss and obvious once missed, so reading one before you start is far cheaper than discovering it in an ` +
     `audit afterwards. Do not read every skill; read the ones that match, and say in the chat which you read.\n\n` +
     `${lines.join("\n")}]`
+  );
+}
+
+/** Where the catalogue is written so agents can read it instead of being handed it inline. */
+export function skillsCataloguePath(): string {
+  return join(WORKSPACE_ROOT, ".solace-skills.md");
+}
+
+/**
+ * The short pointer that actually goes into a turn's prompt.
+ *
+ * The full catalogue CANNOT be inlined. Codex and Copilot both pass the prompt as an argv
+ * argument (Copilot has no stdin channel at all; Codex takes it positionally), and Windows caps
+ * a command line at ~32KB - so a ~20KB catalogue produced `spawn ENAMETOOLONG` and every Codex
+ * and Copilot turn died instantly while Claude, Gemini and Qwen, which use stdin, kept working.
+ *
+ * So the names ride along - they are what lets an agent recognise a relevant skill without
+ * opening anything - and the descriptions live in a file it can read when one looks relevant.
+ * Names alone are ~2.4KB, which is safe in argv next to everything else already there.
+ */
+export function buildSkillsPointer(skills: SkillInfo[] = listAllSkills()): string {
+  if (skills.length === 0) return "";
+  const path = skillsCataloguePath();
+  try {
+    // Rewritten every time rather than cached to disk: a skill added or removed between turns
+    // must not leave an agent reading a stale list, and this is a few KB on a local disk.
+    writeFileSync(path, buildSkillsCatalogue(skills), "utf-8");
+  } catch {
+    // If it cannot be written there is nothing useful to point at, so say nothing rather than
+    // sending an agent to a file that is not there.
+    return "";
+  }
+  return (
+    `[skills: ${skills.length} are installed on this machine and you are expected to use them WITHOUT being ` +
+    `asked. Before starting a piece of work, look for a name below that matches what you are about to build - ` +
+    `front end, back end, trading or algorithmic system, testing, security - and read that skill first. Full ` +
+    `descriptions and the exact folder of each are in ${path}; each skill is a folder with a SKILL.md inside. ` +
+    `They carry specific, checkable requirements that are easy to miss and obvious once missed, so reading the ` +
+    `matching one costs far less than an audit finding it afterwards. Read the ones that match, not all of them, ` +
+    `and say in the chat which you read.\n\n${skills.map((s) => s.name).join(", ")}]`
   );
 }

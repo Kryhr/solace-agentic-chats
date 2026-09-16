@@ -19,7 +19,7 @@ import { parseMentions } from "./mentions";
 import { RateLimitStore } from "./rateLimits";
 import { clearCopilotQuotaCache, getCopilotQuota } from "./copilotQuota";
 import { CoordinationBoard } from "./coordination";
-import { buildSkillsIndex } from "./skills";
+import { buildSkillsPointer } from "./skills";
 import type { Block } from "@solace/shared";
 import { SettingsStore } from "./settingsStore";
 import type { ApprovalRegistry } from "./approvalRegistry";
@@ -1569,11 +1569,14 @@ ${text}` : text;
     // The house style rides along with the context block, so it follows the same
     // send-once-per-session rule and costs nothing on every later turn.
     const coordination = this.coordinationBlock(chatId, self);
-    // The skills catalogue is ~3.3k tokens, and this method runs for EVERY group message an
+    // Only the skill NAMES ride in the prompt; the descriptions are written to a file the agent
+    // can read. Codex and Copilot pass the prompt in argv, and the full catalogue blew Windows'
+    // ~32KB command-line limit outright - spawn ENAMETOOLONG, every Codex and Copilot turn dead.
+    // This still runs for EVERY group message an
     // agent receives - so it is sent only on the first turn of a session, where "session" is
     // this agent's provider conversation for the folder it is about to work in. After that the
     // agent has already been told, and the CLI's own session carries it forward.
-    const skills = this.sessionIsNew(runtime, chatId) ? `\n\n${buildSkillsIndex()}` : "";
+    const skills = this.sessionIsNew(runtime, chatId) ? `\n\n${buildSkillsPointer()}` : "";
     return `${identity}${roster}${coordination}\n\n${HOUSE_STYLE}]${skills}\n\n[group chat message from ${fromHandle}]: ${text}`;
   }
 

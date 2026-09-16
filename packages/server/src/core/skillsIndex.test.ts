@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildSkillsIndex } from "./skills";
+import { buildSkillsCatalogue, buildSkillsPointer } from "./skills";
 
 /**
  * The catalogue an agent is handed.
@@ -29,7 +29,7 @@ test("every skill is listed, and the shared root is stated once instead of 96 ti
   // Repeating the full path on every line cost ~4,800 characters of the block; 76 of the 96
   // real skills sit under one root, so the root is named in the header and the lines carry
   // just the name.
-  const index = buildSkillsIndex(SKILLS);
+  const index = buildSkillsCatalogue(SKILLS);
   for (const s of SKILLS) assert.ok(index.includes(s.name), `${s.name} missing`);
   assert.match(index, /SKILL\.md/, "says what to actually open");
   const ROOT = "C:\\Users\\x\\.claude\\skills";
@@ -41,12 +41,12 @@ test("a skill outside the main root still prints its own full path", () => {
   // Skills imported from a repo live elsewhere; dropping their path to save space would make
   // them unreadable, which is worse than the bytes saved.
   const outlier = "D:\\repos\\pack\\skills\\from-repo";
-  const index = buildSkillsIndex([...SKILLS, { name: "from-repo", sourcePath: outlier, description: "x" }]);
+  const index = buildSkillsCatalogue([...SKILLS, { name: "from-repo", sourcePath: outlier, description: "x" }]);
   assert.ok(index.includes(outlier), "outlier keeps its path");
 });
 
 test("a long description is truncated, a short one is left alone", () => {
-  const index = buildSkillsIndex(SKILLS);
+  const index = buildSkillsCatalogue(SKILLS);
   // The trigger ("Use this skill whenever building...") survives - that is the part that decides
   // whether an agent reaches for it.
   assert.match(index, /Use this skill whenever building, designing/);
@@ -54,30 +54,58 @@ test("a long description is truncated, a short one is left alone", () => {
   assert.ok(index.includes("Use this skill whenever writing code that reads an API key."), "short one is intact");
 });
 
-test("it tells the agent to match skills to the work without being asked", () => {
-  const index = buildSkillsIndex(SKILLS);
-  assert.match(index, /WITHOUT being asked/);
-  assert.match(index, /front end/i);
-  assert.match(index, /back end/i);
-  assert.match(index, /trading|algorithmic/i);
+test("the pointer tells the agent to match skills to the work without being asked", () => {
+  const pointer = buildSkillsPointer(SKILLS);
+  assert.match(pointer, /WITHOUT being asked/);
+  assert.match(pointer, /front end/i);
+  assert.match(pointer, /back end/i);
+  assert.match(pointer, /trading|algorithmic/i);
   // Reading all 96 would be its own kind of waste.
-  assert.match(index, /Do not read every skill/);
+  assert.match(pointer, /not all of them/);
+  // Every name rides along: recognising a relevant skill must not require opening a file first.
+  for (const s of SKILLS) assert.ok(pointer.includes(s.name), `${s.name} missing from the pointer`);
+});
+
+test("THE PROMPT NEVER CARRIES THE FULL CATALOGUE", () => {
+  // The bug this guards, in full: Codex takes its prompt as a positional argv argument and
+  // Copilot has no stdin channel at all, so both receive the prompt on the command line, which
+  // Windows caps at ~32KB. Inlining the ~20KB catalogue produced `spawn ENAMETOOLONG` and every
+  // Codex and Copilot turn died on the spot, while Claude, Gemini and Qwen - all of which use
+  // stdin - carried on working, which made it look like a provider problem rather than ours.
+  const many = Array.from({ length: 200 }, (_, i) => ({
+    name: `skill-${i}`,
+    sourcePath: `C:\\Users\\x\\.claude\\skills\\skill-${i}`,
+    description: "A description long enough to matter. ".repeat(12),
+  }));
+  const pointer = buildSkillsPointer(many);
+  const catalogue = buildSkillsCatalogue(many);
+
+  assert.ok(catalogue.length > 20000, "the catalogue really is large");
+  assert.ok(
+    pointer.length < 8000,
+    `the pointer must stay small for argv; was ${pointer.length} chars for ${many.length} skills`,
+  );
+  // The descriptions are the bulk, and they must live in the file, never in the prompt.
+  assert.ok(!pointer.includes("A description long enough to matter."), "descriptions leaked into the prompt");
+  assert.match(pointer, /\.solace-skills\.md/, "and it says where to read them");
 });
 
 test("no skills means no block at all, rather than an empty header", () => {
   // A machine with no skills installed should pay nothing for the feature existing.
-  assert.equal(buildSkillsIndex([]), "");
+  assert.equal(buildSkillsCatalogue([]), "");
+  assert.equal(buildSkillsPointer([]), "");
 });
 
 test("the count in the header is the real count, not a guess", () => {
-  assert.match(buildSkillsIndex(SKILLS), /2 of them/);
-  assert.match(buildSkillsIndex([SKILLS[0]]), /1 of them/);
+  assert.match(buildSkillsCatalogue(SKILLS), /\(2\)/);
+  assert.match(buildSkillsCatalogue([SKILLS[0]]), /\(1\)/);
+  assert.match(buildSkillsPointer(SKILLS), /2 are installed/);
 });
 
 test("newlines inside a description cannot break the list structure", () => {
   // Descriptions come from YAML frontmatter on disk and routinely wrap across lines; an
   // unflattened one would put half a blurb on its own line and read as a separate skill.
-  const index = buildSkillsIndex([
+  const index = buildSkillsCatalogue([
     { name: "wrapped", sourcePath: "/p", description: "first line\n  second line\n\tthird" },
   ]);
   const body = index.slice(index.indexOf("- wrapped"));

@@ -31,30 +31,30 @@ function harness() {
 test("the catalogue is sent on the first turn of a session", () => {
   const h = harness();
   const prompt = h.build("a1");
-  assert.match(prompt, /skills available to you/);
-  assert.match(prompt, /SKILL\.md/);
+  assert.match(prompt, /skills: \d+ are installed/);
+  assert.match(prompt, /\.solace-skills\.md/);
 });
 
 test("and NOT again once the agent has a session for that folder", () => {
   const h = harness();
-  assert.match(h.build("a1"), /skills available to you/);
+  assert.match(h.build("a1"), /skills: \d+ are installed/);
   // Exactly what a real first turn does: the provider reports its session id.
   h.runtimeOf("a1").sessions.set(sessionKey(process.cwd()), "sess-1");
-  assert.doesNotMatch(h.build("a1"), /skills available to you/);
+  assert.doesNotMatch(h.build("a1"), /skills: \d+ are installed/);
 });
 
 test("each agent is told independently", () => {
   const h = harness();
   h.runtimeOf("a1").sessions.set(sessionKey(process.cwd()), "sess-1");
-  assert.doesNotMatch(h.build("a1"), /skills available to you/);
-  assert.match(h.build("a2"), /skills available to you/, "codex has not been told yet");
+  assert.doesNotMatch(h.build("a1"), /skills: \d+ are installed/);
+  assert.match(h.build("a2"), /skills: \d+ are installed/, "codex has not been told yet");
 });
 
 test("forgetting the session means the next turn is told again", () => {
   // /reset exists so an agent starts genuinely cold; it must not start cold AND uninformed.
   const h = harness();
   h.runtimeOf("a1").sessions.set(sessionKey(process.cwd()), "sess-1");
-  assert.doesNotMatch(h.build("a1"), /skills available to you/);
+  assert.doesNotMatch(h.build("a1"), /skills: \d+ are installed/);
   h.manager.resetSession("a1");
-  assert.match(h.build("a1"), /skills available to you/);
+  assert.match(h.build("a1"), /skills: \d+ are installed/);
 });
