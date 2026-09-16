@@ -17,7 +17,7 @@ test("a trailing sentence period is not part of the handle", () => {
 });
 
 test("an email address still resolves to nobody", () => {
-  assert.deepEqual(parseMentions("mail me at kryhr@example.com", HANDLES), []);
+  assert.deepEqual(parseMentions("mail me at someone@example.com", HANDLES), []);
 });
 
 test("an unknown handle is not a mention, dotted or otherwise", () => {

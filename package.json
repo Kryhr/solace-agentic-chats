@@ -1,13 +1,17 @@
 {
   "name": "solace-agentic-chats",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Local-first hub where multiple AI coding agents (Claude, Codex, Gemini, Qwen, ...) work on the same project and can talk to each other.",
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
+    "//predev": "packages/server imports @solace/shared from its BUILT dist, so a clone that has never run a build cannot start the server: `npm run dev` died with MODULE_NOT_FOUND for @solace/shared while the web dev server came up fine, leaving a new user looking at a UI that could never reach a backend. npm runs predev automatically, so the one documented command now works on a fresh clone. It costs ~2s on every later start, which is the right trade against a broken first run.",
+    "predev": "npm run build --workspace=packages/shared",
     "dev": "concurrently -n server,web -c blue,green \"npm:server\" \"npm:web\"",
+    "//pretest": "Same reason as predev: the server test suite imports @solace/shared and mass-fails without dist, which reads as dozens of unrelated broken tests.",
+    "pretest": "npm run build --workspace=packages/shared",
     "build": "npm run build --workspace=packages/shared && npm run build --workspace=packages/server && npm run build --workspace=packages/web",
     "server": "npm run dev --workspace=packages/server",
     "web": "npm run dev --workspace=packages/web",

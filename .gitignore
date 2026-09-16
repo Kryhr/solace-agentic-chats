@@ -27,3 +27,8 @@ id_ed25519*
 # 21 of them here. Untracked is not enough on its own - a single `git add -A` would have
 # committed every one of them.
 .claude/worktrees/
+
+# Internal working notes and session handoffs. These carry personal context (machine
+# paths, account details, what the operator was doing) and are not part of the product.
+HANDOFF.md
+*.handoff.md
