@@ -225,8 +225,26 @@ export function buildCopilotArgs(opts: {
     // --effort/--reasoning-effort is a real flag with a documented choice list
     // (none/minimal/low/medium/high/xhigh/max); anything outside it is rejected at parse time,
     // so the values offered in modelCatalog.ts are exactly that list and nothing is invented.
-    ...(opts.effort ? ["--effort", opts.effort] : []),
+    //
+    // But it is NEVER sent with `auto`, which is the only model most plans can select. Two
+    // separate failures, both reproduced live:
+    //   copilot --model auto --effort medium
+    //     -> Error: Model "auto" does not support reasoning effort configuration.
+    //   copilot --model auto --effort none
+    //     -> 400 Unsupported value: 'none' is not supported with the
+    //        'mai-code-1-flash-2026-06-02' model.
+    // Auto picks its target model server-side, per turn, so there is no effort value that is
+    // safe to send: whatever it routes to decides which values it accepts, and we cannot know
+    // that before the request. Dropping the flag is the only correct behaviour, and it costs
+    // nothing - auto does its own effort selection.
+    ...(opts.effort && !isAutoModel(opts.model) ? ["--effort", opts.effort] : []),
   ];
+}
+
+/** Copilot's server-routed model. Compared case-insensitively and trimmed because it arrives
+ * from a stored agent config that a user (or an older build of this app) may have written. */
+function isAutoModel(model: string | undefined): boolean {
+  return (model ?? "").trim().toLowerCase() === "auto";
 }
 
 /**
@@ -409,6 +427,25 @@ export const copilotCliAdapter: ProviderAdapter = {
             }
             break;
           }
+          case "session.error": {
+            // A turn can fail INSIDE the JSONL stream with nothing on stderr at all. Observed
+            // live: `--model auto --effort none` routed to mai-code-1-flash, which rejected the
+            // effort value with a 400; the process exited 1, stderr was completely empty, and
+            // the only record of the failure was this event. The close handler reads stderr, so
+            // it had nothing to report - the turn simply produced no reply and no error, which
+            // reads as the agent ignoring you.
+            //
+            // (An earlier comment in this file claimed the stream carries no error event. That
+            // was wrong: it carries this one, and model.call_failure alongside it. Only this one
+            // is surfaced - call_failure repeats the same message in a rawer form, and emitting
+            // both would post the same failure to the chat twice.)
+            const message = typeof data.message === "string" ? data.message.trim() : "";
+            if (message) {
+              sawStreamError = true;
+              onEvent({ type: "error", message });
+            }
+            break;
+          }
           case "session.usage_checkpoint": {
             // The only place real token counts appear. Copilot nests them inside its prompt
             // cache bookkeeping, one entry per conversation per model; the main conversation's
@@ -432,6 +469,9 @@ export const copilotCliAdapter: ProviderAdapter = {
         }
       });
 
+      // Set when the JSONL stream itself reported the failure, so the non-zero exit below does
+      // not report the same thing a second time in different words.
+      let sawStreamError = false;
       let stderrBuffer = "";
       child.stderr!.on("data", (chunk) => {
         stderrBuffer += chunk.toString();
@@ -443,7 +483,7 @@ export const copilotCliAdapter: ProviderAdapter = {
         if (aborted) {
           // Why it was aborted is the caller's knowledge, not ours - see AdapterEvent.cancelled.
           onEvent({ type: "cancelled" });
-        } else if (code !== 0) {
+        } else if (code !== 0 && !sawStreamError) {
           // stderr is the only channel a failure can use: Copilot's JSONL stream carries no
           // error event at all, and on the auth path it emits no JSON whatsoever.
           const stderr = stderrBuffer.trim();

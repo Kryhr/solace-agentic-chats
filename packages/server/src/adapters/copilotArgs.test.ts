@@ -223,3 +223,29 @@ test("an empty account list is distinguishable from a populated one, so the fall
   assert.equal(parseCopilotBuiltInCatalog({ error: "not signed in" }).length, 0);
   assert.equal(parseCopilotBuiltInCatalog(null).length, 0);
 });
+
+test("reasoning effort is never sent with the auto model", () => {
+  // Both failures reproduced live against Copilot 1.0.84:
+  //   --model auto --effort medium -> Model "auto" does not support reasoning effort
+  //   --model auto --effort none   -> 400 'none' is not supported with 'mai-code-1-flash'
+  // Auto picks its target server-side per turn, so NO effort value is safe to send.
+  const args = buildCopilotArgs({ ...BASE, trustLevel: "manual", model: "auto", effort: "medium" });
+  assert.equal(args.includes("--effort"), false);
+  assert.equal(args.includes("medium"), false);
+  // The model itself is still sent - only the effort is dropped.
+  assert.equal(args[args.indexOf("--model") + 1], "auto");
+});
+
+test("auto is recognised regardless of casing or stray whitespace", () => {
+  for (const model of ["AUTO", " auto ", "Auto"]) {
+    const args = buildCopilotArgs({ ...BASE, trustLevel: "manual", model, effort: "high" });
+    assert.equal(args.includes("--effort"), false, `effort leaked through for ${JSON.stringify(model)}`);
+  }
+});
+
+test("reasoning effort is still sent for an explicitly chosen model", () => {
+  // Plans that allow per-model selection must keep the flag: dropping it everywhere would
+  // silently ignore a setting the user deliberately chose.
+  const args = buildCopilotArgs({ ...BASE, trustLevel: "manual", model: "gpt-5.4", effort: "high" });
+  assert.equal(args[args.indexOf("--effort") + 1], "high");
+});
