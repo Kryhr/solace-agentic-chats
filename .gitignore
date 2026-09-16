@@ -1,7 +1,29 @@
 node_modules/
 dist/
 *.tsbuildinfo
-.env
-.env.*
 *.log
 .DS_Store
+
+# Secrets. .env is the conventional one; the rest are belt-and-braces for anything
+# a contributor might reasonably create while wiring up their own machine.
+.env
+.env.*
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# Solace's own runtime state. These normally live in the workspace root (outside this
+# repo, under ~/Desktop/solace-workspace), but they are ignored here too so that pointing
+# SOLACE_WORKSPACE_ROOT at a checkout - which is exactly what a quick test does - cannot
+# commit somebody's agents, transcripts, or credential vault.
+.solace-state.json
+.solace-credentials.json
+.solace-skills.md
+.solace-skill-repos.json
+.solace-skill-repos/
+
+# Agent worktrees. Full checkouts created by background agents; they reached 1.1GB across
+# 21 of them here. Untracked is not enough on its own - a single `git add -A` would have
+# committed every one of them.
+.claude/worktrees/
