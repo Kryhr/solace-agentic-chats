@@ -1280,7 +1280,7 @@ body {
   background: var(--surface-1);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 5px 7px;
+  padding: var(--space-1) var(--space-2);
   resize: vertical;
 }
 
@@ -4286,7 +4286,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  padding: 6px 10px;
+  padding: var(--space-2) var(--space-3);
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -5006,4 +5006,52 @@ body {
 .stop-btn:focus-visible {
   outline: none;
   box-shadow: var(--ring);
+}
+
+/* ---- Connections embedded in Settings -----------------------------------
+   The panel is the same component as the sidebar's, so it arrives carrying rail
+   spacing. On a page it needs the section rhythm the rest of Settings uses:
+   related things (a row and the row under it) sit closer together than
+   unrelated ones (one group and the next), so the grouping is legible without
+   reading any of the labels. All values come from the --space-* scale. */
+.connections-embedded {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.connections-embedded-head {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.connections-embedded .connection-list {
+  display: flex;
+  flex-direction: column;
+  /* Tight: consecutive rows are the same kind of thing. */
+  gap: var(--space-2);
+}
+
+/* A section label is a new group, so it gets noticeably more room above it than
+   the gap between the rows it heads - that difference IS the grouping. */
+.connections-embedded .sidebar-section-label:not(:first-child) {
+  margin-top: var(--space-5);
+}
+
+/* On a page the rows have width to spend, so they get the same interior padding
+   as a settings card instead of the rail's tighter one. */
+.connections-embedded .provider-row {
+  padding: var(--space-3) var(--space-4);
+}
+
+/* The rail reserves 92px on the right for the status/Check swap and reclaims it
+   underneath. There is no such squeeze here, so neither is needed. */
+.connections-embedded .credential-row .provider-name {
+  padding-right: 0;
+}
+.connections-embedded .credential-row .credential-sub {
+  margin-right: 0;
+}
+.connections-embedded .credential-row .provider-actions {
+  position: static;
 }

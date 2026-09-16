@@ -450,7 +450,11 @@ export default function App() {
           {/* Every kind of connection - CLI agents, GitHub, local servers, hosted endpoints,
               deploy targets, vault entries - is one list behind one "Add connection", so no
               single kind reads as what Connections is for. See ConnectionsPanel.tsx. */}
-          <ConnectionsPanel />
+          {/* Only the things you glance at while working. Keys, SSH targets and vault entries
+              moved to Settings - they are set up once, they need room to show a host and a
+              label properly, and a 234px rail is the wrong place to keep a secrets list
+              permanently open. */}
+          <ConnectionsPanel sections={["cli", "github", "local-server", "hosted-api"]} />
 
         </div>
 

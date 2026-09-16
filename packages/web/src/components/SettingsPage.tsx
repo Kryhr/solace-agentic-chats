@@ -11,6 +11,7 @@ import { SETTING_SECTIONS } from "@solace/shared";
 import { fetchSettings, setProjectMembership, updateSettings } from "../api";
 import { ProviderIcon } from "./ProviderIcon";
 import { McpPanel } from "./McpPanel";
+import { ConnectionsPanel } from "./ConnectionsPanel";
 
 /**
  * Does this setting match what was typed in the filter box?
@@ -272,6 +273,19 @@ export function SettingsPage({
               </section>
             ))
           )}
+
+          {/* Keys, SSH deploy targets and vault entries. These were in the sidebar rail, where
+              a saved login had ~104px to render a label AND a service, and an SSH target could
+              not show its host without truncating it. They are configuration you set up once,
+              so they belong on a page with room, next to the other things you set up once. */}
+          <section className="settings-section">
+            <h3 className="settings-section-title">Keys &amp; secrets</h3>
+            <p className="settings-section-note">
+              SSH deploy targets, service logins and anything else an agent might need to sign in with. Values are
+              never shown in a list or in chat - use Reveal to read one back.
+            </p>
+            <ConnectionsPanel sections={["ssh", "vault"]} variant="page" />
+          </section>
 
           {/* MCP servers live here rather than in the sidebar. They were originally rendered
               beside Connections, in a 234px rail, where each tile had to fit a title, a

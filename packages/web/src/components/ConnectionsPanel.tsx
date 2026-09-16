@@ -206,7 +206,28 @@ function SectionHead({ id }: { id: ConnectorKindId }) {
   );
 }
 
-export function ConnectionsPanel() {
+/**
+ * Which groups this instance renders.
+ *
+ * The panel is mounted twice rather than duplicated. The sidebar shows the things you glance at
+ * while working - which CLIs are alive, is GitHub connected, is a local server up. Keys, SSH
+ * targets and vault entries moved to Settings: they are set up once, they need room to show a
+ * host and a label properly, and a narrow rail is the wrong place to keep somebody's secrets
+ * list permanently open.
+ */
+export type ConnectionSection = "cli" | "github" | "local-server" | "hosted-api" | "ssh" | "vault";
+
+const ALL_SECTIONS: ConnectionSection[] = ["cli", "github", "local-server", "hosted-api", "ssh", "vault"];
+
+export function ConnectionsPanel({
+  sections = ALL_SECTIONS,
+  variant = "rail",
+}: {
+  sections?: ConnectionSection[];
+  /** "page" drops the panel's own header and rail padding, for embedding in Settings. */
+  variant?: "rail" | "page";
+} = {}) {
+  const shows = (id: ConnectionSection) => sections.includes(id);
   const [statuses, setStatuses] = useState<ProviderStatus[] | null>(null);
   const [github, setGithub] = useState<GithubConnection | null>(null);
   const [credentials, setCredentials] = useState<CredentialMeta[] | null>(null);
@@ -393,20 +414,30 @@ export function ConnectionsPanel() {
   }
 
   return (
-    <section className="sidebar-group">
+    <section className={variant === "page" ? "connections-embedded" : "sidebar-group"}>
       {/* The primary action, at the top, beside the heading - not buried in whichever
-          sub-list happened to own it. */}
-      <div className="sidebar-section-label connections-head">
-        <span>Connections</span>
-        <button className="btn-ghost btn-xs add-connection-top" onClick={() => setShowAdd(true)}>
-          + Add connection
-        </button>
-      </div>
+          sub-list happened to own it. The embedded copy has a heading of its own from the
+          Settings section around it, so it only needs the button. */}
+      {variant === "rail" ? (
+        <div className="sidebar-section-label connections-head">
+          <span>Connections</span>
+          <button className="btn-ghost btn-xs add-connection-top" onClick={() => setShowAdd(true)}>
+            + Add connection
+          </button>
+        </div>
+      ) : (
+        <div className="connections-embedded-head">
+          <button className="btn-ghost btn-xs" onClick={() => setShowAdd(true)}>
+            + Add connection
+          </button>
+        </div>
+      )}
 
       <div className="connection-list">
         {/* --- CLI / subscription agents. First, because they are the point of the app. --- */}
-        <SectionHead id="cli" />
-        {statuses.map((s) => {
+        {shows("cli") && <SectionHead id="cli" />}
+        {shows("cli") &&
+          statuses.map((s) => {
           const state = stateOf(`cli:${s.provider}`);
           return (
             <div key={s.provider} className="provider-row credential-row is-testable">
@@ -432,8 +463,9 @@ export function ConnectionsPanel() {
         })}
 
         {/* --- GitHub. Detected all along, but until now it had no row here at all. --- */}
-        <SectionHead id="github" />
-        {github === null ? (
+        {shows("github") && <SectionHead id="github" />}
+        {shows("github") &&
+          (github === null ? (
           <div className="provider-hint connection-empty">Asking gh…</div>
         ) : (
           <div className="provider-row credential-row is-testable">
@@ -460,22 +492,37 @@ export function ConnectionsPanel() {
             )}
             {!github.authenticated && !github.fixCommand && github.fixHint && <div className="provider-hint">{github.fixHint}</div>}
           </div>
-        )}
+          ))}
 
         {/* --- Local model servers ------------------------------------------------------- */}
-        <SectionHead id="local-server" />
-        {credentials !== null && localServers.length === 0 && <div className="provider-hint connection-empty">None saved.</div>}
-        {localServers.map(endpointRow)}
+        {shows("local-server") && (
+          <>
+            <SectionHead id="local-server" />
+            {credentials !== null && localServers.length === 0 && (
+              <div className="provider-hint connection-empty">None saved.</div>
+            )}
+            {localServers.map(endpointRow)}
+          </>
+        )}
 
         {/* --- Hosted API endpoints ------------------------------------------------------ */}
-        <SectionHead id="hosted-api" />
-        {credentials !== null && hosted.length === 0 && <div className="provider-hint connection-empty">None saved.</div>}
-        {hosted.map(endpointRow)}
+        {shows("hosted-api") && (
+          <>
+            <SectionHead id="hosted-api" />
+            {credentials !== null && hosted.length === 0 && (
+              <div className="provider-hint connection-empty">None saved.</div>
+            )}
+            {hosted.map(endpointRow)}
+          </>
+        )}
 
         {/* --- Deploy targets ------------------------------------------------------------ */}
-        <SectionHead id="ssh" />
-        {credentials !== null && sshTargets.length === 0 && <div className="provider-hint connection-empty">None saved.</div>}
-        {sshTargets.map((c) => {
+        {shows("ssh") && <SectionHead id="ssh" />}
+        {shows("ssh") && credentials !== null && sshTargets.length === 0 && (
+          <div className="provider-hint connection-empty">None saved.</div>
+        )}
+        {shows("ssh") &&
+          sshTargets.map((c) => {
           const state = stateOf(`cred:${c.id}`);
           return (
             <div key={c.id} className="provider-row credential-row is-ssh is-testable">
@@ -516,14 +563,15 @@ ${c.notes}` : ""}`
         })}
 
         {/* --- Logins & secrets. The one kind with no honest check. ---------------------- */}
-        <SectionHead id="vault" />
-        {credentials !== null && logins.length === 0 && secrets.length === 0 && (
+        {shows("vault") && <SectionHead id="vault" />}
+        {shows("vault") && credentials !== null && logins.length === 0 && secrets.length === 0 && (
           <div className="provider-hint connection-empty">
             Nothing saved yet. Anything an agent might need to sign into something - a service password, a token, a recovery code
             - can live here, and you can read it back with Reveal.
           </div>
         )}
-        {logins.map((c) => (
+        {shows("vault") &&
+          logins.map((c) => (
           <div key={c.id} className="provider-row credential-row is-vault">
             <span className="provider-glyph vault-glyph" aria-hidden="true">
               LOG
@@ -544,7 +592,8 @@ ${c.notes}` : ""}`
             </span>
           </div>
         ))}
-        {secrets.map((c) => (
+        {shows("vault") &&
+          secrets.map((c) => (
           <div key={c.id} className="provider-row credential-row is-vault">
             <span className="provider-glyph vault-glyph" aria-hidden="true">
               SEC
