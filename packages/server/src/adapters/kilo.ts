@@ -411,7 +411,10 @@ export const kiloAdapter: ProviderAdapter = {
               // step_start and anything else Kilo adds later: nothing to report. No "model"
               // event is emitted because no event in the stream was observed carrying a
               // resolved model id, and inventing one from the --model argument would just echo
-              // our own request back as if the provider had confirmed it.
+              // our own request back as if the provider had confirmed it. The event is still
+              // emitted as a heartbeat: the idle watchdog only hears about adapter events, so a
+              // silently-dropped line reads to it as a hung process.
+              onEvent({ type: "heartbeat" });
               break;
           }
         } catch {

@@ -340,11 +340,15 @@ export const opencodeAdapter: ProviderAdapter = {
               break;
             }
             default:
-              // step_start and anything else OpenCode adds later: nothing to report. No "model"
-              // event is emitted for this provider because no event in the stream carries the
-              // resolved model id - checked across real turns - and inventing one from the
-              // --model argument would just be echoing our own request back as if the provider
-              // had confirmed it.
+              // step_start and anything else OpenCode adds later carry nothing to SHOW - but they
+              // are proof the CLI is alive, and that has to be said out loud. OpenCode emits
+              // step_start and then waits on the model, which on a long resumed session can be
+              // minutes; dropping the line silently let the idle watchdog conclude the process
+              // had hung and kill a turn that was working. No "model" event is emitted for this
+              // provider because no event in the stream carries the resolved model id - checked
+              // across real turns - and inventing one from the --model argument would just be
+              // echoing our own request back as if the provider had confirmed it.
+              onEvent({ type: "heartbeat" });
               break;
           }
         } catch {

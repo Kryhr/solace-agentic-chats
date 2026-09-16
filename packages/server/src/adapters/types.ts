@@ -1,6 +1,23 @@
 import type { ProviderId, ProviderRateLimit, TrustLevel, TurnUsage } from "@solace/shared";
 
 export type AdapterEvent =
+  /**
+   * The CLI produced SOMETHING - a line, a frame, a byte - that carries no reportable content.
+   *
+   * This exists purely as a liveness signal, and it is not cosmetic. The stuck-turn watchdog in
+   * agentManager treats silence as the evidence a process has hung, and it only ever hears about
+   * an adapter EVENT. So an adapter that reads a line and decides there is nothing worth
+   * reporting was, without meaning to, telling the watchdog the process was dead.
+   *
+   * That really happened: OpenCode emits `step_start` and then waits on the model, sometimes for
+   * minutes on a long resumed session. The adapter dropped `step_start` on the floor, so a
+   * perfectly healthy turn was killed at the five-minute idle limit, restarted, and killed
+   * again. Every adapter that discards a line MUST emit this instead of nothing.
+   *
+   * It carries no payload and must have no effect beyond resetting that timer - it is not shown,
+   * not logged as progress, and must never be mistaken for the agent having said something.
+   */
+  | { type: "heartbeat" }
   | { type: "text"; text: string }
   /** The model's own thinking, where the provider emits it as a distinct item. Deliberately NOT
    * a "text" event: reasoning used to arrive as plain unmarked text, indistinguishable from an

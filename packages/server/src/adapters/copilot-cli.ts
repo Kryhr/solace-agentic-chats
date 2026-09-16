@@ -487,6 +487,10 @@ export const copilotCliAdapter: ProviderAdapter = {
             break;
           }
           default:
+            // Nothing to SHOW, but the line is proof the CLI is alive. The idle watchdog only
+            // hears about adapter events, so dropping a line silently tells it the process has
+            // hung - which is how a healthy but quiet turn gets killed at the idle limit.
+            onEvent({ type: "heartbeat" });
             break;
         }
       });

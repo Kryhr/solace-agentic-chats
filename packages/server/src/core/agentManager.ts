@@ -2327,6 +2327,10 @@ ${text}` : text;
         signal: controller.signal,
         onEvent: (event) => {
           noteActivity();
+          // A heartbeat is ONLY the noteActivity() above. It exists so an adapter can say "the
+          // CLI is alive" without that being mistaken for the agent having produced something,
+          // so it must return before any of the handling below.
+          if (event.type === "heartbeat") return;
           if (event.type === "text" && event.text.trim()) {
             // Group chat is a coordination channel, not a transcript: it only ever sees an
             // agent's final answer for the turn, posted once the turn completes below. Every
