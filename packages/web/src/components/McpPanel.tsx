@@ -224,7 +224,18 @@ export function McpPanel({ agents }: { agents: AgentConfig[] }) {
       {loading ? (
         <p className="mcp-empty">Loading…</p>
       ) : servers.length === 0 ? (
-        <p className="mcp-empty">No MCP servers registered. Your agents still have their CLI's own tools.</p>
+        <div className="mcp-empty">
+          <p>No MCP servers registered yet. Your agents still have their own CLI&apos;s built-in tools.</p>
+          {/* An empty state that only states a fact leaves the reader to go and find the control.
+              The one button that does something here belongs in it. */}
+          <button className="mcp-primary" onClick={() => openDraft({ ...EMPTY_DRAFT })}>
+            Add a server
+          </button>
+          <p className="mcp-empty-hint">
+            Any MCP server works — all it needs is a name and the command that starts it. Or pick one from the
+            suggestions below.
+          </p>
+        </div>
       ) : (
         <ul className="mcp-list">
           {servers.map((server) => {
@@ -275,8 +286,14 @@ export function McpPanel({ agents }: { agents: AgentConfig[] }) {
 
       <h3 className="mcp-section-head">Suggested</h3>
       <p className="mcp-sub">
-        Each of these was checked against the project's own docs on 15 September 2026. Anything that could not be confirmed
-        was left out rather than guessed.
+        Each of these was checked against the project&apos;s own docs on 15 September 2026. Anything that could not be
+        confirmed was left out rather than guessed. These are a starting point, not a limit —{" "}
+        {/* Says outright that the catalogue is not the whole world. Without this the ten tiles read as
+            the set of servers this app supports, which is not what they are. */}
+        <button className="mcp-inline-link" onClick={() => openDraft({ ...EMPTY_DRAFT })}>
+          add any other MCP server
+        </button>{" "}
+        with its name and command.
       </p>
       <ul className="mcp-catalog">
         {catalog.map((entry) => (
