@@ -60,8 +60,10 @@ async function main() {
   const bus = new ChatBus(persisted.history);
   const approvals = new ApprovalRegistry();
   const archive = new ArchiveStore(persisted.archives);
-  const chats = new ChatStore(persisted.chats, persisted.projects);
+  // settings first: ChatStore reads agentsFollowProjects live, so it needs the same store
+  // object every other consumer has rather than a copy taken at boot.
   const settings = new SettingsStore(persisted.settings);
+  const chats = new ChatStore(persisted.chats, persisted.projects, settings);
   const agents = new AgentManager(
     bus,
     chats,
@@ -135,6 +137,31 @@ async function main() {
       return { error: (err as Error).message };
     }
   });
+
+  /**
+   * Add or remove one agent from one project's roster, for when agents otherwise follow the
+   * user between projects. Nothing on disk changes and the agent itself is untouched - this
+   * only decides whether that project's chats reach it.
+   */
+  app.patch<{ Params: { id: string }; Body: { agentId?: string; member?: boolean } }>(
+    "/api/projects/:id/agents",
+    async (req, reply) => {
+      const { agentId, member } = req.body ?? {};
+      if (typeof agentId !== "string" || !agentId || typeof member !== "boolean") {
+        reply.code(400);
+        return { error: "agentId (string) and member (boolean) are required" };
+      }
+      if (!agents.listAgents().some((a) => a.id === agentId)) {
+        reply.code(404);
+        return { error: "agent not found" };
+      }
+      if (!chats.setProjectMembership(req.params.id, agentId, member)) {
+        reply.code(404);
+        return { error: "project not found" };
+      }
+      return { ok: true, projects: chats.listProjects() };
+    },
+  );
 
   /**
    * Unlink a project. This deletes NOTHING on disk - not the folder, not a file in it - and the

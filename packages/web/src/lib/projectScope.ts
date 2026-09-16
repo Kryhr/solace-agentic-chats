@@ -18,9 +18,24 @@ export function agentInProject(cwd: string, projectPath: string): boolean {
   return a === b || a.startsWith(b);
 }
 
-/** The agents a project scopes to. No project selected means the whole roster. */
-export function agentsInScope(agents: AgentConfig[], project: ProjectMeta | undefined): AgentConfig[] {
+/**
+ * The agents a project scopes to. No project selected means the whole roster.
+ *
+ * `follow` mirrors the server's agentsFollowProjects setting (server/core/chatStore.ts
+ * #agentsForChat): when agents follow the user, every agent is in every project except the ones
+ * explicitly removed from this one. This MUST agree with the server - if it diverges, the
+ * sidebar shows an agent that a message in that chat cannot actually reach, or hides one it can.
+ */
+export function agentsInScope(
+  agents: AgentConfig[],
+  project: ProjectMeta | undefined,
+  follow = true,
+): AgentConfig[] {
   if (!project) return agents;
+  if (follow) {
+    const excluded = new Set(project.excludedAgentIds ?? []);
+    return agents.filter((a) => !excluded.has(a.id));
+  }
   return agents.filter((a) => agentInProject(a.cwd, project.path));
 }
 

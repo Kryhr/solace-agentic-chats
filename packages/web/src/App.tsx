@@ -110,7 +110,13 @@ export default function App() {
     [projects, activeProjectId],
   );
   const scopedChats = useMemo(() => chatsInScope(chats, activeProject), [chats, activeProject]);
-  const scopedAgents = useMemo(() => agentsInScope(agents, activeProject), [agents, activeProject]);
+  // settings can be null until the first fetch lands; default to following, which is the
+  // server's own default, so the sidebar never briefly shows an empty project roster.
+  const agentsFollow = settings?.agentsFollowProjects ?? true;
+  const scopedAgents = useMemo(
+    () => agentsInScope(agents, activeProject, agentsFollow),
+    [agents, activeProject, agentsFollow],
+  );
 
   /** The chat actually on screen. A hash pointing at a chat that has since been archived falls
    * back to the first in scope rather than rendering a blank page with no way out. */
@@ -138,8 +144,8 @@ export default function App() {
     [projects, activeChat],
   );
   const activeChatAgents = useMemo(
-    () => (activeChat ? agentsInScope(agents, activeChatProject) : []),
-    [agents, activeChat, activeChatProject],
+    () => (activeChat ? agentsInScope(agents, activeChatProject, agentsFollow) : []),
+    [agents, activeChat, activeChatProject, agentsFollow],
   );
 
   const history = useMemo(() => {
@@ -413,7 +419,9 @@ export default function App() {
             {scopedAgents.length === 0 ? (
               <div className="sidebar-empty">
                 {activeProject
-                  ? `No agents working in ${activeProject.name}. An agent belongs to the project its working directory is in - add one pointed at this folder.`
+                  ? agentsFollow
+                    ? `No agents yet. Add one and it will be in ${activeProject.name} and every other project.`
+                    : `No agents working in ${activeProject.name}. Agents are pinned to their own folder right now, so add one pointed at this folder - or turn on "Agents follow you between projects" in Settings.`
                   : "No agents yet. Add one to start a session."}
               </div>
             ) : (
@@ -483,7 +491,14 @@ export default function App() {
       ) : view.type === "skills" ? (
         <SkillsPage onBack={() => goToChat()} />
       ) : view.type === "settings" ? (
-        <SettingsPage settings={settings} onSettingsChange={setSettings} onBack={() => goToChat()} />
+        <SettingsPage
+          settings={settings}
+          onSettingsChange={setSettings}
+          agents={agents}
+          projects={projects}
+          onProjectsChange={setProjects}
+          onBack={() => goToChat()}
+        />
       ) : hubAgent ? (
         <AgentHubPage
           agent={hubAgent}

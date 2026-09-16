@@ -21,10 +21,27 @@ export interface AppSettings {
    * it and how, which is not a thing to do to somebody without being asked.
    */
   handoverOnUsageExhausted: boolean;
+
+  /**
+   * Your agents follow you into whatever project you are working in, instead of each agent
+   * belonging to exactly one folder forever.
+   *
+   * On by default. Membership used to be derived purely from an agent's working directory, so
+   * creating a project always produced an empty roster and every agent had to be added again -
+   * and a chat filed under that project could reach nobody at all. With this on, an agent runs
+   * its CLI in whichever project's folder the chat belongs to, and keeps a SEPARATE provider
+   * conversation per folder, so switching projects never resumes one project's session inside
+   * another's directory.
+   *
+   * Turning it off restores the old rule: an agent belongs to the project its own working
+   * directory sits in, and nowhere else.
+   */
+  agentsFollowProjects: boolean;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   handoverOnUsageExhausted: false,
+  agentsFollowProjects: true,
 };
 
 /** What a setting looks like on the Settings page. Only booleans exist so far; `kind` is here
@@ -48,6 +65,17 @@ export const SETTING_DEFINITIONS: SettingDefinition[] = [
       "agent pointed at a different project would do confident work on the wrong codebase. The receiving " +
       "agent runs at its own permission level, every handover is announced in the chat, and work is never " +
       "passed on more than twice. When nobody is eligible, the work waits and says so.",
+  },
+  {
+    key: "agentsFollowProjects",
+    kind: "toggle",
+    label: "Agents follow you between projects",
+    description:
+      "Your agents appear in every project instead of belonging to one folder forever, and each one " +
+      "works in whichever project's folder the chat belongs to. Each agent keeps a separate memory per " +
+      "project, so switching never carries one project's conversation into another's directory. You can " +
+      "still remove specific agents from a specific project below. Turn this off and an agent belongs " +
+      "only to the project its own working directory is inside - which means a new project starts empty.",
   },
 ];
 

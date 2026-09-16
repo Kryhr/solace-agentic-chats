@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import type { AppSettings, SettingDefinition } from "@solace/shared";
-import { fetchSettings, updateSettings } from "../api";
+import type { AgentConfig, AppSettings, ProjectMeta, SettingDefinition } from "@solace/shared";
+import { fetchSettings, setProjectMembership, updateSettings } from "../api";
+import { ProviderIcon } from "./ProviderIcon";
 
 /**
  * App settings, rendered from the schema the server serves rather than from JSX written per
@@ -14,14 +15,21 @@ import { fetchSettings, updateSettings } from "../api";
 export function SettingsPage({
   settings,
   onSettingsChange,
+  agents,
+  projects,
+  onProjectsChange,
   onBack,
 }: {
   /** The live value, kept in App so a change made in another tab (settings:updated over the
    * socket) updates this page while it is open. */
   settings: AppSettings | null;
   onSettingsChange: (settings: AppSettings) => void;
+  agents: AgentConfig[];
+  projects: ProjectMeta[];
+  onProjectsChange: (projects: ProjectMeta[]) => void;
   onBack: () => void;
 }) {
+  const [memberBusy, setMemberBusy] = useState<string | null>(null);
   const [definitions, setDefinitions] = useState<SettingDefinition[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -53,6 +61,19 @@ export function SettingsPage({
       setError((err as Error).message);
     } finally {
       setSavingKey(null);
+    }
+  };
+
+  const handleMember = async (project: ProjectMeta, agent: AgentConfig, member: boolean) => {
+    const busyKey = `${project.id}:${agent.id}`;
+    setMemberBusy(busyKey);
+    setError(null);
+    try {
+      onProjectsChange(await setProjectMembership(project.id, agent.id, member));
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setMemberBusy(null);
     }
   };
 
@@ -113,6 +134,62 @@ export function SettingsPage({
                 </button>
               </div>
             ))
+          )}
+
+          {/* Per-project rosters. Only meaningful while agents follow the user: with the setting
+              off, membership is decided by each agent's own working directory and there is
+              nothing here to choose. */}
+          {settings?.agentsFollowProjects && (
+            <section className="settings-section">
+              <h3 className="settings-section-title">Who works on each project</h3>
+              <p className="settings-section-note">
+                Every agent is in every project by default. Switch one off to keep it out of that project&apos;s
+                chats - it stays in your other projects, and nothing on disk changes.
+              </p>
+
+              {projects.length === 0 ? (
+                <div className="settings-section-empty">
+                  No projects yet. Create one from the sidebar and your agents will already be in it.
+                </div>
+              ) : agents.length === 0 ? (
+                <div className="settings-section-empty">No agents yet.</div>
+              ) : (
+                projects.map((project) => {
+                  const excluded = new Set(project.excludedAgentIds ?? []);
+                  return (
+                    <div key={project.id} className="project-members">
+                      <div className="project-members-head">
+                        <span className="project-members-name">{project.name}</span>
+                        <span className="project-members-count">
+                          {agents.length - excluded.size} of {agents.length}
+                        </span>
+                      </div>
+                      <div className="project-members-list">
+                        {agents.map((agent) => {
+                          const member = !excluded.has(agent.id);
+                          const busyKey = `${project.id}:${agent.id}`;
+                          return (
+                            <button
+                              key={agent.id}
+                              type="button"
+                              role="switch"
+                              aria-checked={member}
+                              aria-label={`${agent.handle} in ${project.name}`}
+                              className={`member-chip ${member ? "is-member" : ""}`}
+                              disabled={memberBusy === busyKey}
+                              onClick={() => void handleMember(project, agent, !member)}
+                            >
+                              <ProviderIcon provider={agent.provider} size={16} />
+                              <span className="member-chip-handle">{agent.handle}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </section>
           )}
         </div>
       </div>

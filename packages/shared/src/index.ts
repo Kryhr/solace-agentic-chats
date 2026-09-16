@@ -447,6 +447,16 @@ export interface ProjectMeta {
   name: string;
   path: string;
   createdAt: string;
+  /**
+   * Agents deliberately removed from this project by the user, when agents otherwise follow
+   * them between projects (see AppSettings#agentsFollowProjects).
+   *
+   * An EXCLUDE list rather than an include list, on purpose: the default has to be "every agent
+   * is here", including agents added long after this project was created. An include list would
+   * silently leave every new agent out of every existing project, which is the empty-roster
+   * problem this setting exists to fix.
+   */
+  excludedAgentIds?: string[];
 }
 
 export type ChatChannel = { chatId: string } | { agentId: string };

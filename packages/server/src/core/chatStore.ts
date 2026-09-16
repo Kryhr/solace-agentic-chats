@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { nanoid } from "nanoid";
-import { LEGACY_CHAT_ID, type AgentConfig, type ChatMeta, type ProjectMeta } from "@solace/shared";
+import { DEFAULT_APP_SETTINGS, LEGACY_CHAT_ID, type AgentConfig, type ChatMeta, type ProjectMeta } from "@solace/shared";
+import type { SettingsStore } from "./settingsStore";
 import { createProject, listProjects } from "./workspace";
 
 /**
@@ -48,9 +49,59 @@ export class ChatStore {
   /** Set by index.ts, to persist and to broadcast the new roster. */
   onChange: (() => void) | null = null;
 
-  constructor(chats: ChatMeta[] = [], projects: ProjectMeta[] = []) {
+  /**
+   * Read live rather than copied at boot, so a setting changed in one tab governs a turn that
+   * is about to start. Optional because every test that only exercises chat bookkeeping should
+   * not have to build a SettingsStore; absent means the documented defaults.
+   */
+  private settings?: SettingsStore;
+
+  constructor(chats: ChatMeta[] = [], projects: ProjectMeta[] = [], settings?: SettingsStore) {
     this.chats = chats;
     this.projects = projects;
+    this.settings = settings;
+  }
+
+  private agentsFollow(): boolean {
+    return this.settings?.get().agentsFollowProjects ?? DEFAULT_APP_SETTINGS.agentsFollowProjects;
+  }
+
+  /** The project a chat is filed under, or undefined for an unfiled chat or a dangling id. */
+  projectForChat(chatId: string): ProjectMeta | undefined {
+    const chat = this.getChat(chatId);
+    if (!chat?.projectId) return undefined;
+    return this.projects.find((p) => p.id === chat.projectId);
+  }
+
+  /**
+   * Where an agent's CLI should actually run for a turn replying into this chat.
+   *
+   * With agentsFollowProjects on, that is the chat's project folder - the agent follows the
+   * user into the project rather than being stuck in the one folder it was created against.
+   * Falls back to the agent's own cwd for an unfiled chat, an unknown project, a project whose
+   * folder has gone missing, or when the setting is off. Never returns a path that does not
+   * exist, because handing a CLI a missing cwd fails in a way that reads like the agent broke.
+   */
+  workingDirectoryFor(agent: AgentConfig, chatId: string | undefined): string {
+    if (!chatId || !this.agentsFollow()) return agent.cwd;
+    const project = this.projectForChat(chatId);
+    if (!project || !existsSync(project.path)) return agent.cwd;
+    if ((project.excludedAgentIds ?? []).includes(agent.id)) return agent.cwd;
+    return project.path;
+  }
+
+  /** Add or remove an agent from a project's roster. Returns false for an unknown project. */
+  setProjectMembership(projectId: string, agentId: string, member: boolean): boolean {
+    const project = this.projects.find((p) => p.id === projectId);
+    if (!project) return false;
+    const excluded = new Set(project.excludedAgentIds ?? []);
+    if (member) excluded.delete(agentId);
+    else excluded.add(agentId);
+    // Stored only when non-empty, so an untouched project keeps the shape it has always had and
+    // a state file written by an older build round-trips unchanged.
+    project.excludedAgentIds = excluded.size > 0 ? [...excluded] : undefined;
+    this.onChange?.();
+    return true;
   }
 
   listChats(): ChatMeta[] {
@@ -122,6 +173,9 @@ export class ChatStore {
     if (existingLink) return existingLink;
     const onDisk = listProjects().find((p) => p.name.toLowerCase() === trimmed.toLowerCase());
     const info = onDisk ?? createProject(trimmed);
+    // No excludedAgentIds: a brand-new project starts with the WHOLE roster, which is the
+    // entire point - creating a project used to produce an empty one and a chat that could
+    // reach nobody.
     const project: ProjectMeta = { id: nanoid(), name: info.name, path: info.path, createdAt: new Date().toISOString() };
     this.projects.push(project);
     this.onChange?.();
@@ -160,6 +214,13 @@ export class ChatStore {
     // A project whose folder has been moved or unmounted must not silently mean "nobody",
     // which would look exactly like agents ignoring the user.
     if (!project || !existsSync(project.path)) return agents;
+    // Agents follow the user: every agent is in every project unless removed from this one by
+    // hand. The old cwd-containment rule below is what made a new project unreachable - the
+    // folder is new, so nothing is inside it, so the chat filed under it reached zero agents.
+    if (this.agentsFollow()) {
+      const excluded = new Set(project.excludedAgentIds ?? []);
+      return agents.filter((a) => !excluded.has(a.id));
+    }
     return agents.filter((a) => agentInProject(a.cwd, project.path));
   }
 

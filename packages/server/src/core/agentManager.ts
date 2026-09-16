@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 import { nanoid } from "nanoid";
 import {
   isChatChannel,
@@ -124,9 +125,16 @@ interface AgentRuntime {
    * which is more specific than the configured alias ("sonnet" names more than one real model).
    * Display only - never written back into config, which is the user's choice, not ours. */
   lastResolvedModel?: string;
-  /** The provider CLI's own session id for this agent's ongoing conversation. Undefined means
-   * the next turn starts cold. */
-  sessionId?: string;
+  /**
+   * The provider CLI's own session ids for this agent's ongoing conversations, keyed by the
+   * working directory the conversation happened in (normalised, see sessionKey).
+   *
+   * A map rather than one id because agents now follow the user between projects: the same
+   * agent legitimately has a conversation going in two different folders, and resuming one
+   * inside the other would drop the CLI into an unrelated codebase's context while sounding
+   * completely sure of itself. An absent entry means the next turn in that folder starts cold.
+   */
+  sessions: Map<string, string>;
   /** The roster as it was last described to this agent, so the context block is re-sent when it
    * actually changed rather than on every single message. */
   lastRosterSignature?: string;
@@ -185,6 +193,16 @@ interface AgentRuntime {
  * as if the provider had failed. "Build this site" is exactly the kind of ask this app exists
  * for, and those take longer than fifteen minutes.
  */
+/**
+ * The key an agent's provider session is stored under: its working directory, normalised the
+ * same way chatStore.ts normalises paths (resolved, case-folded, no trailing separator).
+ * Windows hands us the same folder as both "C:\x\y" and "c:/x/y", and two spellings of one
+ * directory must not mean two cold conversations.
+ */
+export function sessionKey(cwd: string): string {
+  return resolve(cwd).toLowerCase().replace(/[\/]+$/, "");
+}
+
 export const MAX_TURN_MS = 2 * 60 * 60 * 1000;
 
 /**
@@ -471,6 +489,11 @@ export const MAX_HANDOVERS = 2;
  * pointed at another project does not produce a slower answer - it produces confident, wrong
  * work in somebody else's repository, which is worse than the task simply waiting.
  *
+ * `cwdOf` is how that directory is resolved, because with agents following the user between
+ * projects an agent's EFFECTIVE directory for a turn is the chat's project folder, not the
+ * folder it was created against. Defaults to the stored cwd so a caller that has no chat in
+ * hand (and every existing test) gets the original rule unchanged.
+ *
  * Also excluded: the failing agent itself, and anyone this work has already been through (an
  * agent that just ran out of usage will still be out of usage), so a chain cannot cycle.
  *
@@ -478,10 +501,15 @@ export const MAX_HANDOVERS = 2;
  * of ones that cannot - a `plan` agent is a legal recipient (it may be all there is), but it is
  * the last resort rather than the first pick.
  */
-export function eligibleHandoverAgents(from: AgentConfig, roster: AgentConfig[], turn: QueuedTurn): AgentConfig[] {
+export function eligibleHandoverAgents(
+  from: AgentConfig,
+  roster: AgentConfig[],
+  turn: QueuedTurn,
+  cwdOf: (agent: AgentConfig) => string = (a) => a.cwd,
+): AgentConfig[] {
   const alreadyTried = new Set(turn.handover?.agentIds ?? [from.id]);
   alreadyTried.add(from.id);
-  const eligible = roster.filter((a) => !alreadyTried.has(a.id) && sameWorkingDirectory(a.cwd, from.cwd));
+  const eligible = roster.filter((a) => !alreadyTried.has(a.id) && sameWorkingDirectory(cwdOf(a), cwdOf(from)));
   const canWrite = (a: AgentConfig) => (a.trustLevel === "plan" ? 1 : 0);
   return eligible.sort((a, b) => canWrite(a) - canWrite(b));
 }
@@ -630,6 +658,7 @@ export class AgentManager {
     for (const config of initialAgents) {
       this.agents.set(config.id, {
         config,
+        sessions: new Map(),
         status: "idle",
         busy: false,
         queue: [],
@@ -649,8 +678,11 @@ export class AgentManager {
     for (const saved of initialSessions) {
       const runtime = this.agents.get(saved.agentId);
       if (!runtime) continue;
-      if (runtime.config.cwd !== saved.cwd || runtime.config.provider !== saved.provider) continue;
-      runtime.sessionId = saved.sessionId;
+      // Sessions are keyed by the directory they happened in, so one saved per folder is
+      // restored rather than the last one written winning. A provider change still discards
+      // them all: the id belongs to that CLI's own store.
+      if (runtime.config.provider !== saved.provider) continue;
+      runtime.sessions.set(sessionKey(saved.cwd), saved.sessionId);
     }
     for (const saved of initialQueues) {
       const runtime = this.agents.get(saved.agentId);
@@ -693,14 +725,15 @@ export class AgentManager {
   getPersistableSessions(): PersistedAgentSession[] {
     const out: PersistedAgentSession[] = [];
     for (const runtime of this.agents.values()) {
-      if (!runtime.sessionId) continue;
-      out.push({
-        agentId: runtime.config.id,
-        provider: runtime.config.provider,
-        cwd: runtime.config.cwd,
-        sessionId: runtime.sessionId,
-        updatedAt: new Date().toISOString(),
-      });
+      for (const [cwd, sessionId] of runtime.sessions) {
+        out.push({
+          agentId: runtime.config.id,
+          provider: runtime.config.provider,
+          cwd,
+          sessionId,
+          updatedAt: new Date().toISOString(),
+        });
+      }
     }
     return out;
   }
@@ -724,7 +757,15 @@ export class AgentManager {
   }
 
   addAgent(config: AgentConfig) {
-    this.agents.set(config.id, { config, status: "idle", busy: false, queue: [], pendingInbound: [], totalUsage: {} });
+    this.agents.set(config.id, {
+      config,
+      sessions: new Map(),
+      status: "idle",
+      busy: false,
+      queue: [],
+      pendingInbound: [],
+      totalUsage: {},
+    });
     this.bus.emitEvent({ type: "agent:added", payload: config });
     this.emitStatus(config.id);
     this.onChange?.();
@@ -764,8 +805,11 @@ export class AgentManager {
    */
   resetSession(agentId: string): boolean {
     const runtime = this.agents.get(agentId);
-    if (!runtime?.sessionId) return false;
-    runtime.sessionId = undefined;
+    // Forgets every folder's conversation, not just the current one: /reset means "start cold",
+    // and leaving another project's session behind would make the next switch resume context
+    // the user just asked to be rid of.
+    if (!runtime || runtime.sessions.size === 0) return false;
+    runtime.sessions.clear();
     runtime.lastRosterSignature = undefined;
     this.onChange?.();
     return true;
@@ -1176,7 +1220,9 @@ export class AgentManager {
     // A hub message used to go through with no wrapper at all, so the same agent answered in
     // one voice in a chat and its provider's default voice here. Sent once per session, on the
     // same rule as the chat context block.
-    const needsStyle = !runtime.sessionId;
+    // A hub turn has no chat and therefore no project, so it runs in the agent's own folder;
+    // ask that folder's conversation whether the house style has been sent yet.
+    const needsStyle = !runtime.sessions.has(sessionKey(runtime.config.cwd));
     const prompt = needsStyle ? `[how to answer here]
 ${HOUSE_STYLE}
 
@@ -1215,7 +1261,8 @@ ${text}` : text;
     // project, and states outright that the tool's own name has nothing to do with it.
     const identity =
       `[group context: you are "${self.handle}", one of several AI coding agents in a shared group chat. ` +
-      `You are working on the project in your working directory (${self.cwd}) - that project is the job. ` +
+      `You are working on the project in your working directory (${this.chats.workingDirectoryFor(self, chatId)}) - ` +
+      `that project is the job. ` +
       `This chat is only the tool you and the other agents are talking through; its name, branding and purpose ` +
       `are NOT part of what you are building, so never borrow them for names, copy, or design decisions. ` +
       `Don't claim something is running, deployed, or "live" unless you've actually verified it yourself just now ` +
@@ -1496,11 +1543,13 @@ ${text}` : text;
     const reachable = isChatChannel(turn.replyChannel)
       ? this.chats.agentsForChat(turn.replyChannel.chatId, roster)
       : roster;
-    const candidates = eligibleHandoverAgents(from, reachable, turn);
+    const handoverChatId = isChatChannel(turn.replyChannel) ? turn.replyChannel.chatId : undefined;
+    const cwdOf = (a: AgentConfig) => this.chats.workingDirectoryFor(a, handoverChatId);
+    const candidates = eligibleHandoverAgents(from, reachable, turn, cwdOf);
 
     if (candidates.length === 0) {
       say(
-        `@${from.handle} is out of usage and no other agent works in ${from.cwd}, so this work is waiting ` +
+        `@${from.handle} is out of usage and no other agent works in ${cwdOf(from)}, so this work is waiting ` +
           `rather than being handed to an agent pointed at a different project - that would mean confident ` +
           `changes in the wrong codebase.${resetNote} Waiting: "${describeWork(turn)}"`,
       );
@@ -1528,7 +1577,7 @@ ${text}` : text;
     const whenResets = resetAt ? ` (its limit resets at ${resetAt.toLocaleTimeString()})` : "";
     say(
       `@${to.handle} is picking up @${from.handle}'s work because @${from.handle}'s provider is out of ` +
-        `usage${whenResets}. Both agents work in ${from.cwd}.${trustNote} @${from.handle} will NOT also ` +
+        `usage${whenResets}. Both agents work in ${cwdOf(from)}.${trustNote} @${from.handle} will NOT also ` +
         `re-run this. Handed over: "${describeWork(turn)}"`,
     );
 
@@ -1599,6 +1648,14 @@ ${text}` : text;
     let idleTimeout: NodeJS.Timeout | undefined;
     let lastText = "";
     const chatTurnId = isChatChannel(replyChannel) ? replyChannel.chatId : undefined;
+    // Where this turn's CLI actually runs. With agents following the user between projects this
+    // is the chat's project folder, not the folder the agent was created against - so the same
+    // agent works on whatever project the chat belongs to. Resolved once, here, and used for
+    // the spawn, the session lookup and the prompt's own statement of where it is working, so
+    // those three can never disagree about which codebase the agent is in.
+    const turnCwd = this.chats.workingDirectoryFor(runtime.config, chatTurnId);
+    const turnSessionKey = sessionKey(turnCwd);
+    const turnSessionId = runtime.sessions.get(turnSessionKey);
     const isGroupTurn = chatTurnId !== undefined;
     const ownChannel: ChatChannel = { agentId: runtime.config.id };
     // The id of the last "progress" message posted to the agent's own channel this turn. Once
@@ -1694,7 +1751,7 @@ ${text}` : text;
         idleTimeout = setTimeout(() => giveUp("idle"), MAX_TURN_IDLE_MS);
       };
       await adapter.runTurn({
-        cwd: runtime.config.cwd,
+        cwd: turnCwd,
         prompt,
         trustLevel: runtime.config.trustLevel,
         agentId: runtime.config.id,
@@ -1707,7 +1764,7 @@ ${text}` : text;
         apiKey,
         baseUrl,
         turnToken: runtime.activeTurnToken,
-        sessionId: runtime.sessionId,
+        sessionId: turnSessionId,
         signal: controller.signal,
         onEvent: (event) => {
           noteActivity();
@@ -1757,7 +1814,7 @@ ${text}` : text;
             runtime.lastResolvedModel = event.model;
             if (changed) this.emitStatus(agentId);
           } else if (event.type === "session") {
-            runtime.sessionId = event.sessionId;
+            runtime.sessions.set(turnSessionKey, event.sessionId);
             this.onChange?.();
           } else if (event.type === "error" && event.message.trim()) {
             hadError = true;
@@ -1837,8 +1894,8 @@ ${text}` : text;
     // Recover from a stale session id exactly once, then never again for this turn. Without the
     // one-shot guard this is an infinite billed retry loop; with it, the worst case is a single
     // extra cold run of a turn that would otherwise have failed outright.
-    if (hadError && runtime.sessionId && !turn.sessionRetryDone && looksLikeStaleSession(runtime.lastError ?? "")) {
-      runtime.sessionId = undefined;
+    if (hadError && turnSessionId && !turn.sessionRetryDone && looksLikeStaleSession(runtime.lastError ?? "")) {
+      runtime.sessions.delete(turnSessionKey);
       runtime.lastResolvedModel = undefined;
       this.onChange?.();
       if (this.agents.has(runtime.config.id)) {

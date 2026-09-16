@@ -153,6 +153,25 @@ export async function fetchSettings(): Promise<{ settings: AppSettings; definiti
   return fetch("/api/settings").then((r) => r.json());
 }
 
+/**
+ * Add or remove one agent from one project's roster. Returns the full project list the server
+ * now holds, so the caller replaces its copy rather than patching its own guess of the result.
+ */
+export async function setProjectMembership(
+  projectId: string,
+  agentId: string,
+  member: boolean,
+): Promise<ProjectMeta[]> {
+  const res = await fetch(`/api/projects/${projectId}/agents`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agentId, member }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? "Failed to update project members");
+  return data.projects as ProjectMeta[];
+}
+
 /** Returns the settings the server now holds, which is the authority - not the patch we sent. */
 export async function updateSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
   const res = await fetch("/api/settings", {

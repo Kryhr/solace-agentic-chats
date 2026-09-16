@@ -4,6 +4,13 @@ import type { AgentConfig } from "@solace/shared";
 import { AgentManager } from "./agentManager";
 import { ChatBus } from "./chatBus";
 import { ChatStore } from "./chatStore";
+import { SettingsStore } from "./settingsStore";
+
+/** A ChatStore with agents pinned to their own folder - the rule that applied before agents
+ * followed the user between projects, and still exactly what turning the setting off restores. */
+function pinnedStore(...args: ConstructorParameters<typeof ChatStore>) {
+  return new ChatStore(args[0], args[1], new SettingsStore({ agentsFollowProjects: false }));
+}
 
 /**
  * Routing rules, per chat. These assert who a message REACHES, which used to be "everyone in
@@ -48,8 +55,8 @@ test("an unmentioned message in an unfiled chat reaches every agent", () => {
   assert.deepEqual(bus.getHistoryFor({ chatId: c.id }).map((m) => m.text), ["what do you both think?"]);
 });
 
-test("a chat filed under a project only reaches the agents working in that project", () => {
-  const store = new ChatStore([], [{ id: "p1", name: "site", path: HERE, createdAt: "2025-01-01T00:00:00.000Z" }]);
+test("with agents pinned to a folder, a project chat reaches only the agents in that folder", () => {
+  const store = pinnedStore([], [{ id: "p1", name: "site", path: HERE, createdAt: "2025-01-01T00:00:00.000Z" }]);
   const c = store.createChat("Site", "p1");
   const agents = [agent("a1", "claude", HERE), agent("a2", "codex", "C:\\somewhere\\else")];
   const { manager } = harness(agents, store);
@@ -59,12 +66,47 @@ test("a chat filed under a project only reaches the agents working in that proje
   assert.deepEqual(turnedFor(manager, agents), ["claude"], "codex works in a different directory");
 });
 
+test("by default agents follow the user, so a new project's chat reaches the whole roster", () => {
+  // The bug this exists for: a project folder is new, so no agent's cwd is inside it, so under
+  // the old rule the chat filed under it reached NOBODY and every agent had to be re-added.
+  const store = new ChatStore([], [{ id: "p1", name: "site", path: HERE, createdAt: "2025-01-01T00:00:00.000Z" }]);
+  const c = store.createChat("Site", "p1");
+  const agents = [agent("a1", "claude", "C:\\somewhere\\else"), agent("a2", "codex", "C:\\another\\place")];
+  const { manager } = harness(agents, store);
+
+  manager.submitMessage(c.id, "user", "you", "ship the landing page");
+
+  assert.deepEqual(turnedFor(manager, agents), ["claude", "codex"]);
+});
+
+test("an agent removed from a project is the only one that project's chat skips", () => {
+  const store = new ChatStore([], [{ id: "p1", name: "site", path: HERE, createdAt: "2025-01-01T00:00:00.000Z" }]);
+  const c = store.createChat("Site", "p1");
+  const agents = [agent("a1", "claude", HERE), agent("a2", "codex", HERE)];
+  const { manager } = harness(agents, store);
+
+  assert.equal(store.setProjectMembership("p1", "a2", false), true);
+  manager.submitMessage(c.id, "user", "you", "ship the landing page");
+
+  assert.deepEqual(turnedFor(manager, agents), ["claude"]);
+});
+
+test("a following agent runs in the project's folder, but is back in its own outside a project", () => {
+  const store = new ChatStore([], [{ id: "p1", name: "site", path: HERE, createdAt: "2025-01-01T00:00:00.000Z" }]);
+  const c = store.createChat("Site", "p1");
+  const codex = agent("a2", "codex", "C:\\somewhere\\else");
+
+  // This is what keeps one project's provider session out of another project's directory.
+  assert.equal(store.workingDirectoryFor(codex, c.id), HERE);
+  assert.equal(store.workingDirectoryFor(codex, undefined), "C:\\somewhere\\else");
+});
+
 test("@mentioning an agent the chat cannot reach summons nobody, and says so", () => {
   // Two wrong answers were available here. Resolving the handle against the whole roster hands
   // the work to an agent whose cwd is somebody else's project. Dropping the mention silently
   // makes it an unaddressed message, which then broadcasts - so "@codex do this" would be
   // answered by everyone EXCEPT codex.
-  const store = new ChatStore([], [{ id: "p1", name: "site", path: HERE, createdAt: "2025-01-01T00:00:00.000Z" }]);
+  const store = pinnedStore([], [{ id: "p1", name: "site", path: HERE, createdAt: "2025-01-01T00:00:00.000Z" }]);
   const c = store.createChat("Site", "p1");
   const agents = [agent("a1", "claude", HERE), agent("a2", "codex", "C:\\somewhere\\else")];
   const { manager, bus } = harness(agents, store);

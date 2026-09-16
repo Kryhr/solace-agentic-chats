@@ -42,6 +42,14 @@ export function validateNewAgentConfig(
     return { error: "cwd must be inside the workspace root" };
   }
 
+  // An endpoint-backed agent reaches its model ONLY through a saved connection: the base URL
+  // and the key both live on the credential, so one created without a credentialId has no URL
+  // to call and fails every turn with "this connection has no base URL saved" - a dead agent
+  // that looks perfectly fine in the sidebar. Observed live on a real local Ollama agent.
+  if ((body.provider === "local" || body.provider === "custom") && !body.credentialId) {
+    return { error: `a ${body.provider} agent needs a saved connection - pick one under Connections` };
+  }
+
   if (typeof body.currentTask === "string" && body.currentTask.length > MAX_TASK_LEN) {
     return { error: `currentTask must be ${MAX_TASK_LEN} characters or fewer` };
   }

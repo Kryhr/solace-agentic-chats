@@ -4067,3 +4067,125 @@ body {
     transition: none;
   }
 }
+
+/* ---- Settings: per-project agent rosters -------------------------------------------------
+   A section under the toggles, not another page: deciding who works on a project is the other
+   half of "agents follow you between projects", and splitting them would mean finding the
+   setting in one place and its consequence in another. */
+.settings-section {
+  margin-top: var(--space-6);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
+}
+
+.settings-section-title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.settings-section-note {
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-xs);
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+.settings-section-empty {
+  padding: var(--space-4);
+  background: var(--surface-1);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.project-members {
+  padding: var(--space-4);
+  margin-bottom: var(--space-3);
+  background: var(--surface-1);
+  border-radius: var(--radius-md);
+}
+
+.project-members-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.project-members-name {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text);
+  /* A project name can be long ("Link Rot Checker CLI"); truncate rather than push the count
+     off the row. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-members-count {
+  flex: none;
+  font-size: var(--text-2xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.project-members-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* Off reads as genuinely off - muted and dimmed - rather than as a slightly different shade of
+   on, which is the failure mode of a chip that only changes its border. */
+.member-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  opacity: 0.55;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    opacity 0.15s ease,
+    transform 0.1s ease;
+}
+
+.member-chip:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  opacity: 0.8;
+}
+
+.member-chip:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.member-chip:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-tight);
+}
+
+.member-chip:disabled {
+  cursor: not-allowed;
+}
+
+.member-chip.is-member {
+  background: var(--accent-wash);
+  border-color: var(--accent-border);
+  color: var(--text);
+  opacity: 1;
+}
+
+.member-chip-handle {
+  font-weight: 500;
+}

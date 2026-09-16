@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AgentConfig, ChatMeta, ProjectMeta } from "@solace/shared";
+import { SettingsStore } from "./settingsStore";
 import { ChatStore, agentInProject } from "./chatStore";
 
 function project(id: string, name: string, path: string): ProjectMeta {
@@ -71,9 +72,13 @@ test("unlinking a project unfiles its chats and never reports touching the folde
   assert.equal(store.listChats().length, 2, "and none of them is deleted with the project");
 });
 
-test("an unfiled chat reaches every agent; a project chat reaches only that project's agents", () => {
+test("an unfiled chat reaches every agent; a pinned project chat reaches only that project's agents", () => {
   const p = project("p1", "site", process.cwd()); // a directory that really exists
-  const store = new ChatStore([chat("c1", "filed", "p1"), chat("c2", "unfiled")], [p]);
+  const store = new ChatStore(
+    [chat("c1", "filed", "p1"), chat("c2", "unfiled")],
+    [p],
+    new SettingsStore({ agentsFollowProjects: false }),
+  );
   const inside = agent("a1", "claude", process.cwd());
   const outside = agent("a2", "codex", "C:\\somewhere\\else");
 
@@ -85,6 +90,33 @@ test("an unfiled chat reaches every agent; a project chat reaches only that proj
     store.agentsForChat("c2", [inside, outside]).map((a) => a.id),
     ["a1", "a2"],
   );
+});
+
+test("by default a project chat reaches every agent, wherever each one's own folder is", () => {
+  const p = project("p1", "site", process.cwd());
+  const store = new ChatStore([chat("c1", "filed", "p1")], [p]);
+  const inside = agent("a1", "claude", process.cwd());
+  const outside = agent("a2", "codex", "C:" + String.fromCharCode(92) + "somewhere");
+
+  assert.deepEqual(store.agentsForChat("c1", [inside, outside]).map((a) => a.id), ["a1", "a2"]);
+  // ...and the outside agent genuinely runs in the project folder, not its own.
+  assert.equal(store.workingDirectoryFor(outside, "c1"), process.cwd());
+});
+
+test("removing an agent from a project drops it from that project's chats only", () => {
+  const p = project("p1", "site", process.cwd());
+  const store = new ChatStore([chat("c1", "filed", "p1"), chat("c2", "unfiled")], [p]);
+  const a1 = agent("a1", "claude", process.cwd());
+  const a2 = agent("a2", "codex", process.cwd());
+
+  store.setProjectMembership("p1", "a2", false);
+  assert.deepEqual(store.agentsForChat("c1", [a1, a2]).map((a) => a.id), ["a1"]);
+  assert.deepEqual(store.agentsForChat("c2", [a1, a2]).map((a) => a.id), ["a1", "a2"], "unfiled is unaffected");
+  // An excluded agent is not quietly relocated either: it stays in its own folder.
+  assert.equal(store.workingDirectoryFor(a2, "c1"), a2.cwd);
+
+  store.setProjectMembership("p1", "a2", true);
+  assert.deepEqual(store.agentsForChat("c1", [a1, a2]).map((a) => a.id), ["a1", "a2"], "and it comes back");
 });
 
 test("a project whose folder has gone missing falls back to everyone rather than nobody", () => {
