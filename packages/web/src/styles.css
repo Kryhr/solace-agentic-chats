@@ -5219,16 +5219,46 @@ body {
 
 /* --- the sidebar row for a connected CLI ------------------------------------------------- */
 
-/* The row carries Check AND Disconnect, so it takes .has-managed-actions and drops that pair
-   onto its own line under the name - the same layout a saved endpoint uses, for the same
-   reason: the cluster is ~96px and cannot be pinned over the name in a 234px rail.
-   `justify-self` is the part that rule is missing. Its `justify-content: flex-start` never
-   applies, because .provider-actions is a shrink-to-fit grid item with `justify-self: end`
-   from the base rule, so the buttons ended up hard right under a hard-left name - two edges
-   in one row, aligned to nothing. Scoped to CLI rows rather than changed in the shared rule,
-   so nothing else's layout moves underneath it. */
-.provider-row.credential-row.has-managed-actions.is-cli-connection .provider-actions {
-  justify-self: start;
+/* The row carries Check AND Disconnect. Laid side by side the pair is ~96px and does not fit
+   beside a name in a 234px rail; dropped onto their own full-width line under the name they
+   were left-aligned against nothing, and "Check" hung outside the row's own left padding.
+   So the pair gets a real third column and stacks in it, right-aligned: Disconnect on top,
+   the check state directly beneath. The column is `auto`, so it takes only the width the
+   buttons need and the name keeps the rest. */
+.provider-row.credential-row.is-cli-connection {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.provider-row.credential-row.is-cli-connection .provider-actions {
+  position: static;
+  grid-column: 3;
+  grid-row: 1;
+  justify-self: end;
+  align-self: start;
+  flex-direction: column;
+  align-items: flex-end;
+  /* Tighter than the row's own gap: these two belong to each other, and to this row, more
+     than they belong to anything else in the rail. */
+  gap: var(--space-1);
+}
+
+/* The status text, its crossfading Check button and the dot stay on one line together -
+   only the Disconnect/check pairing stacks. */
+.cli-check-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* The pinned-actions offsets the base .credential-row rule applies exist to keep a name clear
+   of an absolutely-positioned cluster. This row has a real column instead, so they would just
+   be dead space cut out of the name. */
+.provider-row.credential-row.is-cli-connection .provider-name {
+  padding-right: 0;
+}
+
+.provider-row.credential-row.is-cli-connection .credential-sub {
+  margin-right: 0;
 }
 
 /* --- the search bar. Deliberately the same instrument as the Settings filter: same shape, same

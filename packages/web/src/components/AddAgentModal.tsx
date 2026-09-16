@@ -11,6 +11,7 @@ import type {
 } from "@solace/shared";
 import {
   createProject,
+  fetchConnectedClis,
   fetchCredentials,
   fetchDiscoveredModels,
   fetchProjects,
@@ -20,8 +21,16 @@ import {
 import { effortOptionsFor, initialModelFor } from "../lib/modelOptions";
 import { ModelPicker, ModelSourceNote } from "./ModelPicker";
 import { permissionOptionsFor, TRUST_LABELS } from "../lib/permissionOptions";
+import { providerLabel } from "./ProviderIcon";
 
-const PROVIDERS: ProviderId[] = ["claude-code", "codex-cli", "gemini-cli", "qwen-code", "copilot-cli", "opencode", "crush", "continue", "droid", "kilo", "kimi", "custom", "local"];
+/**
+ * The order providers are offered in - NOT the list. What is actually offered is whatever the
+ * user has CONNECTED, computed below: a CLI they connected under Connections, or a saved
+ * endpoint credential for "custom"/"local". An agent can only run against something that is
+ * set up, so offering thirteen providers when three are usable meant ten choices that end in a
+ * failed turn. This array only decides what comes first among the ones that survive.
+ */
+const PROVIDER_ORDER: ProviderId[] = ["claude-code", "codex-cli", "gemini-cli", "qwen-code", "copilot-cli", "opencode", "crush", "continue", "droid", "kilo", "kimi", "custom", "local"];
 const NEW_PROJECT_VALUE = "__new__";
 /** "Give it its own folder, named after the handle" - the default, so adding an agent never
  * requires answering a question about projects. */
@@ -75,6 +84,9 @@ export function AddAgentModal({
   onCreate: (config: Omit<AgentConfig, "id">) => void;
 }) {
   const [handle, setHandle] = useState("");
+  /** null while the connected list is still being fetched, so the form does not flash a
+   * "nothing connected" state at a user who has plenty connected. */
+  const [connectedClis, setConnectedClis] = useState<ProviderId[] | null>(null);
   const [provider, setProvider] = useState<ProviderId>("claude-code");
   const [trustLevel, setTrustLevel] = useState<TrustLevel>(defaultTrustLevel);
   const [model, setModel] = useState("");
@@ -111,6 +123,23 @@ export function AddAgentModal({
     (c): c is ApiKeyCredentialMeta => c.kind === "api-key" && c.provider === provider,
   );
 
+  /**
+   * What this user can actually point an agent at.
+   *
+   * A CLI qualifies when it is in the connected list - installed is not connected, and the
+   * Connections panel already draws that line. "custom" and "local" qualify when a saved
+   * api-key credential exists for them, because for an endpoint the saved connection IS the
+   * setup. Anything else is a provider that would spawn, fail, and leave the user to work out
+   * why from a CLI error.
+   */
+  const availableProviders = PROVIDER_ORDER.filter((p) => {
+    if (p === "custom" || p === "local") {
+      return credentials.some((c) => c.kind === "api-key" && c.provider === p);
+    }
+    return (connectedClis ?? []).includes(p);
+  });
+  const stillLoading = connectedClis === null;
+
   // Escape closes the dialog. It read as broken without this: the backdrop was
   // already click-to-dismiss, so the modal was dismissible by mouse but not by
   // keyboard.
@@ -134,7 +163,21 @@ export function AddAgentModal({
       setSelected(preferred ? preferred.path : OWN_FOLDER_VALUE);
     });
     fetchCredentials().then(setCredentials);
+    // Failing closed (an empty list) rather than open: if this cannot be read, offering every
+    // provider would be guessing that they all work.
+    fetchConnectedClis().then(({ connected }) => setConnectedClis(connected)).catch(() => setConnectedClis([]));
   }, []);
+
+  // The default "claude-code" is a guess made before the connected list arrives. Once it does,
+  // snap to the first provider that is really available - otherwise the form opens pointed at a
+  // provider that is not in its own dropdown, and Add would submit it anyway.
+  useEffect(() => {
+    if (stillLoading) return;
+    if (availableProviders.length > 0 && !availableProviders.includes(provider)) {
+      setProvider(availableProviders[0]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stillLoading, availableProviders.join(",")]);
 
   // Whenever the provider changes, snap model/effort/trust to that provider's own real options.
   useEffect(() => {
@@ -327,14 +370,31 @@ export function AddAgentModal({
         </label>
         <label>
           Provider
-          <select className="select" value={provider} onChange={(e) => setProvider(e.target.value as ProviderId)}>
-            {PROVIDERS.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
+          <select
+            className="select"
+            value={provider}
+            onChange={(e) => setProvider(e.target.value as ProviderId)}
+            disabled={stillLoading || availableProviders.length === 0}
+          >
+            {stillLoading && <option value={provider}>Loading your connections…</option>}
+            {!stillLoading && availableProviders.length === 0 && <option value={provider}>No connections yet</option>}
+            {!stillLoading &&
+              availableProviders.map((p) => (
+                <option key={p} value={p}>
+                  {providerLabel(p)}
+                </option>
+              ))}
           </select>
         </label>
+        {/* Said plainly rather than shown as an empty dropdown, and it names the way out. An
+            agent needs something to run against; this is the one case where the form genuinely
+            cannot be completed. */}
+        {!stillLoading && availableProviders.length === 0 && (
+          <p className="field-note">
+            Nothing is connected yet, so there is nothing for an agent to run on. Add a coding agent CLI, a local model
+            server or a hosted endpoint under <strong>Connections</strong> first.
+          </p>
+        )}
 
         {authMode === "api-key" && (
           <>
@@ -484,7 +544,11 @@ export function AddAgentModal({
           <button className="btn-secondary" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn-primary" disabled={!handle || creatingProject} onClick={handleAdd}>
+          <button
+            className="btn-primary"
+            disabled={!handle || creatingProject || stillLoading || availableProviders.length === 0}
+            onClick={handleAdd}
+          >
             {creatingProject ? "Creating…" : "Add"}
           </button>
         </div>

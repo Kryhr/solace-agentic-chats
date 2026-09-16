@@ -526,7 +526,7 @@ export function ConnectionsPanel({
           return (
             // has-managed-actions, like the saved-endpoint rows: this row carries Check AND
             // Disconnect, and that pair is too wide to pin over the name in the rail.
-            <div key={provider} className="provider-row credential-row is-testable has-managed-actions is-cli-connection">
+            <div key={provider} className="provider-row credential-row is-testable is-cli-connection">
               <span className="provider-glyph">
                 <ProviderIcon provider={provider} size={20} />
               </span>
@@ -534,8 +534,11 @@ export function ConnectionsPanel({
                 {label}
                 {!failing && status?.installed && status.version && <span className="credential-sub">{status.version}</span>}
               </span>
+              {/* Disconnect first so it reads top-right, with the check state under it. Stacked
+                  rather than strung out on one line because the pair is ~96px wide and the rail
+                  is 234px: side by side it either overlapped the name or spilled onto its own
+                  full-width line below, left-aligned against nothing. */}
               <span className="provider-actions">
-                <CheckControl state={state} onCheck={() => runCliCheck(provider)} title={`Run --version for ${label}`} />
                 <button
                   className="btn-ghost btn-xs provider-delete"
                   onClick={() => removeCli(provider)}
@@ -543,6 +546,9 @@ export function ConnectionsPanel({
                 >
                   Disconnect
                 </button>
+                <span className="cli-check-line">
+                  <CheckControl state={state} onCheck={() => runCliCheck(provider)} title={`Run --version for ${label}`} />
+                </span>
               </span>
               {failing && installCommand && (
                 // Connected, but the last real check could not find it. The actual command, not
