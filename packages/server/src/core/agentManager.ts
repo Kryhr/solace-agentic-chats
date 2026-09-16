@@ -1282,7 +1282,16 @@ ${text}` : text;
       `This chat is only the tool you and the other agents are talking through; its name, branding and purpose ` +
       `are NOT part of what you are building, so never borrow them for names, copy, or design decisions. ` +
       `Don't claim something is running, deployed, or "live" unless you've actually verified it yourself just now ` +
-      `(e.g. curled the URL, ran the command) - say what you did and haven't yet checked, rather than assuming.`;
+      `(e.g. curled the URL, ran the command) - say what you did and haven't yet checked, rather than assuming. ` +
+      // An agent only gets a turn when a message reaches it, so an unaddressed remark about
+      // someone's work is a message they will never see. Observed live: an agent finished and
+      // said "standing by for codex's end-to-end run" without naming @codex - codex was idle,
+      // was never summoned, and the run simply never happened until the operator noticed and
+      // asked it directly. Naming them is not etiquette here, it is the delivery mechanism.
+      `If you are waiting on another agent, blocked by one, handing work over, or saying anything about their ` +
+      `work that changes what they should do next, you MUST @mention them by handle in that message - otherwise ` +
+      `they never receive it and will sit idle waiting for you. Don't @mention for remarks they don't need to ` +
+      `act on; an @mention costs them a turn, so use it when it changes what they do, not as a courtesy.`;
     const roster =
       others.length > 0
         ? ` Other agents here: ${others
