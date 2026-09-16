@@ -163,7 +163,14 @@ export const CONNECTABLE_PROVIDERS: ConnectableProvider[] = [
     signInCommand: "kimi login",
     signInSource: "`kimi --help` on 2026-09-16 lists login",
     installCommand: INSTALL_COMMAND.kimi,
-    caveat: "The most limited provider here: it auto-approves every action (no plan or ask mode exists headlessly), reports no usage or cost, cannot call back into the group chat, and takes its prompt on the command line - so a long conversation is refused before it starts.",
+    // These are limits of HOW SOLACE DRIVES KIMI TODAY, not of Kimi. The adapter uses `kimi -p`,
+    // its one-shot headless flag, which rejects --plan/--auto/--yolo outright. The CLI also ships
+    // `kimi acp`, an Agent Client Protocol server whose session/new returns a `mode` option with
+    // all four of those modes, a model list (K2.8, K2.7 Highspeed, K3, K3-256k), thinking levels
+    // and a usage command - verified live on 2026-09-16. Moving the adapter onto ACP is in
+    // progress; until it lands this caveat stays, because it describes what an agent created
+    // today will actually do.
+    caveat: "Solace currently drives Kimi through its one-shot headless flag, which is the CLI's weakest surface: every action is auto-approved, no usage is reported, it cannot call back into the group chat, and the prompt goes on the command line so a long conversation is refused. This is a limit of the adapter, not of the model - a rewrite onto Kimi's ACP surface, which does support plan and ask modes, is underway.",
   },
 ];
 
