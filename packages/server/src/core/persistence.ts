@@ -13,6 +13,8 @@ import {
   type CoordinationState,
   type ProviderRateLimit,
 } from "@solace/shared";
+import type { McpServerConfig } from "@solace/shared";
+import { sanitizeMcpServers } from "./mcpServers";
 import type { ChatArchive } from "./archiveStore";
 import type { PersistedAgentQueue } from "./agentManager";
 
@@ -59,6 +61,10 @@ export interface PersistedState {
    * before coordination existed, which restores as empty boards rather than undefined - see
    * CoordinationBoard's constructor. */
   coordination: Record<string, CoordinationState>;
+  /** User-registered MCP servers, injected alongside the built-in solace bridge on every CLI
+   * turn (see core/mcpServers.ts). Absent on any state file written before this existed, which
+   * restores as none - i.e. exactly the behaviour that file already had. */
+  mcpServers: McpServerConfig[];
 }
 
 const EMPTY_STATE: PersistedState = {
@@ -72,6 +78,7 @@ const EMPTY_STATE: PersistedState = {
   projects: [],
   settings: { ...DEFAULT_APP_SETTINGS },
   coordination: {},
+  mcpServers: [],
 };
 
 function statePath(workspaceRoot: string): string {
@@ -200,6 +207,10 @@ export function loadState(workspaceRoot: string): PersistedState {
         parsed.coordination && typeof parsed.coordination === "object" && !Array.isArray(parsed.coordination)
           ? (parsed.coordination as Record<string, CoordinationState>)
           : {},
+      // Guarded on shape for the same reason, and additionally filtered: a hand-edited entry
+      // claiming the reserved "solace" name would shadow the group-chat bridge, so it is
+      // dropped on load rather than trusted because it happened to be on disk.
+      mcpServers: sanitizeMcpServers(parsed.mcpServers),
     };
   } catch {
     // An unreadable state file already means everything is gone; at least hand back a usable

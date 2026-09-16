@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { TrustLevel } from "@solace/shared";
 import { killCliTree, spawnCli } from "../core/spawnCli";
 import { parseCodexRateLimitEvent, readCodexRateLimitFromRollout } from "../core/rateLimits";
+import { mcpServersForAgent, type ResolvedMcpServer } from "../core/mcpServers";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 
 /** The group-chat MCP bridge, re-anchored to the *source* copy from the package root exactly as
@@ -30,7 +31,12 @@ const SOLACE_BRIDGE_SCRIPT = join(__dirname, "..", "..", "src", "mcp", "solaceBr
  * guaranteed to inherit our environment, and without them the bridge has no identity or turn
  * token and every tool call would be refused by the server.
  */
-function solaceMcpConfigArgs(agentId: string, serverPort: number, turnToken?: string): string[] {
+export function solaceMcpConfigArgs(
+  agentId: string,
+  serverPort: number,
+  turnToken?: string,
+  userServers: ResolvedMcpServer[] = [],
+): string[] {
   const entries: Array<[string, unknown]> = [
     ["mcp_servers.solace.command", process.execPath],
     ["mcp_servers.solace.args", [SOLACE_BRIDGE_SCRIPT]],
@@ -38,6 +44,26 @@ function solaceMcpConfigArgs(agentId: string, serverPort: number, turnToken?: st
     ["mcp_servers.solace.env.SOLACE_SERVER_PORT", String(serverPort)],
     ...(turnToken ? ([["mcp_servers.solace.env.SOLACE_TURN_TOKEN", turnToken]] as Array<[string, unknown]>) : []),
   ];
+  // Codex is the odd one out: there is no config OBJECT to merge into, only a flat list of
+  // dotted `-c` overrides against the mcp_servers TOML table. So a user server is not merged,
+  // it is simply more keys - one per field - under its own name. Each override sets one leaf,
+  // which is why env goes in a key at a time rather than as a single table value: a whole-table
+  // override under mcp_servers.<name>.env would replace whatever ~/.codex/config.toml has
+  // there, and a `-c` per variable does not.
+  //
+  // These overrides are per-invocation and nothing is written to the user's config.toml, so a
+  // server the user already has in that file keeps working; ours simply wins for this run.
+  for (const server of userServers) {
+    if (server.name === "solace") continue;
+    // A TOML bare key is [A-Za-z0-9_-], which MCP_SERVER_NAME_PATTERN already guarantees - so
+    // the name can go into the dotted path unquoted without it being able to break the key
+    // syntax. That constraint is enforced at the write boundary in core/mcpServers.ts.
+    entries.push([`mcp_servers.${server.name}.command`, server.command]);
+    entries.push([`mcp_servers.${server.name}.args`, server.args]);
+    for (const [key, value] of Object.entries(server.env)) {
+      entries.push([`mcp_servers.${server.name}.env.${key}`, value]);
+    }
+  }
   return entries.flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`]);
 }
 
@@ -252,7 +278,7 @@ export const codexCliAdapter: ProviderAdapter = {
       });
     });
 
-    const needsPlainRetry = await runOnce(solaceMcpConfigArgs(agentId, serverPort, turnToken));
+    const needsPlainRetry = await runOnce(solaceMcpConfigArgs(agentId, serverPort, turnToken, mcpServersForAgent(agentId)));
     if (needsPlainRetry) await runOnce([]);
   },
 };

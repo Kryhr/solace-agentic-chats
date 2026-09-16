@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { TrustLevel } from "@solace/shared";
 import { killCliTree, spawnCli } from "../core/spawnCli";
 import { parseClaudeRateLimitEvent } from "../core/rateLimits";
+import { mcpServersForAgent, type ResolvedMcpServer } from "../core/mcpServers";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 
 // Always re-anchor from the package root (two levels up from this compiled/ts-node file,
@@ -47,12 +48,23 @@ const SOLACE_TOOLS = [
  * tools this flag list happens to expose. A tool list is a suggestion to the model; the route
  * check is the thing an agent cannot talk its way past.
  */
-function flagsForTrustLevel(trustLevel: TrustLevel): string[] {
+export function flagsForTrustLevel(trustLevel: TrustLevel, userServers: ResolvedMcpServer[] = []): string[] {
   const manual = trustLevel === "manual";
-  const mcpServers: Record<string, { command: string; args: string[] }> = {
+  const mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {
     solace: { command: "node", args: [SOLACE_BRIDGE_SCRIPT] },
   };
   if (manual) mcpServers["approval-bridge"] = { command: "node", args: [BRIDGE_SCRIPT] };
+  // The user's own servers are MERGED into the object we build, never appended as a second
+  // flag, because --strict-mcp-config below means this JSON is the COMPLETE set of MCP servers
+  // for the turn - Claude Code ignores ~/.claude.json entirely when it is set. So a user server
+  // that is not in here does not "also" get loaded from the user's config; it simply does not
+  // exist for this turn. Written after the two bridges so a name collision cannot displace
+  // them - though validateMcpServer already rejects both reserved names at the write boundary,
+  // which is where a collision should be explained to a human rather than silently resolved.
+  for (const server of userServers) {
+    if (server.name === "solace" || server.name === "approval-bridge") continue;
+    mcpServers[server.name] = { command: server.command, args: server.args, env: server.env };
+  }
 
   return [
     "--permission-mode",
@@ -66,6 +78,11 @@ function flagsForTrustLevel(trustLevel: TrustLevel): string[] {
     // to let one agent talk to another, which defeats the point - and in "plan" mode it isn't
     // obvious the tools are reachable at all. This is an allowlist: it does not widen anything
     // else, and the permission mode still governs every other tool.
+    // Deliberately only OUR tools. A user MCP server's tools are not added here: they go
+    // through whatever --permission-mode the agent's trust level set, exactly like the CLI's
+    // own built-in tools do. Pre-allowing them would mean registering a server silently
+    // widened what an agent may do without asking - and unlike post_to_group, we cannot see
+    // what a third-party tool actually touches.
     "--allowedTools",
     SOLACE_TOOLS.join(","),
   ];
@@ -100,7 +117,7 @@ export const claudeCodeAdapter: ProviderAdapter = {
       "--output-format",
       "stream-json",
       "--verbose",
-      ...flagsForTrustLevel(trustLevel),
+      ...flagsForTrustLevel(trustLevel, mcpServersForAgent(agentId)),
       ...(model ? ["--model", model] : []),
       ...(effort ? ["--effort", effort] : []),
     ];

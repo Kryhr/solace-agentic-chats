@@ -3,6 +3,7 @@ import * as readline from "node:readline";
 import { join } from "node:path";
 import type { TrustLevel } from "@solace/shared";
 import { killCliTree, spawnCli } from "../core/spawnCli";
+import { mcpServersForAgent, type ResolvedMcpServer } from "../core/mcpServers";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 
 /** The group-chat MCP bridge, re-anchored to the *source* copy from the package root exactly as
@@ -79,22 +80,39 @@ export function qwenApprovalMode(trustLevel: TrustLevel): string {
  * process.execPath rather than "node" so this doesn't depend on whatever PATH qwen hands its
  * MCP child.
  */
-function solaceMcpConfig(agentId: string, serverPort: number, turnToken?: string): string {
-  return JSON.stringify({
-    mcpServers: {
-      solace: {
-        command: process.execPath,
-        args: [SOLACE_BRIDGE_SCRIPT],
-        env: {
-          SOLACE_AGENT_ID: agentId,
-          SOLACE_SERVER_PORT: String(serverPort),
-          ...(turnToken ? { SOLACE_TURN_TOKEN: turnToken } : {}),
-        },
-        trust: true,
-        description: "Solace group chat",
+export function solaceMcpConfig(
+  agentId: string,
+  serverPort: number,
+  turnToken?: string,
+  userServers: ResolvedMcpServer[] = [],
+): string {
+  const mcpServers: Record<string, unknown> = {
+    solace: {
+      command: process.execPath,
+      args: [SOLACE_BRIDGE_SCRIPT],
+      env: {
+        SOLACE_AGENT_ID: agentId,
+        SOLACE_SERVER_PORT: String(serverPort),
+        ...(turnToken ? { SOLACE_TURN_TOKEN: turnToken } : {}),
       },
+      trust: true,
+      description: "Solace group chat",
     },
-  });
+  };
+  // The user's servers merge into the same object. Qwen's --mcp-config is not documented as
+  // replacing the user's own ~/.qwen settings the way Claude's --strict-mcp-config is, but we
+  // do not rely on either behaviour: everything the turn needs is in this one JSON value, so
+  // the result is the same whichever way qwen merges it.
+  //
+  // `trust` is deliberately NOT set on a user server. On the solace bridge it is ours and we
+  // know exactly what it does; on a third-party server it would mean "skip the confirmation
+  // for tools we cannot inspect", which is not a decision this file gets to make on the
+  // user's behalf. The agent's approval mode governs them instead.
+  for (const server of userServers) {
+    if (server.name === "solace") continue;
+    mcpServers[server.name] = { command: server.command, args: server.args, env: server.env };
+  }
+  return JSON.stringify({ mcpServers });
 }
 
 /**
@@ -112,6 +130,9 @@ export function buildQwenArgs(opts: {
   agentId: string;
   serverPort: number;
   turnToken?: string;
+  /** The user's registered MCP servers that apply to this agent. Defaults to none, so every
+   * existing caller and test sees exactly the argv it saw before. */
+  userServers?: ResolvedMcpServer[];
 }): string[] {
   return [
     // Empty string, not a bare `-p`: --prompt is a string option, so a bare flag would swallow
@@ -130,7 +151,7 @@ export function buildQwenArgs(opts: {
     "--approval-mode",
     qwenApprovalMode(opts.trustLevel),
     "--mcp-config",
-    solaceMcpConfig(opts.agentId, opts.serverPort, opts.turnToken),
+    solaceMcpConfig(opts.agentId, opts.serverPort, opts.turnToken, opts.userServers ?? []),
     // Pre-allow only our own two coordination tools, exactly as claude-code.ts does: without
     // it, in "default" mode every post_to_group call would raise an approval card - i.e. the
     // user would have to click to let one agent talk to another, which defeats the point - and
@@ -167,6 +188,7 @@ export const qwenCodeAdapter: ProviderAdapter = {
       agentId,
       serverPort,
       turnToken,
+      userServers: mcpServersForAgent(agentId),
     });
 
     await new Promise<void>((resolve) => {

@@ -53,6 +53,23 @@ export const emptyCoordination = emptyCoord;
 export const normalizePath = normPath;
 export const pathCoveredBy = covered;
 
+// Same re-binding rule again - see the comments above.
+import {
+  MCP_CATALOG as MCP_CAT,
+  MCP_SERVER_NAME_PATTERN as MCP_NAME_RE,
+  RESERVED_MCP_SERVER_NAMES as RESERVED_MCP,
+} from "./mcpServers";
+export type {
+  CatalogMcpServer,
+  McpEnvEntry,
+  McpServerConfig,
+  McpServerScope,
+  McpTransport,
+} from "./mcpServers";
+export const MCP_CATALOG = MCP_CAT;
+export const MCP_SERVER_NAME_PATTERN = MCP_NAME_RE;
+export const RESERVED_MCP_SERVER_NAMES = RESERVED_MCP;
+
 export type ProviderId =
   | "claude-code"
   | "codex-cli"

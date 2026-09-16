@@ -2,7 +2,14 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocketPlugin from "@fastify/websocket";
 import { nanoid } from "nanoid";
-import { SETTING_DEFINITIONS, sanitizeAppSettings, type AgentConfig, type AppSettings, type ServerEvent } from "@solace/shared";
+import {
+  MCP_CATALOG,
+  SETTING_DEFINITIONS,
+  sanitizeAppSettings,
+  type AgentConfig,
+  type AppSettings,
+  type ServerEvent,
+} from "@solace/shared";
 import { ChatBus } from "./core/chatBus";
 import { ChatStore } from "./core/chatStore";
 import { AgentManager } from "./core/agentManager";
@@ -36,6 +43,15 @@ import {
   type SecretCredentialInput,
   type SshCredentialInput,
 } from "./core/credentials";
+import {
+  McpServerStore,
+  resolveMcpServers,
+  setMcpServerProvider,
+  testMcpServer,
+  toPublicMcpServer,
+  validateMcpServer,
+  type McpServerInput,
+} from "./core/mcpServers";
 import { discoverModels, ModelDiscoveryError } from "./core/modelDiscovery";
 import { LOCAL_RUNTIMES, probeNamedRuntime, scanForLocalServers } from "./core/localDiscovery";
 import { validateAgentPatch, validateNewAgentConfig } from "./core/validateAgentConfig";
@@ -84,6 +100,12 @@ async function main() {
   const settings = new SettingsStore(persisted.settings);
   const board = new CoordinationBoard(persisted.coordination);
   const chats = new ChatStore(persisted.chats, persisted.projects, settings);
+  // User-registered MCP servers. The adapters do NOT take these through runTurn - they pull
+  // them from the module-level provider registered just below, so that every path into a turn
+  // (queue, retry, interrupt) gets them without each one having to remember to pass them. See
+  // the note on setMcpServerProvider.
+  const mcpServers = new McpServerStore(persisted.mcpServers);
+  setMcpServerProvider((agentId) => resolveMcpServers(mcpServers.list(), agentId, WORKSPACE_ROOT));
   const agents = new AgentManager(
     bus,
     chats,
@@ -109,9 +131,11 @@ async function main() {
         projects: chats.listProjects(),
         settings: settings.get(),
         coordination: board.snapshot(),
+        mcpServers: mcpServers.list(),
       }),
     300,
   );
+  mcpServers.onChange = persist;
   bus.onChange = persist;
   agents.onChange = persist;
   settings.onChange = (next) => {
@@ -318,6 +342,9 @@ async function main() {
     const removed = bus.clearChannel(channel);
     archive.add(channel, removed, `${target.handle}'s hub`);
     agents.removeAgent(req.params.id);
+    // Drop this agent from every per-agent MCP scope, so a scope does not keep a dead id that
+    // would silently re-attach a server if that id were ever reused.
+    mcpServers.forgetAgent(req.params.id);
     return { ok: true };
   });
 
@@ -390,6 +417,79 @@ async function main() {
     // rather than merged, and again inside the store, which is the only thing that decides what
     // a legal settings object is.
     return settings.update(sanitizeAppSettings({ ...settings.get(), ...(req.body ?? {}) }));
+  });
+
+  /* ------------------------------- MCP servers ------------------------------ */
+
+  // The catalogue rides along with the list so the panel renders in one round trip. It is a
+  // static const in @solace/shared and the server branches on nothing in it - see the standing
+  // honesty rule in that file.
+  app.get("/api/mcp/servers", async () => ({ servers: mcpServers.listPublic(), catalog: MCP_CATALOG }));
+
+  app.post<{ Body: McpServerInput }>("/api/mcp/servers", async (req, reply) => {
+    const result = mcpServers.add(req.body ?? {});
+    if ("error" in result) {
+      reply.code(400);
+      return result;
+    }
+    return { server: toPublicMcpServer(result.server) };
+  });
+
+  app.patch<{ Params: { id: string }; Body: McpServerInput }>("/api/mcp/servers/:id", async (req, reply) => {
+    const result = mcpServers.update(req.params.id, req.body ?? {});
+    if ("error" in result) {
+      reply.code(result.error === "No such MCP server." ? 404 : 400);
+      return result;
+    }
+    return { server: toPublicMcpServer(result.server) };
+  });
+
+  app.delete<{ Params: { id: string } }>("/api/mcp/servers/:id", async (req, reply) => {
+    if (!mcpServers.remove(req.params.id)) {
+      reply.code(404);
+      return { error: "not found" };
+    }
+    return { ok: true };
+  });
+
+  /**
+   * Spawn a server and list its tools - the "verified, not merely configured" step, and the
+   * only thing in this feature that proves the configuration is real.
+   *
+   * Takes an UNSAVED draft as well as a saved id, because the point is to test before saving: a
+   * user who has to save a broken server first, then discover it is broken, then edit it, has
+   * been told nothing the first failing turn would not have told them. A draft's credential
+   * references are resolved here exactly as they would be at turn time, so a wrong credential
+   * id fails here rather than silently at 2am.
+   */
+  app.post<{ Body: McpServerInput & { id?: string } }>("/api/mcp/test", async (req, reply) => {
+    const body = req.body ?? {};
+    const saved = body.id ? mcpServers.get(body.id) : undefined;
+    if (body.id && !saved) {
+      reply.code(404);
+      return { error: "not found" };
+    }
+    // A draft is validated against every OTHER server, so testing an edit of a saved server
+    // does not trip over its own name.
+    const draft = { ...(saved ?? {}), ...body };
+    const checked = validateMcpServer(draft, mcpServers.list().filter((s) => s.id !== body.id));
+    if ("error" in checked) {
+      reply.code(400);
+      return { ok: false, tools: [], error: checked.error };
+    }
+    const [resolved] = resolveMcpServers(
+      [{ ...checked.value, id: body.id ?? "draft", createdAt: new Date().toISOString(), enabled: true, scope: { kind: "global" } }],
+      // Any agent id resolves a global-scoped draft; the scope is forced to global just above
+      // precisely so a per-agent server can still be tested without picking an agent first.
+      "__test__",
+      WORKSPACE_ROOT,
+    );
+    const result = await testMcpServer(resolved);
+    // Only a real handshake records a verification, and only against a SAVED server - a draft
+    // has no id to attach it to, and the save path re-checks whether the launch actually
+    // changed before carrying a badge over (see McpServerStore.update).
+    if (result.ok && saved) mcpServers.recordVerification(saved.id, result.tools);
+    return result;
   });
 
   app.get("/api/archives", async () => archive.list());
