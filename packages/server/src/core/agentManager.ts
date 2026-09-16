@@ -275,6 +275,17 @@ export function announcesChainCutoff(depth: number, maxDepth: number): boolean {
  * for its own sake, and the verification clauses exist because this project has already caught
  * an agent announcing a site was live at a URL where nothing was listening.
  */
+/**
+ * The ports this app itself occupies, stated to agents as fact.
+ *
+ * The API port is read from the same env var the server binds with, so it cannot drift from
+ * reality. The UI port is Vite's default and is NOT knowable from here - the web dev server is a
+ * separate process this one never talks to - so it is named as the default rather than asserted
+ * as certain. Both are told to agents because an agent debugging "my site is not loading" will
+ * otherwise happily inspect the chat app's own server, find it healthy, and say so.
+ */
+const SOLACE_UI_PORT = 5173;
+
 const HOUSE_STYLE = [
   "Write like a careful engineer briefing a colleague who will act on what you say:",
   "- Lead with the outcome. What changed, what you found, or what is blocked - not a restatement of the request.",
@@ -1580,6 +1591,9 @@ ${text}` : text;
     // an agent named the brand "Solus". The chat app is the room, not the job. So this now says
     // the minimum needed to operate in the room, names the actual working directory as the
     // project, and states outright that the tool's own name has nothing to do with it.
+    // Read at build-time of the block, from the same env var index.ts binds with, so this can
+    // never tell an agent a port the server is not actually on.
+    const solacePorts = String(Number(process.env.PORT ?? 4310));
     const identity =
       `[group context: you are "${self.handle}", one of several AI coding agents in a shared group chat. ` +
       `You are working on the project in your working directory (${this.chats.workingDirectoryFor(self, chatId)}) - ` +
@@ -1588,6 +1602,24 @@ ${text}` : text;
       `are NOT part of what you are building, so never borrow them for names, copy, or design decisions. ` +
       `Don't claim something is running, deployed, or "live" unless you've actually verified it yourself just now ` +
       `(e.g. curled the URL, ran the command) - say what you did and haven't yet checked, rather than assuming. ` +
+      // Observed live, and the reason this is spelled out with real numbers: an agent was asked
+      // why the site it had built was not loading, went and looked at THIS APP's own dev server,
+      // found it healthy, and told the user the site was fine. Both things are "a localhost", and
+      // nothing in the prompt had ever said which one was which - so the agent had no way to know
+      // it was inspecting the room rather than its own work.
+      `Two ports on this machine belong to the chat app you are talking through, not to your work: ` +
+      `${solacePorts} is its API and ${SOLACE_UI_PORT} serves its user interface. Never bind them, never stop ` +
+      `anything on them, and never report either of them as the address of what YOU built - they will always ` +
+      `look healthy and they are never your site. If you start a server for your own project, choose a ` +
+      `different port, say which port you chose, and verify your own URL specifically (curl that exact ` +
+      `address) before calling it live. If the user says your site is not loading, re-check YOUR port - do not ` +
+      `go and look at the app's ports and conclude everything is fine. ` +
+      // Separately: a server started inside a turn is a child of the CLI process, and a turn that
+      // is stopped or times out takes the whole process tree with it. An agent that starts a dev
+      // server, reports it live (truthfully, at the time) and ends its turn leaves the user with
+      // a URL that worked when it was written and is dead by the time they click it.
+      `A server you start during a turn may not outlive that turn, so if you tell the user something is ` +
+      `running, say plainly that it stays up only while the process does, rather than implying it is permanent. ` +
       // An agent only gets a turn when a message reaches it, so an unaddressed remark about
       // someone's work is a message they will never see. Observed live: an agent finished and
       // said "standing by for codex's end-to-end run" without naming @codex - codex was idle,
