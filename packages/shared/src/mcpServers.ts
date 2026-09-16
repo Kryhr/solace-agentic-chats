@@ -109,10 +109,30 @@ export interface CatalogMcpServer {
 }
 
 /**
- * Verified 2026-09-15. Each entry's own source URL is on the entry; the checks were: the
+ * Re-verified 2026-09-16. Each entry's own source URL is on the entry; the checks were: the
  * project's own README or docs page states this exact stdio command, AND the package is
- * currently published (npm/PyPI version noted in the comment) or ships with the app named.
+ * currently published (npm/PyPI version noted in the comment) or ships with the app named,
+ * AND - new in this pass - the server was actually spawned over stdio and asked for its tools
+ * through core/mcpServers.ts `testMcpServer`, wherever the prerequisite existed to do so.
  *
+ * Spawn results, 2026-09-16 (tool counts are what the server itself reported):
+ *   filesystem 14, memory 9, sequential-thinking 1, playwright 26, notion 24,
+ *   git 12, blender 31.
+ *   sentry - exits 1 with a clear "No access token was provided", which is the declared
+ *     requiredEnv doing its job rather than a broken entry.
+ *   fetch - the command is right and the package installs, but it cannot start on a machine
+ *     with Windows Smart App Control enabled; see its needsLocalApp.
+ *   github - not spawned: Docker is not installed on the machine this pass ran on. Command
+ *     and args match the README's own Docker block exactly.
+ *   roblox-studio - not spawned: Roblox Studio is not installed on this machine, so
+ *     %LOCALAPPDATA%\Roblox\mcp.bat does not exist. Command and args match the docs exactly.
+ *
+ * Note for whoever runs the next pass: uv was NOT installed on the verification machine, so
+ * the three uvx entries were tested with uv installed into a scratch directory and removed
+ * afterwards. A new user on a clean Windows machine has no uv either - which is why every uvx
+ * entry says so in needsLocalApp rather than leaving them to discover it as "command not found".
+ *
+
  * Deliberately NOT here, so nobody re-adds them from memory:
  *  - The archived reference servers (GitHub-via-MCP-reference, GitLab, PostgreSQL, SQLite,
  *    Puppeteer, Slack, Sentry-reference, Redis, Google Drive/Maps, Brave Search, EverArt, AWS
@@ -149,7 +169,7 @@ export const MCP_CATALOG: CatalogMcpServer[] = [
     command: "cmd.exe",
     args: ["/c", "%LOCALAPPDATA%\\Roblox\\mcp.bat"],
     needsLocalApp:
-      "Roblox Studio must be open, with the place you want worked on. Turn it on once in Studio: Assistant \u203a \u2026 \u203a Manage MCP Servers \u203a Enable Studio as MCP server.",
+      "A current version of Roblox Studio must be installed and open, with the place you want worked on. Turn it on once in Studio: Assistant \u203a \u2026 \u203a Manage MCP Servers \u203a Enable Studio as MCP server. The launcher this command points at (%LOCALAPPDATA%\\Roblox\\mcp.bat) only exists once Studio is installed, so on a machine without Studio the Test button reports that the file was not found.",
     macos: { command: "/Applications/RobloxStudio.app/Contents/MacOS/StudioMCP", args: [] },
     source: "https://create.roblox.com/docs/studio/mcp",
   },
@@ -187,11 +207,16 @@ export const MCP_CATALOG: CatalogMcpServer[] = [
     source: "https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking",
   },
 
-  // github.com/ahujasid/blender-mcp, fetched 2026-09-16. NOTE the PyPI package is
-  // "mcp-for-blender", NOT "blender-mcp" - the repo name and the package name differ, and
-  // guessing from the repo name gives a command that does not exist. The README's own JSON is
-  // {"command":"uvx","args":["mcp-for-blender"]}. Active: 28.7k stars, 210 commits, current
-  // releases on PyPI. Two-part setup, which is why needsLocalApp is explicit about both halves.
+  // github.com/ahujasid/blender-mcp, re-fetched 2026-09-16. NOTE the PyPI package is
+  // "mcp-for-blender" (2.0.0), NOT "blender-mcp" - the repo name and the package name differ,
+  // and guessing from the repo name gives a command that does not exist. A "blender-mcp"
+  // package DOES now exist on PyPI (2.0.0, published the same day) but it is only a shim whose
+  // own summary reads "Renamed to mcp-for-blender"; the README says new installs should use
+  // mcp-for-blender, which is what this entry carries. The README's own JSON is
+  // {"command":"uvx","args":["mcp-for-blender"]}. Spawned 2026-09-16: 31 tools, serverInfo
+  // name "BlenderMCP". Four-part setup, which is why needsLocalApp spells out all four -
+  // the README's own steps end at "Start MCP Server" in the viewport sidebar, and a setup
+  // that stops one step earlier fails with a bare connection-refused and no clue why.
   {
     name: "blender",
     title: "Blender",
@@ -200,7 +225,7 @@ export const MCP_CATALOG: CatalogMcpServer[] = [
     command: "uvx",
     args: ["mcp-for-blender"],
     needsLocalApp:
-      "Two steps, both required: install the addon once with `uvx mcp-for-blender install-addon`, then have Blender open with that addon enabled. Needs uv installed (uvx comes with it).",
+      "Blender 3.0 or newer, and four steps - the last one is the one people miss. 1) Install uv with the official installer (`powershell -c \"irm https://astral.sh/uv/install.ps1 | iex\"`), NOT `pip install uv`. 2) Run `uvx mcp-for-blender install-addon` once to copy the addon in. 3) In Blender, Edit › Preferences › Add-ons, enable \"Interface: MCP for Blender\". 4) In the 3D viewport press N, open the \"MCP for Blender\" tab and click Start MCP Server - until you do, the server starts but every tool fails with a connection-refused error.",
     source: "https://github.com/ahujasid/blender-mcp",
   },
 
@@ -211,7 +236,8 @@ export const MCP_CATALOG: CatalogMcpServer[] = [
     blurb: "Fetches a web page and converts it to text. Official MCP reference server.",
     command: "uvx",
     args: ["mcp-server-fetch"],
-    needsLocalApp: "Needs uv installed (uvx comes with it). Without it the Test button will report that the command was not found.",
+    needsLocalApp:
+      "Needs uv installed (uvx comes with it). Without it the Test button will report that the command was not found. On Windows 11 with Smart App Control ON (the default on a clean install), this one additionally fails at startup with `ImportError: DLL load failed while importing _regex: An Application Control policy has blocked this file` - one of its Python dependencies ships an unsigned native module that the policy refuses. That is the machine, not this entry; the fix is to turn Smart App Control off, which is one-way and not something to do casually.",
     source: "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch",
   },
 
@@ -237,9 +263,12 @@ export const MCP_CATALOG: CatalogMcpServer[] = [
     command: "docker",
     args: ["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "ghcr.io/github/github-mcp-server"],
     requiredEnv: [
-      { name: "GITHUB_PERSONAL_ACCESS_TOKEN", hint: "github.com/settings/personal-access-tokens/new" },
+      {
+        name: "GITHUB_PERSONAL_ACCESS_TOKEN",
+        hint: "github.com/settings/personal-access-tokens/new - the README's stated minimum scopes are repo (repository operations), read:org (organization and team access) and read:packages (pulling the image). A token missing these fails per-tool, not at startup, so the server will look fine and individual calls will not.",
+      },
     ],
-    needsLocalApp: "Docker must be installed and running.",
+    needsLocalApp: "Docker must be installed and running. The image is pulled on first use, so the first Test takes noticeably longer than the others.",
     source: "https://github.com/github/github-mcp-server",
   },
 
