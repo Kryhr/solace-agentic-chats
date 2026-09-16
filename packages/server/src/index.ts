@@ -15,6 +15,7 @@ import { debounce, loadState, saveState } from "./core/persistence";
 import { ApprovalRegistry } from "./core/approvalRegistry";
 import { ArchiveStore } from "./core/archiveStore";
 import { SettingsStore } from "./core/settingsStore";
+import { getCopilotQuota } from "./core/copilotQuota";
 import { tryHandleCommand } from "./core/commands";
 import { checkGithubAuth, checkGithubConnection } from "./core/github";
 import {
@@ -317,7 +318,24 @@ async function main() {
     return { ok: true };
   });
 
-  app.get("/api/usage", async () => agents.listRateLimits());
+  // Copilot is merged in separately because, alone among the providers, it reports nothing
+  // about its limits during a turn - so there is no event for RateLimitStore to have learned
+  // from, and it was simply missing from the meter. Its quota is a cheap entitlement lookup
+  // instead, memoised in copilotQuota.ts.
+  // Copilot has no quota until something asks for it, so ask once at boot - otherwise the meter
+  // shows nothing for it until its first turn finishes, which is exactly the gap being closed.
+  void getCopilotQuota()
+    .then((quota) => {
+      if (quota) agents.recordRateLimit(quota);
+    })
+    .catch(() => {});
+
+  app.get("/api/usage", async () => {
+    const reported = agents.listRateLimits();
+    if (reported.some((r) => r.provider === "copilot-cli")) return reported;
+    const copilot = await getCopilotQuota();
+    return copilot ? [...reported, copilot] : reported;
+  });
 
   app.get("/api/providers/status", async () => checkAllProviders());
   app.get("/api/providers/models", async () => getModelCatalog());

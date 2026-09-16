@@ -17,6 +17,7 @@ import { ChatBus } from "./chatBus";
 import { sameWorkingDirectory, type ChatStore } from "./chatStore";
 import { parseMentions } from "./mentions";
 import { RateLimitStore } from "./rateLimits";
+import { clearCopilotQuotaCache, getCopilotQuota } from "./copilotQuota";
 import { SettingsStore } from "./settingsStore";
 import type { ApprovalRegistry } from "./approvalRegistry";
 import { extractLiveClaims, findUnreachableClaims, unreachableClaimNotice } from "./claimCheck";
@@ -934,6 +935,31 @@ export class AgentManager {
   /** Latest real observation per provider - providers that have never reported are simply absent. */
   listRateLimits(): ProviderRateLimit[] {
     return this.rateLimits.list();
+  }
+
+  /**
+   * Record a limit that did NOT arrive on an adapter event.
+   *
+   * Every other provider states its limits during a turn, so RateLimitStore learns them as a
+   * side effect of working. Copilot emits nothing of the kind, so its quota is fetched
+   * separately (copilotQuota.ts) and handed in here - through the same store and the same
+   * broadcast, so the socket snapshot, the live event and /api/usage cannot disagree about it.
+   */
+  recordRateLimit(entry: ProviderRateLimit): void {
+    if (!this.rateLimits.record(entry)) return;
+    this.bus.emitEvent({ type: "usage:rate-limit", payload: entry });
+    this.onChange?.();
+  }
+
+  /** Refresh Copilot's quota after one of its turns, since the turn is what moved the number.
+   * Fire-and-forget: this must never delay or fail a turn that has already finished. */
+  private refreshCopilotQuota(): void {
+    clearCopilotQuotaCache();
+    void getCopilotQuota()
+      .then((quota) => {
+        if (quota) this.recordRateLimit(quota);
+      })
+      .catch(() => {});
   }
 
   listStatuses(): AgentStatus[] {
@@ -1913,6 +1939,10 @@ ${text}` : text;
       // whatever turn happened to be running by then.
       clearTimeout(turnTimeout);
       clearTimeout(idleTimeout);
+      // The turn just consumed Copilot quota, and Copilot is the one provider that never says
+      // so on an event - so this is the moment to go and ask. Deliberately inside the finally:
+      // a turn that errored or was killed still spent the request.
+      if (runtime.config.provider === "copilot-cli") this.refreshCopilotQuota();
     }
 
     // Captured before the cleanup at the bottom clears abortKind, and used to suppress the
