@@ -80,6 +80,10 @@ export interface RunTurnOptions {
    * solace bridge), so an internal route can tell a real in-flight turn from anything else that
    * can reach the port. */
   turnToken?: string;
+  /** Which of several logins for this provider to use, by user-chosen label. Undefined - the
+   * normal case - means the CLI's own default login. Only providers with a verified config-dir
+   * env var act on it; see core/providerAccounts.ts. */
+  account?: string;
   onEvent: (event: AdapterEvent) => void;
   /** Aborting kills the underlying CLI process - used for the max turn duration, the Stop
    * action, agent removal, and (see agentManager) interrupting one turn to answer another

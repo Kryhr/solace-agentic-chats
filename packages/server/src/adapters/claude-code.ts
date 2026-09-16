@@ -3,6 +3,7 @@ import * as readline from "node:readline";
 import { join } from "node:path";
 import type { TrustLevel, TurnUsage } from "@solace/shared";
 import { killCliTree, spawnCli } from "../core/spawnCli";
+import { accountEnv } from "../core/providerAccounts";
 import { isEmptyUsage, num, put } from "../core/usage";
 import { parseClaudeRateLimitEvent } from "../core/rateLimits";
 import { mcpServersForAgent, type ResolvedMcpServer } from "../core/mcpServers";
@@ -164,7 +165,7 @@ export function claudeCodeUsage(event: {
 
 export const claudeCodeAdapter: ProviderAdapter = {
   id: "claude-code",
-  async runTurn({ cwd, prompt, trustLevel, model, effort, agentId, turnToken, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
+  async runTurn({ cwd, prompt, trustLevel, model, effort, agentId, account, turnToken, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
     const serverPort = Number(process.env.PORT ?? 4310);
     // The prompt goes in on STDIN, never as an argv element. On Windows `claude` resolves to
     // an npm .cmd shim, so cross-spawn has to route it through `cmd.exe /d /s /c` - and a
@@ -205,6 +206,11 @@ export const claudeCodeAdapter: ProviderAdapter = {
           SOLACE_AGENT_ID: agentId,
           SOLACE_SERVER_PORT: String(serverPort),
           ...(turnToken ? { SOLACE_TURN_TOKEN: turnToken } : {}),
+          // Empty unless this agent names an account, in which case it is CLAUDE_CONFIG_DIR
+          // pointing at that account's own config directory. Spread LAST so an account the user
+          // chose in the UI beats a CLAUDE_CONFIG_DIR that happens to be in the server's own
+          // environment - otherwise the setting would silently do nothing on such a machine.
+          ...accountEnv("claude-code", account),
         },
       });
       // Claude Code only starts the turn once stdin reaches EOF, so this must always end().

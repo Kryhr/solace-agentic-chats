@@ -36,3 +36,7 @@ HANDOFF.md
 # Agent-to-agent handoff notes ("apply these edits to the shared files"). They are stale the
 # moment their edits land, and they describe how the work was built rather than what it does.
 *-REGISTRATION.md
+
+# A dev-instance context pointer, if one is dropped here. Never committed: it describes one
+# operator's local setup, not the product.
+.solace-context.md

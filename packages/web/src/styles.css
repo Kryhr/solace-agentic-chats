@@ -5617,3 +5617,102 @@ body {
   font-style: italic;
   opacity: 0.75;
 }
+/* ---- accounts on a connection card -------------------------------------------------------
+   Spacing carries the grouping here: rows inside the list sit one step apart (--space-1),
+   the list sits from its label at --space-2, and the whole block sits from the rest of the
+   card at the card's own --space-3. So "these rows belong together, and together they are one
+   part of this card" is legible without a single divider line. */
+.cli-card-accounts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.account-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+}
+
+.account-row {
+  display: grid;
+  /* dot | who (takes the slack) | label. The middle column is minmax(0,1fr) so a long email
+     ellipsises instead of pushing the label off the card. */
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: var(--text-xs);
+  line-height: var(--lh-snug);
+  min-width: 0;
+}
+
+.account-who {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+/* The plan is a fact from the CLI, not a badge we award - so it reads as quiet metadata
+   beside the email rather than as a status pill competing with the dot. */
+.account-plan {
+  flex-shrink: 0;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3, var(--surface-1));
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.account-label {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--text-2xs);
+}
+
+.account-add {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.account-input {
+  flex: 1 1 10rem;
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+}
+
+.account-input:focus-visible {
+  outline: 2px solid var(--focus-color, var(--accent));
+  outline-offset: 1px;
+}
+
+/* The command block after creating an account. Tighter to its own explanation than to the
+   list above it, because the sentence and the command are one instruction. */
+.account-pending {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}

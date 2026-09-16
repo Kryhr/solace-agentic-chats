@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ConnectionCheck, ProviderId } from "@solace/shared";
 import {
+  createAccount,
+  fetchAccounts,
   checkCliConnection,
   CliNotInstalledError,
   connectCli,
   disconnectCli,
   type ConnectableProvider,
 } from "../api";
+import type { AccountIdentity } from "../api";
 import { ProviderIcon } from "./ProviderIcon";
 
 /**
@@ -76,6 +79,129 @@ function matches(p: ConnectableProvider, terms: string[]): boolean {
   if (terms.length === 0) return true;
   const hay = `${p.name} ${p.blurb} ${p.signInCommand ?? ""} ${p.signInNote ?? ""} ${p.caveat ?? ""} ${p.provider}`.toLowerCase();
   return terms.every((t) => hay.includes(t));
+}
+
+
+/**
+ * The logins saved for one provider, and how to add another.
+ *
+ * Why this lives on the connection card rather than in Add agent: signing in is a terminal step
+ * the user performs outside this app, and it belongs next to the other terminal step already on
+ * this card. Add agent is then only ever a CHOICE between logins that already exist, which is
+ * what makes that screen simple.
+ *
+ * The danger this exists to prevent: a CLI keeps one set of credentials in one file, so a plain
+ * second `claude auth login` overwrites the first and silently signs it out. Every command shown
+ * here sets CLAUDE_CONFIG_DIR first, so a login lands in its own directory instead of on top of
+ * the account currently in use.
+ */
+function AccountsSection({ provider }: { provider: ProviderId }) {
+  const [accounts, setAccounts] = useState<AccountIdentity[] | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [label, setLabel] = useState("");
+  const [pending, setPending] = useState<{ label: string; powershell: string; bash: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = () => {
+    fetchAccounts(provider)
+      .then((r) => setAccounts(r.supported ? r.accounts : []))
+      .catch(() => setAccounts([]));
+  };
+  useEffect(load, [provider]);
+
+  if (accounts === null || accounts.length === 0) return null;
+
+  // Takes the value rather than reading `label` from state: Enter arrives in the same tick as
+  // the keystroke that completed the name, so the state this closure captured can still be a
+  // character behind. Typing a name and pressing Enter did nothing for exactly that reason.
+  const submit = async (raw: string) => {
+    const name = raw.trim();
+    if (!name) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const made = await createAccount(provider, name);
+      // The slot exists; it is not an account until the user runs the command below. Saying so
+      // is the honest state, and it is why the row appears as "not signed in" until they do.
+      setPending(made.signIn ? { label: made.label, ...made.signIn } : null);
+      setAdding(false);
+      setLabel("");
+      load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="cli-card-accounts">
+      <span className="cli-card-label">Accounts</span>
+      <ul className="account-list">
+        {accounts.map((a) => (
+          <li key={a.label ?? ""} className="account-row">
+            <span className={`connection-dot ${a.loggedIn ? "ok" : "unknown"}`} />
+            <span className="account-who">
+              {/* The CLI's own words for who this is. Never inferred here - two agents both
+                  saying "claude-code" is exactly the confusion this row exists to end. */}
+              {a.loggedIn ? (a.email ?? "signed in") : "not signed in"}
+              {a.subscriptionType && <span className="account-plan">{a.subscriptionType}</span>}
+            </span>
+            <span className="account-label">{a.label ?? "default"}</span>
+          </li>
+        ))}
+      </ul>
+
+      {pending && (
+        <div className="account-pending">
+          <div className="cli-card-note">
+            Run this in your terminal to sign <strong>{pending.label}</strong> in. It sets the config
+            directory first, so it cannot overwrite the account you are already using.
+          </div>
+          <CommandLine command={pending.powershell} />
+          <div className="cli-card-source">PowerShell. On bash: {pending.bash}</div>
+        </div>
+      )}
+
+      {adding ? (
+        <div className="account-add">
+          <input
+            className="account-input"
+            value={label}
+            autoFocus
+            placeholder="A name for it, e.g. work"
+            onChange={(e) => setLabel(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void submit(e.currentTarget.value);
+              if (e.key === "Escape") setAdding(false);
+            }}
+          />
+          <button className="btn-primary btn-xs" onClick={() => void submit(label)} disabled={busy || !label.trim()}>
+            Create
+          </button>
+          <button className="btn-ghost btn-xs" onClick={() => setAdding(false)} disabled={busy}>
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <div className="account-add">
+          <button className="btn-secondary btn-xs" onClick={() => setAdding(true)}>
+            + Add another account
+          </button>
+          <button className="btn-ghost btn-xs" onClick={load} title="Re-ask the CLI who each account is">
+            Refresh
+          </button>
+        </div>
+      )}
+
+      {error && (
+        <div className="cli-card-refusal" role="alert">
+          {error}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function ConnectCliPanel({
@@ -251,6 +377,10 @@ export function ConnectCliPanel({
                       to trust, and these do drift between releases. */}
                   <div className="cli-card-source">From {p.signInSource}.</div>
                 </div>
+
+                {/* Only where more than one login is genuinely possible; AccountsSection returns
+                    null otherwise, so a provider that can hold one account shows nothing. */}
+                <AccountsSection provider={p.provider} />
 
                 <div className="cli-card-actions">
                   <button className="btn-secondary btn-xs" onClick={() => test(p.provider)} disabled={busy}>

@@ -22,6 +22,14 @@ import {
   connectableProvider,
   isConnectableProvider,
 } from "./core/connectedProviders";
+import {
+  accountDir,
+  accountEnv,
+  isValidAccountLabel,
+  listAccounts,
+  signInCommandFor,
+  supportsMultipleAccounts,
+} from "./core/providerAccounts";
 import { getModelCatalog } from "./core/modelCatalog";
 import { getPermissionCatalog } from "./core/permissionCatalog";
 import { debounce, loadState, saveState } from "./core/persistence";
@@ -583,6 +591,50 @@ async function main() {
    * CLI's real SIGN-IN command (with the `--help` invocation it was read from) rather than its
    * npm install line, which is a different step and useless to someone who already has it.
    */
+  /**
+   * The logins available for a provider, each identified by who it actually is.
+   *
+   * Without this the UI can only show "claude-code" twice and the user has no way to tell which
+   * subscription an agent is on. `claude auth status` answers with the email and plan for a
+   * given config directory and spends no turn doing it, so the honest identity is free.
+   */
+  app.get<{ Params: { provider: string } }>("/api/accounts/:provider", async (req, reply) => {
+    const provider = req.params.provider as ProviderId;
+    if (!supportsMultipleAccounts(provider)) {
+      // Not an error: most providers simply have no verified way to hold two logins, and the
+      // UI needs to know that so it can hide the control rather than offer a dead one.
+      return { supported: false, accounts: [] };
+    }
+    void reply;
+    return { supported: true, accounts: await listAccounts(provider) };
+  });
+
+  /**
+   * Create an account slot and hand back the command that signs it in.
+   *
+   * Solace deliberately does NOT run that command: it is a browser device-login for somebody's
+   * real subscription, and running it with the wrong environment is precisely how the existing
+   * login gets overwritten - the failure this whole feature exists to prevent.
+   */
+  app.post<{ Params: { provider: string }; Body: { label?: string } }>(
+    "/api/accounts/:provider",
+    async (req, reply) => {
+      const provider = req.params.provider as ProviderId;
+      const label = (req.body?.label ?? "").trim();
+      if (!supportsMultipleAccounts(provider)) {
+        reply.code(400);
+        return { error: `${provider} has no verified way to hold more than one login` };
+      }
+      if (!isValidAccountLabel(label)) {
+        reply.code(400);
+        return { error: "Use letters, numbers, spaces, - or _ (2-40 characters)" };
+      }
+      // Creates the directory, which is all an "account" is until the user signs in.
+      accountEnv(provider, label);
+      return { label, signIn: signInCommandFor(provider, label), dir: accountDir(provider, label) };
+    },
+  );
+
   app.get("/api/connections/cli/connected", async () => ({
     connected: connectedClis.list(),
     catalog: CONNECTABLE_PROVIDERS,

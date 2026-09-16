@@ -630,3 +630,37 @@ export function connectSocket(
     socket?.close();
   };
 }
+
+
+/** One login for a provider, identified by who it actually is rather than by a label alone. */
+export interface AccountIdentity {
+  /** Absent for the CLI's own default login. */
+  label?: string;
+  loggedIn: boolean;
+  email?: string;
+  subscriptionType?: string;
+  error?: string;
+}
+
+/** Every login available for a provider. `supported:false` means this provider has no verified
+ * way to hold two, so the UI hides the control rather than offering a dead one. */
+export async function fetchAccounts(provider: ProviderId): Promise<{ supported: boolean; accounts: AccountIdentity[] }> {
+  const res = await fetch(`/api/accounts/${provider}`);
+  if (!res.ok) return { supported: false, accounts: [] };
+  return res.json();
+}
+
+/** Creates the slot and returns the command the USER runs to sign it in. Solace never runs it. */
+export async function createAccount(
+  provider: ProviderId,
+  label: string,
+): Promise<{ label: string; dir: string; signIn?: { powershell: string; bash: string } }> {
+  const res = await fetch(`/api/accounts/${provider}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ label }),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json?.error ?? "Could not create that account");
+  return json;
+}

@@ -121,6 +121,15 @@ export interface AgentConfig {
   model?: string;
   /** Reasoning/thinking effort, passed straight through to the provider's own flag. Empty = provider default. */
   effort?: string;
+  /**
+   * Which of several logins for this provider to run on, by the label the user gave it.
+   *
+   * Absent - the normal case - means the CLI's own default login, exactly as before. Set, it
+   * points the CLI at a config directory Solace owns, so two agents can run two different
+   * subscriptions of the same provider at once without either evicting the other's credentials.
+   * Only providers with a verified config-dir env var can honour it; see core/providerAccounts.
+   */
+  account?: string;
   /** "cli" (default, absent) signs in via that provider's own CLI subscription login;
    * "api-key" calls the provider's HTTP API directly using a saved credential. */
   authMode?: "cli" | "api-key";

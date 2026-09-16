@@ -144,7 +144,10 @@ export const CONNECTABLE_PROVIDERS: ConnectableProvider[] = [
     signInNote: "Run droid once and sign in from the session with /login, or set FACTORY_API_KEY.",
     signInSource: "`droid --help` and `droid doctor` on 2026-09-16",
     installCommand: INSTALL_COMMAND.droid,
-    caveat: "Never signed in on this machine, so no Solace turn has ever completed against it. It also cannot call back into the group chat: the MCP bridge could not be registered.",
+    // Was "Never signed in on this machine, so no Solace turn has ever completed against it" -
+    // a fact about the laptop this was built on, shipped to everybody else as if it were a
+    // property of Droid. What remains is the part that is true on any machine.
+    caveat: "Cannot call back into the group chat: Droid does not accept an MCP server from this app, so an agent on it works alone rather than coordinating mid-turn.",
   },
   {
     provider: "kilo",
@@ -154,7 +157,6 @@ export const CONNECTABLE_PROVIDERS: ConnectableProvider[] = [
     signInCommand: "kilo auth login",
     signInSource: "`kilo auth --help` on 2026-09-16 lists list, login and logout",
     installCommand: INSTALL_COMMAND.kilo,
-    caveat: "Never signed in on this machine, so no Solace turn has ever completed against it.",
   },
   {
     provider: "kimi",

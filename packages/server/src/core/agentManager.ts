@@ -443,10 +443,22 @@ function normalizeForDuplicateCheck(text: string): string {
  * actually said. Strips known prefixes, falls back to the raw text for anything else
  * (a direct hub message has no wrapper at all). */
 function stripPromptWrapper(prompt: string): string {
-  return prompt.replace(/^\[group context:.*?\]\n\n/s, "").replace(/^\[group chat message from [^\]]+\]:\s*/, "");
+  // Cut at the marker that introduces the REAL message, rather than peeling known blocks off the
+  // front one at a time.
+  //
+  // The old version stripped `[group context: ...]` and then expected the message marker to be
+  // next. buildGroupPrompt also inserts once-per-session blocks between them - the skills
+  // pointer today, and whatever is added later - and the moment one of those sits in between,
+  // the second strip matches nothing and an agent's sidebar "current task" renders as raw prompt
+  // scaffolding instead of the message. Observed live. Cutting at the marker is immune to
+  // whatever else grows in front of it, which is the only version of this that stays correct.
+  const marker = prompt.match(/\[group chat message from [^\]]+\]:\s*/);
+  if (marker?.index !== undefined) return prompt.slice(marker.index + marker[0].length);
+  // A direct hub message has no wrapper at all; a group turn always carries the marker above.
+  return prompt.replace(/^\[group context:.*?\]\n\n/s, "");
 }
 
-function summarizePrompt(prompt: string): string {
+export function summarizePrompt(prompt: string): string {
   const stripped = stripPromptWrapper(prompt);
   return stripped.length > 200 ? `${stripped.slice(0, 200)}…` : stripped;
 }
@@ -463,7 +475,7 @@ function summarizePrompt(prompt: string): string {
  * paragraph of explanation about a bug. Takes the first sentence or line, drops a leading
  * @handle (the row already says who it is), and caps it.
  */
-function summarizeTaskLine(work: string): string {
+export function summarizeTaskLine(work: string): string {
   const firstLine = work.split("\n")[0].trim();
   const withoutMention = firstLine.replace(/^@[a-zA-Z0-9_-]+[,:]?\s*/, "");
   const firstSentence = withoutMention.split(/(?<=[.!?])\s/)[0].trim() || withoutMention;
@@ -2337,6 +2349,7 @@ ${text}` : text;
         trustLevel: runtime.config.trustLevel,
         agentId: runtime.config.id,
         agentHandle: runtime.config.handle,
+        account: runtime.config.account,
         // The configured alias, NOT lastResolvedModel: what to request is the user's choice,
         // and the resolved id is only ever for display. Feeding a resolved id back as --model
         // would quietly pin the agent to one snapshot of an alias the user chose deliberately.

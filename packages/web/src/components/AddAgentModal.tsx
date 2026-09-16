@@ -11,11 +11,13 @@ import type {
 } from "@solace/shared";
 import {
   createProject,
+  fetchAccounts,
   fetchConnectedClis,
   fetchCredentials,
   fetchDiscoveredModels,
   fetchProjects,
   saveCredential,
+  type AccountIdentity,
   type ProjectInfo,
 } from "../api";
 import { effortOptionsFor, initialModelFor } from "../lib/modelOptions";
@@ -31,6 +33,22 @@ import { providerLabel } from "./ProviderIcon";
  * failed turn. This array only decides what comes first among the ones that survive.
  */
 const PROVIDER_ORDER: ProviderId[] = ["claude-code", "codex-cli", "gemini-cli", "qwen-code", "copilot-cli", "opencode", "crush", "continue", "droid", "kilo", "kimi", "custom", "local"];
+
+/**
+ * How one login is named in the picker.
+ *
+ * The email and plan come from the CLI's own `auth status` output, never from anything this app
+ * inferred - which is the point: "claude-code" twice tells the user nothing, and
+ * "andr3w244@gmail.com - max" tells them exactly which subscription the agent will spend.
+ * A signed-out slot says so rather than looking like a usable choice.
+ */
+function accountOptionLabel(a: AccountIdentity): string {
+  const who = a.email ?? (a.label ? a.label : "default login");
+  if (!a.loggedIn) return `${a.label ?? "default"} - not signed in`;
+  const plan = a.subscriptionType ? ` - ${a.subscriptionType}` : "";
+  return a.label ? `${who}${plan} (${a.label})` : `${who}${plan}`;
+}
+
 const NEW_PROJECT_VALUE = "__new__";
 /** "Give it its own folder, named after the handle" - the default, so adding an agent never
  * requires answering a question about projects. */
@@ -88,6 +106,10 @@ export function AddAgentModal({
    * "nothing connected" state at a user who has plenty connected. */
   const [connectedClis, setConnectedClis] = useState<ProviderId[] | null>(null);
   const [provider, setProvider] = useState<ProviderId>("claude-code");
+  /** Logins available for the chosen provider. Empty when it can only hold one. */
+  const [accounts, setAccounts] = useState<AccountIdentity[]>([]);
+  /** "" means the CLI's own default login - the normal case, and the default here. */
+  const [account, setAccount] = useState<string>("");
   const [trustLevel, setTrustLevel] = useState<TrustLevel>(defaultTrustLevel);
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
@@ -198,6 +220,14 @@ export function AddAgentModal({
     // Custom endpoints can't be added inline (they need a base URL too, which belongs to the
     // Connections panel's flow) - so default to the first one already saved there.
     setCredentialId(isEndpointProvider(provider) ? (providerCredentials[0]?.id ?? "") : NEW_KEY_VALUE);
+    // Which logins this provider has. Reset to the default first: an account label belongs to
+    // one provider, and carrying "second" across to a provider that has never heard of it would
+    // silently point the new agent at a directory that is not its own.
+    setAccount("");
+    setAccounts([]);
+    fetchAccounts(provider)
+      .then((r) => setAccounts(r.supported ? r.accounts : []))
+      .catch(() => setAccounts([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider]);
 
@@ -344,6 +374,7 @@ export function AddAgentModal({
       trustLevel,
       model: model || undefined,
       effort: effort || undefined,
+      account: account || undefined,
       authMode,
       credentialId: finalCredentialId,
     });
@@ -386,6 +417,23 @@ export function AddAgentModal({
               ))}
           </select>
         </label>
+        {/* Only when the provider genuinely supports more than one login, and only when more than
+            one exists - a picker with a single entry is a control that cannot do anything.
+            Each option is identified by WHO it is (the email and plan the CLI itself reported),
+            because two agents both saying "claude-code" is exactly the confusion this solves. */}
+        {accounts.length > 1 && (
+          <label>
+            Account
+            <select className="select" value={account} onChange={(e) => setAccount(e.target.value)}>
+              {accounts.map((a) => (
+                <option key={a.label ?? ""} value={a.label ?? ""}>
+                  {accountOptionLabel(a)}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
         {/* Said plainly rather than shown as an empty dropdown, and it names the way out. An
             agent needs something to run against; this is the one case where the form genuinely
             cannot be completed. */}
