@@ -32,3 +32,7 @@ id_ed25519*
 # paths, account details, what the operator was doing) and are not part of the product.
 HANDOFF.md
 *.handoff.md
+
+# Agent-to-agent handoff notes ("apply these edits to the shared files"). They are stale the
+# moment their edits land, and they describe how the work was built rather than what it does.
+*-REGISTRATION.md
