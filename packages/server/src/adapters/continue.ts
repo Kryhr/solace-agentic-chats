@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TrustLevel, TurnUsage } from "@solace/shared";
 import { killCliTree, spawnCli } from "../core/spawnCli";
+import { num, put } from "../core/usage";
 import { mcpServersForAgent, type ResolvedMcpServer } from "../core/mcpServers";
 import type { AdapterEvent, ProviderAdapter, RunTurnOptions } from "./types";
 
@@ -294,9 +295,12 @@ export function parseContinueTranscript(session: unknown, fromIndex = 0): Contin
   if (!isRecord(session)) return { events };
   const history = Array.isArray(session.history) ? session.history.slice(fromIndex) : [];
 
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let sawTokens = false;
+  let inputTokens: number | undefined;
+  let outputTokens: number | undefined;
+  let cacheReadTokens: number | undefined;
+  let cacheWriteTokens: number | undefined;
+  let reasoningTokens: number | undefined;
+  let totalTokens: number | undefined;
 
   for (const entry of history) {
     if (!isRecord(entry)) continue;
@@ -309,14 +313,21 @@ export function parseContinueTranscript(session: unknown, fromIndex = 0): Contin
     // history too), so it would over-report every turn after the first.
     const messageUsage = isRecord(message.usage) ? message.usage : undefined;
     if (messageUsage) {
-      if (typeof messageUsage.prompt_tokens === "number") {
-        inputTokens += messageUsage.prompt_tokens;
-        sawTokens = true;
-      }
-      if (typeof messageUsage.completion_tokens === "number") {
-        outputTokens += messageUsage.completion_tokens;
-        sawTokens = true;
-      }
+      const add = (running: number | undefined, value: number | undefined) =>
+        value === undefined ? running : (running ?? 0) + value;
+      // Continue speaks the OpenAI usage vocabulary, so cached prompt tokens arrive nested under
+      // prompt_tokens_details and reasoning tokens under completion_tokens_details, both already
+      // counted inside the headline prompt/completion figures.
+      const promptDetails = isRecord(messageUsage.prompt_tokens_details) ? messageUsage.prompt_tokens_details : undefined;
+      const completionDetails = isRecord(messageUsage.completion_tokens_details)
+        ? messageUsage.completion_tokens_details
+        : undefined;
+      inputTokens = add(inputTokens, num(messageUsage.prompt_tokens));
+      outputTokens = add(outputTokens, num(messageUsage.completion_tokens));
+      totalTokens = add(totalTokens, num(messageUsage.total_tokens));
+      cacheReadTokens = add(cacheReadTokens, num(promptDetails?.cached_tokens));
+      cacheWriteTokens = add(cacheWriteTokens, num(messageUsage.cache_creation_input_tokens));
+      reasoningTokens = add(reasoningTokens, num(completionDetails?.reasoning_tokens));
       // The model the provider actually resolved the request to, as the provider itself named it.
       if (typeof messageUsage.model === "string" && messageUsage.model) model = messageUsage.model;
     }
@@ -348,8 +359,19 @@ export function parseContinueTranscript(session: unknown, fromIndex = 0): Contin
     }
   }
 
-  if (sawTokens) {
-    usage = { inputTokens, outputTokens };
+  const collected: TurnUsage = {};
+  put(collected, "inputTokens", inputTokens);
+  put(collected, "outputTokens", outputTokens);
+  put(collected, "cacheReadTokens", cacheReadTokens);
+  put(collected, "cacheWriteTokens", cacheWriteTokens);
+  put(collected, "reasoningTokens", reasoningTokens);
+  put(collected, "totalTokens", totalTokens);
+  if (Object.keys(collected).length > 0) {
+    // OpenAI semantics: cached_tokens is a breakdown OF prompt_tokens and reasoning_tokens is a
+    // breakdown OF completion_tokens, so both are already inside the headline figures.
+    if (collected.cacheReadTokens !== undefined) collected.cacheCountedInInput = true;
+    if (collected.reasoningTokens !== undefined) collected.reasoningCountedInOutput = true;
+    usage = collected;
     // No totalCostUsd. Continue reports `cost_cents` per message and `totalCost` per session, but
     // both were 0 for a locally-configured model on the build verified here, and a figure that is
     // only meaningful for hub-billed models would read as "this turn was free" for everyone else.

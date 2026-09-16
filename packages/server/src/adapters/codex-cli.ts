@@ -1,7 +1,8 @@
 import * as readline from "node:readline";
 import { join } from "node:path";
-import type { TrustLevel } from "@solace/shared";
+import type { TrustLevel, TurnUsage } from "@solace/shared";
 import { killCliTree, spawnCli } from "../core/spawnCli";
+import { isEmptyUsage, num, put } from "../core/usage";
 import { parseCodexRateLimitEvent, readCodexRateLimitFromRollout } from "../core/rateLimits";
 import { mcpServersForAgent, type ResolvedMcpServer } from "../core/mcpServers";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
@@ -98,6 +99,45 @@ function flagsForTrustLevel(trustLevel: TrustLevel): { beforeExec: string[]; for
     default:
       return { beforeExec: [], forExec: ["--sandbox", "read-only"] };
   }
+}
+
+/**
+ * Codex's `turn.completed` usage block, mapped onto TurnUsage.
+ *
+ * The shape is read verbatim off the shipped codex.exe, where `TurnCompletedEvent { usage }`
+ * carries a `TokenUsage` struct whose field list is, in order:
+ *
+ *   input_tokens  cached_input_tokens  cache_write_input_tokens  output_tokens
+ *   reasoning_output_tokens  total_tokens
+ *
+ * Four of those six were being thrown away. Two semantics matter and both are confirmed against
+ * a real rollout record from this machine
+ * (~/.codex/sessions/.../rollout-*.jsonl, `last_token_usage`):
+ *
+ *     input_tokens 137957, cached_input_tokens 137600, output_tokens 254,
+ *     reasoning_output_tokens 34, total_tokens 138211
+ *
+ *   - 137957 + 254 = 138211 = total_tokens, so `cached_input_tokens` is INSIDE `input_tokens`
+ *     (hence cacheCountedInInput: true) and `reasoning_output_tokens` is INSIDE `output_tokens`.
+ *     Adding the cached figure to the input figure would have double-counted 137600 tokens.
+ *   - `total_tokens` is Codex's own, and is passed straight through rather than recomputed.
+ *
+ * No cost: `codex exec --json` states no price anywhere, and a subscription turn has no
+ * per-token dollar figure to state. Absent is the honest answer.
+ */
+export function codexUsage(raw: unknown): TurnUsage | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const u = raw as Record<string, unknown>;
+  const usage: TurnUsage = {};
+  put(usage, "inputTokens", num(u.input_tokens));
+  put(usage, "outputTokens", num(u.output_tokens));
+  put(usage, "cacheReadTokens", num(u.cached_input_tokens));
+  put(usage, "cacheWriteTokens", num(u.cache_write_input_tokens));
+  put(usage, "reasoningTokens", num(u.reasoning_output_tokens));
+  put(usage, "totalTokens", num(u.total_tokens));
+  if (usage.cacheReadTokens !== undefined || usage.cacheWriteTokens !== undefined) usage.cacheCountedInInput = true;
+  if (usage.reasoningTokens !== undefined) usage.reasoningCountedInOutput = true;
+  return isEmptyUsage(usage) ? undefined : usage;
 }
 
 export const codexCliAdapter: ProviderAdapter = {
@@ -217,14 +257,9 @@ export const codexCliAdapter: ProviderAdapter = {
           } else if (event.type === "turn.failed") {
             reportedError = true;
             onEvent({ type: "error", message: event.error?.message ?? "codex exec reported an error" });
-          } else if (event.type === "turn.completed" && event.usage) {
-            onEvent({
-              type: "usage",
-              usage: {
-                inputTokens: event.usage.input_tokens,
-                outputTokens: event.usage.output_tokens,
-              },
-            });
+          } else if (event.type === "turn.completed") {
+            const usage = codexUsage(event.usage);
+            if (usage) onEvent({ type: "usage", usage });
           }
         } catch {
           onEvent({ type: "text", text: line });

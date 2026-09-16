@@ -5610,3 +5610,10 @@ body {
     justify-content: center;
   }
 }
+
+/* A figure the provider never reported. Dimmed and italic so it reads as an absence rather
+   than as a value - see TokenUsageBar, where the same distinction is why it says "—" not 0. */
+.usage-meter-gap {
+  font-style: italic;
+  opacity: 0.75;
+}

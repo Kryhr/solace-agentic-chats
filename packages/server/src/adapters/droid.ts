@@ -1,6 +1,7 @@
 import * as readline from "node:readline";
 import type { ProviderId, TrustLevel, TurnUsage } from "@solace/shared";
 import { killCliTree, spawnCli } from "../core/spawnCli";
+import { isEmptyUsage, num, put } from "../core/usage";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 
 /**
@@ -173,19 +174,37 @@ export function isNotSignedInError(message: string): boolean {
 /**
  * Maps Droid's `usage` block onto this app's TurnUsage.
  *
- * Only the two fields this app can honestly represent are carried. Droid also reports
- * `cache_read_input_tokens`, `cache_creation_input_tokens` and `factory_credits`; the cache
- * counts have nowhere to go in TurnUsage, and `factory_credits` is deliberately NOT mapped to
- * `totalCostUsd` - a Factory credit is not a dollar, and inventing an exchange rate would put a
- * fabricated dollar figure in front of the user. No cost is reported for this provider at all,
- * which is the honest answer to "we don't know".
+ * NOT LIVE-VERIFIED: `droid` on this machine is not signed in. The shape is read off the shipped
+ * binary instead (@factory/cli-win32-x64 bin/droid.exe), where the block is built literally as
+ *
+ *   { input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens,
+ *     factory_credits: r.factoryCredits ?? 0,
+ *     ...thinkingTokens ? { thinking_tokens } : {}, ...ttft !== undefined ? { ttft_ms } : {} }
+ *
+ * from `getInclusiveTokenUsage()`. Droid is an Anthropic-shaped reporter, so the cache buckets
+ * are separate addends alongside input_tokens rather than inside it, and thinking_tokens is
+ * part of the generated output.
+ *
+ * Two deliberate omissions. `factory_credits` is NOT mapped to totalCostUsd - a Factory credit
+ * is not a dollar and inventing an exchange rate would put a fabricated price in front of the
+ * user - but it IS reported in its own unit, since it is the only cost figure Droid gives. And
+ * because the binary spells it `?? 0`, a credit figure of 0 is indistinguishable from "not
+ * reported"; it is carried through as the 0 Droid printed rather than guessed at.
  */
 export function droidUsage(raw: unknown): TurnUsage | undefined {
-  const u = (raw ?? {}) as { input_tokens?: unknown; output_tokens?: unknown };
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const u = raw as Record<string, unknown>;
   const usage: TurnUsage = {};
-  if (typeof u.input_tokens === "number") usage.inputTokens = u.input_tokens;
-  if (typeof u.output_tokens === "number") usage.outputTokens = u.output_tokens;
-  return usage.inputTokens === undefined && usage.outputTokens === undefined ? undefined : usage;
+  put(usage, "inputTokens", num(u.input_tokens));
+  put(usage, "outputTokens", num(u.output_tokens));
+  put(usage, "cacheReadTokens", num(u.cache_read_input_tokens));
+  put(usage, "cacheWriteTokens", num(u.cache_creation_input_tokens));
+  put(usage, "reasoningTokens", num(u.thinking_tokens));
+  if (usage.cacheReadTokens !== undefined || usage.cacheWriteTokens !== undefined) usage.cacheCountedInInput = false;
+  if (usage.reasoningTokens !== undefined) usage.reasoningCountedInOutput = true;
+  const credits = num(u.factory_credits);
+  if (credits !== undefined) usage.otherCosts = [{ amount: credits, unit: "Factory credit" }];
+  return isEmptyUsage(usage) ? undefined : usage;
 }
 
 export const droidAdapter: ProviderAdapter = {

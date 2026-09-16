@@ -4,6 +4,7 @@ import * as readline from "node:readline";
 import { join } from "node:path";
 import type { ProviderId, TrustLevel, TurnUsage } from "@solace/shared";
 import { killCliTree, spawnCli } from "../core/spawnCli";
+import { addStepFinishUsage } from "../core/usage";
 import { mcpServersForAgent, type ResolvedMcpServer } from "../core/mcpServers";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 
@@ -274,16 +275,6 @@ export function buildKiloArgs(opts: {
   ];
 }
 
-/** Sums the per-step token counts into one per-turn total. */
-function addStepUsage(total: TurnUsage | undefined, tokens: unknown, cost: unknown): TurnUsage {
-  const t = (tokens ?? {}) as { input?: unknown; output?: unknown };
-  const next: TurnUsage = { ...(total ?? {}) };
-  if (typeof t.input === "number") next.inputTokens = (next.inputTokens ?? 0) + t.input;
-  if (typeof t.output === "number") next.outputTokens = (next.outputTokens ?? 0) + t.output;
-  if (typeof cost === "number") next.totalCostUsd = (next.totalCostUsd ?? 0) + cost;
-  return next;
-}
-
 /** Pulls the human-readable sentence out of Kilo's `error` event without dragging along the
  * HTTP response headers its `data` block carries. Exported for the test. */
 export function kiloErrorMessage(error: unknown): string {
@@ -395,7 +386,7 @@ export const kiloAdapter: ProviderAdapter = {
               // event as THE usage for the turn, so emitting per step would make a six-step
               // turn report only its last step's tokens. Every number here is one the CLI
               // itself printed; nothing is derived.
-              turnUsage = addStepUsage(turnUsage, part.tokens, part.cost);
+              turnUsage = addStepFinishUsage(turnUsage, part.tokens, part.cost);
               break;
             }
             case "error": {

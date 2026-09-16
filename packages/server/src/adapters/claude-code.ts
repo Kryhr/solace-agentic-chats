@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import * as readline from "node:readline";
 import { join } from "node:path";
-import type { TrustLevel } from "@solace/shared";
+import type { TrustLevel, TurnUsage } from "@solace/shared";
 import { killCliTree, spawnCli } from "../core/spawnCli";
+import { isEmptyUsage, num, put } from "../core/usage";
 import { parseClaudeRateLimitEvent } from "../core/rateLimits";
 import { mcpServersForAgent, type ResolvedMcpServer } from "../core/mcpServers";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
@@ -86,6 +87,79 @@ export function flagsForTrustLevel(trustLevel: TrustLevel, userServers: Resolved
     "--allowedTools",
     SOLACE_TOOLS.join(","),
   ];
+}
+
+/**
+ * Claude Code's terminal `result` message, mapped onto TurnUsage.
+ *
+ * Two fields carry token counts and they do NOT cover the same work. Read verbatim off the
+ * shipped binary's own Zod schema (@anthropic-ai/claude-code 2.x, bin/claude.exe):
+ *
+ *   usage:      "MAIN AGENT LOOP ONLY - excludes Task subagent, sidechain, and auxiliary model
+ *                calls, and is per-turn in streaming-input sessions. Prefer modelUsage for
+ *                token/cost accounting."
+ *   modelUsage: { [modelId]: { inputTokens, outputTokens, thinkingTokens?, cacheReadInputTokens,
+ *                              cacheCreationInputTokens, webSearchRequests, costUSD,
+ *                              contextWindow, maxOutputTokens, canonicalModel?, provider? } }
+ *
+ * So modelUsage is preferred here, on Claude Code's own instruction: it is the figure whose
+ * scope matches `total_cost_usd` (which also includes subagents), and therefore the only one
+ * that can agree with what `/cost` shows the user in their own CLI. A turn that dispatched
+ * three Task subagents reported almost none of their tokens under `usage`. `usage` is still the
+ * fallback for builds or crash-results that carry no modelUsage.
+ *
+ * The cache buckets were previously dropped entirely, which was the worst single inaccuracy in
+ * this app: on a real Claude turn `cache_read_input_tokens` is routinely tens of thousands
+ * against an `input_tokens` of single digits, so the displayed input was understated by three
+ * orders of magnitude. Anthropic reports the three prompt buckets as separate addends - cache
+ * reads are NOT inside `input_tokens` - hence cacheCountedInInput: false.
+ */
+export function claudeCodeUsage(event: {
+  usage?: Record<string, unknown>;
+  modelUsage?: Record<string, Record<string, unknown>>;
+  total_cost_usd?: unknown;
+}): TurnUsage | undefined {
+  const usage: TurnUsage = {};
+  const models = event.modelUsage && typeof event.modelUsage === "object" ? Object.values(event.modelUsage) : [];
+  const perModel = models.filter((m): m is Record<string, unknown> => typeof m === "object" && m !== null);
+
+  if (perModel.length > 0) {
+    // Summing across the models one turn used is the same arithmetic Claude Code's own /cost
+    // display does, over the same per-model records.
+    const sum = (key: string): number | undefined => {
+      let total: number | undefined;
+      for (const m of perModel) {
+        const v = num(m[key]);
+        if (v !== undefined) total = (total ?? 0) + v;
+      }
+      return total;
+    };
+    put(usage, "inputTokens", sum("inputTokens"));
+    put(usage, "outputTokens", sum("outputTokens"));
+    put(usage, "cacheReadTokens", sum("cacheReadInputTokens"));
+    put(usage, "cacheWriteTokens", sum("cacheCreationInputTokens"));
+    put(usage, "reasoningTokens", sum("thinkingTokens"));
+  } else if (event.usage && typeof event.usage === "object") {
+    const u = event.usage;
+    put(usage, "inputTokens", num(u.input_tokens));
+    put(usage, "outputTokens", num(u.output_tokens));
+    put(usage, "cacheReadTokens", num(u.cache_read_input_tokens));
+    put(usage, "cacheWriteTokens", num(u.cache_creation_input_tokens));
+    const details = u.output_tokens_details;
+    if (details && typeof details === "object") {
+      put(usage, "reasoningTokens", num((details as Record<string, unknown>).thinking_tokens));
+    }
+  }
+
+  // Anthropic's three prompt buckets are separate addends, and thinkingTokens is documented in
+  // the same schema as "already counted inside outputTokens".
+  if (usage.cacheReadTokens !== undefined || usage.cacheWriteTokens !== undefined) usage.cacheCountedInInput = false;
+  if (usage.reasoningTokens !== undefined) usage.reasoningCountedInOutput = true;
+
+  // No totalTokens: Claude Code states no total of its own anywhere in the result message, and
+  // TurnUsage forbids manufacturing one from the parts.
+  put(usage, "totalCostUsd", num(event.total_cost_usd));
+  return isEmptyUsage(usage) ? undefined : usage;
 }
 
 export const claudeCodeAdapter: ProviderAdapter = {
@@ -194,17 +268,11 @@ export const claudeCodeAdapter: ProviderAdapter = {
                 });
               }
             }
-          } else if (event.type === "result" && event.usage) {
+          } else if (event.type === "result") {
             // Final message of the stream - real per-turn cost/token usage as Claude Code
             // itself reports it. See code.claude.com/docs/en/headless.
-            onEvent({
-              type: "usage",
-              usage: {
-                inputTokens: event.usage.input_tokens,
-                outputTokens: event.usage.output_tokens,
-                totalCostUsd: event.total_cost_usd,
-              },
-            });
+            const usage = claudeCodeUsage(event);
+            if (usage) onEvent({ type: "usage", usage });
           }
         } catch {
           // Non-JSON line (shouldn't normally happen with --output-format stream-json) -

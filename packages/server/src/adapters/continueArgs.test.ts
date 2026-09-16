@@ -274,7 +274,10 @@ test("a real transcript yields the tool call, the resolved model and summed toke
   // Summed across the turn's assistant messages, NOT taken from session.usage - that field is
   // cumulative over the whole session including any forked parent, so it over-reports every turn
   // after the first.
-  assert.deepEqual(usage, { inputTokens: 250, outputTokens: 21 });
+  // total_tokens is Continue's OWN stated total (62 + 209), carried through rather than
+  // recomputed - see the TurnUsage doc comment on why a provider's total is never replaced by a
+  // sum of the parts, even when the two happen to agree as they do here.
+  assert.deepEqual(usage, { inputTokens: 250, outputTokens: 21, totalTokens: 271 });
 });
 
 test("cost is never reported", () => {

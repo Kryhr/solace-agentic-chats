@@ -1,3 +1,5 @@
+import type { TurnUsage } from "@solace/shared";
+import { isEmptyUsage, num, put } from "../core/usage";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 
 // OpenAI pricing, USD per million tokens - sourced from openai.com/api/pricing on 2026-09-15.
@@ -50,8 +52,13 @@ export const openaiApiAdapter: ProviderAdapter = {
       return;
     }
 
-    let inputTokens = 0;
-    let outputTokens = 0;
+    // Absent, not 0: `stream_options.include_usage` is not honoured by every deployment, and
+    // "the endpoint never said" must not render as "this turn cost nothing".
+    let inputTokens: number | undefined;
+    let outputTokens: number | undefined;
+    let cacheReadTokens: number | undefined;
+    let reasoningTokens: number | undefined;
+    let totalTokens: number | undefined;
     let buffer = "";
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -74,8 +81,14 @@ export const openaiApiAdapter: ProviderAdapter = {
             const delta = event.choices?.[0]?.delta?.content;
             if (delta) onEvent({ type: "text", text: delta });
             if (event.usage) {
-              inputTokens = event.usage.prompt_tokens ?? inputTokens;
-              outputTokens = event.usage.completion_tokens ?? outputTokens;
+              // OpenAI itemises cached prompt tokens and reasoning tokens in the two *_details
+              // sub-objects; both are breakdowns of the headline figures, not extra tokens.
+              const u = event.usage;
+              inputTokens = num(u.prompt_tokens) ?? inputTokens;
+              outputTokens = num(u.completion_tokens) ?? outputTokens;
+              totalTokens = num(u.total_tokens) ?? totalTokens;
+              cacheReadTokens = num(u.prompt_tokens_details?.cached_tokens) ?? cacheReadTokens;
+              reasoningTokens = num(u.completion_tokens_details?.reasoning_tokens) ?? reasoningTokens;
             }
           } catch {
             // ignore malformed SSE chunks rather than aborting the whole stream
@@ -86,10 +99,18 @@ export const openaiApiAdapter: ProviderAdapter = {
       reader.releaseLock();
     }
 
-    onEvent({
-      type: "usage",
-      usage: { inputTokens, outputTokens, totalCostUsd: estimateCost(resolvedModel, inputTokens, outputTokens) },
-    });
+    const usage: TurnUsage = {};
+    put(usage, "inputTokens", inputTokens);
+    put(usage, "outputTokens", outputTokens);
+    put(usage, "cacheReadTokens", cacheReadTokens);
+    put(usage, "reasoningTokens", reasoningTokens);
+    put(usage, "totalTokens", totalTokens);
+    if (usage.cacheReadTokens !== undefined) usage.cacheCountedInInput = true;
+    if (usage.reasoningTokens !== undefined) usage.reasoningCountedInOutput = true;
+    // estimatedCostUsd, not totalCostUsd - the price table lives in this file, not in the API's
+    // response. See the same note in claude-api.ts and the TurnUsage doc comment.
+    put(usage, "estimatedCostUsd", estimateCost(resolvedModel, inputTokens ?? 0, outputTokens ?? 0));
+    if (!isEmptyUsage(usage)) onEvent({ type: "usage", usage });
     onEvent({ type: "done" });
   },
 };

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import * as readline from "node:readline";
 import { join } from "node:path";
-import type { TrustLevel } from "@solace/shared";
+import type { TrustLevel, TurnUsage } from "@solace/shared";
+import { isEmptyUsage, num, put } from "../core/usage";
 import { killCliTree, spawnCli } from "../core/spawnCli";
 import { mcpServersForAgent, type ResolvedMcpServer } from "../core/mcpServers";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
@@ -167,6 +168,37 @@ export function buildQwenArgs(opts: {
   ];
 }
 
+/**
+ * Qwen's terminal `result` usage block, mapped onto TurnUsage.
+ *
+ * NOT LIVE-VERIFIED: `qwen` on this machine is not signed in ("No auth type is selected"), so no
+ * real turn could be run. The shape is read off the installed bundle instead
+ * (@qwen-code/qwen-code, chunks/chunk-65YADOPT.js, `computeUsageFromMetrics`), which builds it
+ * literally as
+ *
+ *   { input_tokens: stats.totalPromptTokens, output_tokens: <sum of models' tokens.candidates>,
+ *     cache_read_input_tokens: stats.totalCachedTokens }
+ *
+ * and then adds `total_tokens` only when the summed per-model total is greater than zero.
+ *
+ * Qwen is a Gemini fork and counts the same way: the cached figure is inside the prompt count,
+ * so cacheCountedInInput is true, and `total_tokens` covers thought tokens the stream never
+ * itemises, so it is passed through rather than recomputed. Both fields were previously dropped.
+ *
+ * No cost: qwen reports tokens but never a price.
+ */
+export function qwenUsage(raw: unknown): TurnUsage | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const u = raw as Record<string, unknown>;
+  const usage: TurnUsage = {};
+  put(usage, "inputTokens", num(u.input_tokens));
+  put(usage, "outputTokens", num(u.output_tokens));
+  put(usage, "cacheReadTokens", num(u.cache_read_input_tokens));
+  put(usage, "totalTokens", num(u.total_tokens));
+  if (usage.cacheReadTokens !== undefined) usage.cacheCountedInInput = true;
+  return isEmptyUsage(usage) ? undefined : usage;
+}
+
 export const qwenCodeAdapter: ProviderAdapter = {
   id: "qwen-code",
   async runTurn({ cwd, prompt, trustLevel, model, agentId, turnToken, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
@@ -269,15 +301,8 @@ export const qwenCodeAdapter: ProviderAdapter = {
               reportedError = true;
               onEvent({ type: "error", message: String(event.error.message) });
             }
-            if (event.usage) {
-              // No cost field: qwen reports tokens but never a price, so totalCostUsd stays
-              // absent rather than being derived from a rate card this app has no way to know
-              // is current.
-              onEvent({
-                type: "usage",
-                usage: { inputTokens: event.usage.input_tokens, outputTokens: event.usage.output_tokens },
-              });
-            }
+            const usage = qwenUsage(event.usage);
+            if (usage) onEvent({ type: "usage", usage });
           }
         } catch {
           // Non-JSON line (shouldn't normally happen with --output-format stream-json) -

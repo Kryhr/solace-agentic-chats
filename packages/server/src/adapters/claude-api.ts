@@ -1,3 +1,5 @@
+import type { TurnUsage } from "@solace/shared";
+import { isEmptyUsage, num, put } from "../core/usage";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 
 // Anthropic Messages API pricing, USD per million tokens - sourced from anthropic.com/pricing
@@ -56,8 +58,12 @@ export const claudeApiAdapter: ProviderAdapter = {
       return;
     }
 
-    let inputTokens = 0;
-    let outputTokens = 0;
+    // Absent until the API says otherwise: a stream that died before message_start must not
+    // report "0 tokens in", which is a claim rather than an admission.
+    let inputTokens: number | undefined;
+    let outputTokens: number | undefined;
+    let cacheReadTokens: number | undefined;
+    let cacheWriteTokens: number | undefined;
     let buffer = "";
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -76,9 +82,15 @@ export const claudeApiAdapter: ProviderAdapter = {
             if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
               onEvent({ type: "text", text: event.delta.text });
             } else if (event.type === "message_start") {
-              inputTokens = event.message?.usage?.input_tokens ?? 0;
+              // Anthropic reports the three prompt buckets separately, and on a cached request
+              // cache_read_input_tokens is most of the prompt - keeping only input_tokens here
+              // understated the prompt exactly the way it did for the Claude Code CLI.
+              const u = event.message?.usage;
+              inputTokens = num(u?.input_tokens) ?? inputTokens;
+              cacheReadTokens = num(u?.cache_read_input_tokens) ?? cacheReadTokens;
+              cacheWriteTokens = num(u?.cache_creation_input_tokens) ?? cacheWriteTokens;
             } else if (event.type === "message_delta") {
-              outputTokens = event.usage?.output_tokens ?? outputTokens;
+              outputTokens = num(event.usage?.output_tokens) ?? outputTokens;
             } else if (event.type === "error") {
               onEvent({ type: "error", message: event.error?.message ?? "Anthropic API reported an error" });
             }
@@ -91,10 +103,17 @@ export const claudeApiAdapter: ProviderAdapter = {
       reader.releaseLock();
     }
 
-    onEvent({
-      type: "usage",
-      usage: { inputTokens, outputTokens, totalCostUsd: estimateCost(resolvedModel, inputTokens, outputTokens) },
-    });
+    const usage: TurnUsage = {};
+    put(usage, "inputTokens", inputTokens);
+    put(usage, "outputTokens", outputTokens);
+    put(usage, "cacheReadTokens", cacheReadTokens);
+    put(usage, "cacheWriteTokens", cacheWriteTokens);
+    if (usage.cacheReadTokens !== undefined || usage.cacheWriteTokens !== undefined) usage.cacheCountedInInput = false;
+    // estimatedCostUsd, not totalCostUsd: this figure is multiplied out of a price table in this
+    // file, and the Anthropic API states no price on the stream. Keeping the two apart is what
+    // lets the UI say "estimated" where it is estimated - see TurnUsage.
+    put(usage, "estimatedCostUsd", estimateCost(resolvedModel, inputTokens ?? 0, outputTokens ?? 0));
+    if (!isEmptyUsage(usage)) onEvent({ type: "usage", usage });
     onEvent({ type: "done" });
   },
 };

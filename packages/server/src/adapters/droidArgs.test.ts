@@ -151,7 +151,7 @@ test("the unauthenticated failure is recognised from droid's real message", () =
   assert.ok(!isNotSignedInError("the file could not be written"));
 });
 
-test("usage carries only the two token counts droid reports, and never a fabricated cost", () => {
+test("usage carries every count droid reports, and never a fabricated dollar cost", () => {
   // The exact shape captured from a real envelope.
   const raw = {
     input_tokens: 1200,
@@ -160,15 +160,29 @@ test("usage carries only the two token counts droid reports, and never a fabrica
     cache_creation_input_tokens: 15,
     factory_credits: 7,
   };
-  assert.deepEqual(droidUsage(raw), { inputTokens: 1200, outputTokens: 340 });
+  // The cache buckets used to be dropped here for want of anywhere to put them. They are most
+  // of a real Droid prompt, so dropping them understated every turn.
+  assert.deepEqual(droidUsage(raw), {
+    inputTokens: 1200,
+    outputTokens: 340,
+    cacheReadTokens: 900,
+    cacheWriteTokens: 15,
+    cacheCountedInInput: false,
+    otherCosts: [{ amount: 7, unit: "Factory credit" }],
+  });
   // A Factory credit is not a dollar. Mapping it to totalCostUsd would put a fabricated dollar
-  // figure in front of the user, so no cost is reported for this provider at all.
+  // figure in front of the user, so it is reported in Droid's own unit instead and no dollar
+  // cost is reported for this provider at all.
   assert.equal(droidUsage(raw)!.totalCostUsd, undefined);
+  assert.equal(droidUsage(raw)!.estimatedCostUsd, undefined);
 });
 
 test("a usage block with no usable numbers reports nothing rather than zeros", () => {
   // "we don't know" and "0 tokens" are different facts.
   assert.equal(droidUsage(undefined), undefined);
   assert.equal(droidUsage({}), undefined);
-  assert.equal(droidUsage({ factory_credits: 3 }), undefined);
+});
+
+test("a credit figure with no token counts is still reported - it is a real number droid gave", () => {
+  assert.deepEqual(droidUsage({ factory_credits: 3 }), { otherCosts: [{ amount: 3, unit: "Factory credit" }] });
 });

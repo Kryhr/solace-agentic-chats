@@ -296,14 +296,95 @@ export interface CredentialReveal {
 }
 
 /**
- * Real per-turn usage as reported by the provider's own CLI output (Claude Code's final
- * "result" message, Codex's "turn.completed" event) - never estimated or fabricated. Absent
- * fields just mean that provider didn't report them.
+ * A cost a provider states in a unit that is not dollars - GitHub Copilot's premium requests
+ * and nano-AI units, Factory Droid's credits. These are real figures the provider printed, and
+ * they are the ONLY cost those providers give, so dropping them would mean showing "no cost
+ * reported" for a turn the provider did charge for. They are deliberately not converted into
+ * `totalCostUsd`: nobody outside the provider knows the exchange rate, and a made-up dollar
+ * figure is worse than an honest "1 premium request".
+ */
+export interface UsageCost {
+  /** The number exactly as the provider stated it. */
+  amount: number;
+  /** The provider's own unit, lower-case singular: "premium request", "nano-AIU", "credit". */
+  unit: string;
+}
+
+/**
+ * Real usage as reported by the provider's own CLI output - never estimated, never summed into
+ * existence, never defaulted. This follows the same discipline as RateLimitWindow above: an
+ * ABSENT field means "this provider did not say", which is a different fact from 0, and the UI
+ * must render the two differently.
+ *
+ * Every provider counts differently, and the differences are not cosmetic - they change what
+ * the numbers mean:
+ *
+ *   - Cache tokens are sometimes INSIDE the provider's own inputTokens (Codex counts
+ *     `cached_input_tokens` inside `input_tokens`; Gemini/Qwen count cached content inside the
+ *     prompt count) and sometimes ALONGSIDE it (Anthropic's API, and so Claude Code and Droid,
+ *     report `input_tokens` with cache read/creation as separate additional buckets; OpenCode
+ *     and Kilo report `tokens.input` with `tokens.cache.read` on top). Adding or not adding
+ *     them is therefore a per-provider fact, recorded in `cacheCountedInInput` rather than
+ *     assumed - the alternative is a prompt total that is silently wrong for half the CLIs.
+ *   - Reasoning/thinking tokens are likewise sometimes inside outputTokens (Claude Code says so
+ *     explicitly of `thinkingTokens`; Codex's `reasoning_output_tokens` sits inside
+ *     `output_tokens`) and sometimes outside it (OpenCode's `tokens.reasoning` is a separate
+ *     addend of its own stated total - proved by arithmetic on a real turn). Recorded in
+ *     `reasoningCountedInOutput`.
+ *   - Several providers state a TOTAL that is not the sum of the parts we keep, because it also
+ *     includes buckets they never itemise. That stated total is the number the user sees in
+ *     their own CLI, so it is carried through untouched in `totalTokens` and is never
+ *     overwritten by a sum computed here.
+ *
+ * Nothing in this interface is ever derived from a token count and a price table. The one
+ * exception is `estimatedCostUsd`, which exists precisely so that a figure we calculated can
+ * never be mistaken for one a provider stated.
  */
 export interface TurnUsage {
+  /** Prompt tokens exactly as the provider stated them. Whether cache reads are already inside
+   * this number is answered by `cacheCountedInInput`, not assumed. */
   inputTokens?: number;
+  /** Generated tokens exactly as the provider stated them. Whether reasoning tokens are already
+   * inside this number is answered by `reasoningCountedInOutput`. */
   outputTokens?: number;
+  /** Prompt tokens served from the provider's prompt cache. For Claude Code this is usually the
+   * MAJORITY of the prompt, which is why dropping it understated Claude's input badly. */
+  cacheReadTokens?: number;
+  /** Prompt tokens written into the provider's prompt cache this turn (Anthropic's
+   * `cache_creation_input_tokens`, OpenCode's `tokens.cache.write`). */
+  cacheWriteTokens?: number;
+  /** Thinking/reasoning tokens, where the provider itemises them separately. */
+  reasoningTokens?: number;
+  /** The provider's OWN stated total. Never computed from the fields above - see the note on
+   * this interface. Absent when the provider stated no total of its own. */
+  totalTokens?: number;
+  /** True when the provider's `inputTokens` ALREADY includes `cacheReadTokens`; false when the
+   * two are separate addends. Absent when no cache figure was reported at all, so there is
+   * nothing for it to disambiguate. */
+  cacheCountedInInput?: boolean;
+  /** True when the provider's `outputTokens` ALREADY includes `reasoningTokens`. Absent when no
+   * reasoning figure was reported. */
+  reasoningCountedInOutput?: boolean;
+  /** A dollar cost the PROVIDER stated (Claude Code's `total_cost_usd`, Crush's `cost`,
+   * OpenCode's per-step `cost`). Never calculated here. */
   totalCostUsd?: number;
+  /** A dollar cost THIS APP calculated from a token count and a hard-coded price table. Only
+   * the direct-API adapters set it, because only there is the user genuinely billed per token
+   * on their own key. Kept apart from `totalCostUsd` so the UI can say which it is showing -
+   * conflating the two is how a stale rate card starts reading as a receipt. */
+  estimatedCostUsd?: number;
+  /** Costs the provider stated in its own non-dollar unit. See UsageCost. */
+  otherCosts?: UsageCost[];
+  /** What these numbers cover. "turn" is this turn alone; "session" means the provider only
+   * publishes a running total for the whole conversation (Crush), so the figure must be shown
+   * as a session total and must NOT be added into a running total again. Absent means "turn" -
+   * which is what every provider but Crush reports. */
+  scope?: "turn" | "session";
+  /** One plain sentence naming what these numbers do NOT cover, when the provider's own output
+   * is genuinely incomplete (Copilot publishes no output-token count anywhere in its JSON
+   * stream). Shown to the user verbatim, because "0 out" and "Copilot never says" are different
+   * claims and only one of them is true. */
+  caveat?: string;
 }
 
 /**
