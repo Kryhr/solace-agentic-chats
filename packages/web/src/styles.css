@@ -4701,6 +4701,11 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: var(--space-3) var(--space-4);
+  /* A grid item's default min-width is auto, which means "at least as wide as my widest
+     unbreakable content". One long path inside therefore widened the whole column and pushed
+     the grid past the page. This is the actual containment; the wrapping below is what makes
+     the content fit once the tile stops growing. */
+  min-width: 0;
 }
 
 .mcp-row {
@@ -4730,6 +4735,7 @@ body {
 }
 
 .mcp-cmd {
+  overflow-wrap: anywhere;
   display: block;
   margin-top: var(--space-1);
   font-family: var(--font-mono);
@@ -4770,6 +4776,7 @@ body {
 }
 
 .mcp-tile-blurb {
+  overflow-wrap: anywhere;
   margin: var(--space-2) 0 0;
   font-size: var(--text-xs);
   line-height: var(--lh-snug);
@@ -4778,11 +4785,17 @@ body {
 
 /* What the entry needs before it can work. Warn-coloured because it is a precondition the user
    has to act on, not an error they have made. */
+/* These carry file paths and commands - "/Applications/RobloxStudio.app/Contents/MacOS/StudioMCP"
+   is one unbroken token with no space in it, so normal word wrapping cannot break it and it ran
+   straight out of the tile and off the page. `anywhere` lets the browser break inside the token,
+   and min-width:0 stops the flex/grid parent from sizing itself to fit it instead. */
 .mcp-tile-need {
   margin: var(--space-2) 0 0;
   font-size: var(--text-2xs);
   line-height: var(--lh-snug);
   color: var(--warn);
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 .mcp-tile-need code {
