@@ -9,6 +9,8 @@ import { getPermissionCatalog } from "./permissionCatalog";
 import { TRUST_LEVELS } from "./validateAgentConfig";
 import { listCredentials, listSshCredentials } from "./credentials";
 import { WORKSPACE_ROOT } from "./workspace";
+import { checkAllProviders } from "./providerStatus";
+import type { CoordinationBoard } from "./coordination";
 import type { SshCredentialMeta } from "@solace/shared";
 
 export interface CommandContext {
@@ -17,6 +19,11 @@ export interface CommandContext {
   bus: ChatBus;
   chats: ChatStore;
   archive: ArchiveStore;
+  /** The same board AgentManager coordinates through, so /board reads the live state rather
+   * than a copy of it. Optional only so existing callers and tests that never touch
+   * coordination keep working - /board says plainly when it isn't wired up rather than
+   * printing an empty board, which would read as "nothing is claimed". */
+  board?: CoordinationBoard;
 }
 
 // Built from the shared definitions the composer's autocomplete also renders, so a command
@@ -187,6 +194,136 @@ export async function tryHandleCommand(text: string, ctx: CommandContext): Promi
         return `${a.handle} (${a.provider}${model}) - ${status?.state ?? "offline"}${task}`;
       });
       post(ctx.bus, ctx.channel, lines.join("\n"));
+      return true;
+    }
+
+    /**
+     * The coordination board, which until now existed only in the agents' own prompts: claims,
+     * contracts and blocks were all real and all invisible to the person watching. Everything
+     * printed here is read straight off the live board - there is no summarising step that
+     * could state something the board does not actually hold.
+     */
+    case "board": {
+      if (!isChatChannel(ctx.channel)) {
+        post(ctx.bus, ctx.channel, "/board only works in a chat - the coordination board belongs to a chat, not to one agent's hub");
+        return true;
+      }
+      if (!ctx.board) {
+        // Never an empty board: "nothing is claimed" and "this command cannot see the board"
+        // are completely different statements and must not render identically.
+        post(ctx.bus, ctx.channel, "the coordination board isn't available here, so nothing can be shown for it");
+        return true;
+      }
+      const state = ctx.board.forChat(ctx.channel.chatId);
+      const sections: string[] = [];
+
+      if (state.claims.length > 0) {
+        sections.push(
+          ["Files claimed:", ...state.claims.map((c) => `  ${c.handle} - ${c.paths.join(", ")}${c.note ? ` (${c.note})` : ""}`)].join("\n"),
+        );
+      }
+      if (state.contracts.length > 0) {
+        // Titles and who posted them, not the bodies: a contract body is a design document and
+        // pasting several of them into the chat would bury everything else on the board.
+        sections.push(
+          ["Contracts posted:", ...state.contracts.map((c) => `  "${c.title}" - by ${c.handle}`)].join("\n"),
+        );
+      }
+      if (state.blocks.length > 0) {
+        sections.push(
+          [
+            "Blocked:",
+            ...state.blocks.map((b) => {
+              const what =
+                b.kind === "contract" ? `a contract matching "${b.value}"` : b.kind === "file" ? `${b.value} to exist` : `@${b.value} to post`;
+              return `  ${b.handle} - waiting for ${what}${b.why ? ` (${b.why})` : ""}`;
+            }),
+          ].join("\n"),
+        );
+      }
+
+      post(
+        ctx.bus,
+        ctx.channel,
+        sections.length === 0
+          ? "The coordination board is empty for this chat - no files claimed, no contracts posted, nobody blocked."
+          : sections.join("\n\n"),
+      );
+      return true;
+    }
+
+    /**
+     * Stop and retry were both real AgentManager actions reachable only by finding the right
+     * button on the right agent. Both report what actually happened - stopAgent and retryAgent
+     * each return whether there was anything to act on, and that boolean is the answer here
+     * rather than an optimistic "stopped." posted regardless.
+     */
+    case "stop":
+    case "retry": {
+      const isStop = name === "stop";
+      const handleToken = rest[0];
+      const hubAgentId = requireAgentChannel(ctx.channel);
+      let targets = ctx.agents.listAgents();
+
+      if (handleToken) {
+        const id = findAgentIdByHandle(ctx.agents, handleToken);
+        if (!id) {
+          post(ctx.bus, ctx.channel, `no agent called ${handleToken}`);
+          return true;
+        }
+        targets = targets.filter((a) => a.id === id);
+      } else if (hubAgentId) {
+        // In an agent's own hub the subject is obvious, so no handle is needed there.
+        targets = targets.filter((a) => a.id === hubAgentId);
+      }
+
+      if (targets.length === 0) {
+        post(ctx.bus, ctx.channel, "no agents configured yet");
+        return true;
+      }
+
+      const acted: string[] = [];
+      const nothingToDo: string[] = [];
+      for (const agent of targets) {
+        const did = isStop ? ctx.agents.stopAgent(agent.id) : ctx.agents.retryAgent(agent.id);
+        (did ? acted : nothingToDo).push(agent.handle);
+      }
+
+      const lines = [
+        acted.length > 0 ? (isStop ? `Stopped: ${acted.join(", ")}` : `Re-running the last failed turn for: ${acted.join(", ")}`) : undefined,
+        nothingToDo.length > 0
+          ? isStop
+            ? `Nothing running to stop: ${nothingToDo.join(", ")}`
+            : `No failed turn to retry: ${nothingToDo.join(", ")}`
+          : undefined,
+      ].filter(Boolean);
+      post(ctx.bus, ctx.channel, lines.join("\n"));
+      return true;
+    }
+
+    /**
+     * The same real `<bin> --version` probe the Connections panel runs, which is the only
+     * evidence this app has that a CLI is installed. The version string each CLI actually
+     * printed is shown, because "installed" with nothing behind it is exactly the unbacked
+     * green state the rest of this codebase works to keep out.
+     */
+    case "providers": {
+      const statuses = await checkAllProviders();
+      const lines = statuses.map((s) =>
+        s.installed
+          ? `${s.provider} - installed · ${s.version}`
+          : `${s.provider} - not found on PATH · ${s.installCommand}`,
+      );
+      post(
+        ctx.bus,
+        ctx.channel,
+        [
+          "Coding-agent CLIs on this machine (from a real `--version` on each):",
+          ...lines,
+          "",
+          "This proves each binary runs. It does not prove any of them is signed in.",
+        ].join("\n"),
+      );
       return true;
     }
 
