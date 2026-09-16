@@ -386,7 +386,7 @@ export default function App() {
       )}
       <aside className="sidebar">
         <div className="sidebar-header">
-          <h1>solace</h1>
+          <h1>Solace</h1>
           <span className="brand-sub">agentic chats</span>
         </div>
 

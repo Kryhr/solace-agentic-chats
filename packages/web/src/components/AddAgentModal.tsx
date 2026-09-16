@@ -296,7 +296,18 @@ export function AddAgentModal({
         <h3>Add agent</h3>
         <label>
           Handle (used for @mentions)
-          <input value={handle} onChange={(e) => setHandle(e.target.value)} placeholder="claude-1" />
+          {/* Capitalised as it is typed so what the user sees is what gets saved - the server
+              capitalises on the way in regardless (validateAgentConfig.ts), and a field that
+              silently differs from the stored value is its own small lie. Only the first
+              character, and only while it is a lowercase letter, so the caret never jumps. */}
+          <input
+            value={handle}
+            onChange={(e) => {
+              const v = e.target.value;
+              setHandle(v && v[0] >= "a" && v[0] <= "z" ? v[0].toUpperCase() + v.slice(1) : v);
+            }}
+            placeholder="Claude-1"
+          />
         </label>
         <label>
           Provider

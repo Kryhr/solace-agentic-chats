@@ -15,11 +15,23 @@ const MAX_TASK_LEN = 20_000;
  * mentions.ts, permanently, since the bad agent stayed in memory. Validate everything the
  * route actually depends on downstream, once, here.
  */
+/** Upper-cases the first character only, and only when it is a lowercase letter - so a handle
+ * that starts with a digit, a symbol or an already-capital letter is returned untouched. */
+export function capitalizeFirst(handle: string): string {
+  if (!handle) return handle;
+  const first = handle[0];
+  return first >= "a" && first <= "z" ? first.toUpperCase() + handle.slice(1) : handle;
+}
+
 export function validateNewAgentConfig(
   body: Partial<Omit<AgentConfig, "id">>,
   existingHandles: string[],
 ): { error: string } | { config: Omit<AgentConfig, "id"> } {
-  const handle = typeof body.handle === "string" ? body.handle.trim() : "";
+  // Capitalised on the way in, so the roster reads like a list of names rather than a list of
+  // command names: "Codex", "Claude", "Copilot". Only the first character is touched - a handle
+  // like "OllamaQwen3.5" keeps its own casing, and @mentions are matched case-insensitively
+  // (see mentions.ts) so nothing that already refers to an agent stops working.
+  const handle = capitalizeFirst(typeof body.handle === "string" ? body.handle.trim() : "");
   if (!handle) return { error: "handle is required" };
   if (handle.length > MAX_HANDLE_LEN) return { error: `handle must be ${MAX_HANDLE_LEN} characters or fewer` };
   if (existingHandles.some((h) => h.toLowerCase() === handle.toLowerCase())) {
