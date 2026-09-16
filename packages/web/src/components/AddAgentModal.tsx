@@ -30,7 +30,23 @@ const NEW_KEY_VALUE = "__new__";
 // Mirrors adapters/index.ts's apiAdapters map - only these providers have a direct-API
 // alternative to the CLI/subscription path today. "custom" and "local" are connection-only:
 // there's no CLI to shell out to for an arbitrary OpenAI-compatible endpoint.
-const API_KEY_CAPABLE: ProviderId[] = ["claude-code", "codex-cli", "custom", "local"];
+/**
+ * Only these are API-key backed, and they are exactly the connection kinds that have no CLI:
+ * an arbitrary OpenAI-compatible endpoint, hosted or local.
+ *
+ * A CLI provider is NEVER asked for a key. Claude Code, Codex, Gemini, Qwen, Copilot and
+ * OpenCode each own their own sign-in - you authenticate them once in the terminal, against
+ * your subscription, and this app shells out to that. Offering "API key" as an alternative
+ * sign-in method for those blurred two genuinely different things together: a CLI you have
+ * logged in, and a raw API endpoint you pay per token for. The app already has a separate
+ * connection type for the second one.
+ *
+ * NOTE: adapters/claude-api.ts and openai-api.ts still exist and still work. They are simply
+ * no longer reachable by giving a CLI agent a key, because that was the confusing route. If
+ * key-backed Claude or OpenAI should be offered, it belongs under Hosted API endpoint as its
+ * own connection - Anthropic's wire format is not OpenAI-shaped, so the generic endpoint path
+ * cannot serve it without that work.
+ */
 const API_KEY_ONLY: ProviderId[] = ["custom", "local"];
 
 /** Providers whose agent is backed by a saved connection (base URL + optional key) rather
@@ -319,16 +335,6 @@ export function AddAgentModal({
             ))}
           </select>
         </label>
-
-        {API_KEY_CAPABLE.includes(provider) && !API_KEY_ONLY.includes(provider) && (
-          <label>
-            Sign-in method
-            <select className="select" value={authMode} onChange={(e) => setAuthMode(e.target.value as "cli" | "api-key")}>
-              <option value="cli">Subscription (this machine's CLI login)</option>
-              <option value="api-key">API key</option>
-            </select>
-          </label>
-        )}
 
         {authMode === "api-key" && (
           <>
