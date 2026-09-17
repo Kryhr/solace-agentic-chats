@@ -81,9 +81,17 @@ out of prompt 1's context with no resume, took a mid-turn cancel, and kept its M
 still disabled for every provider, for two honest reasons: OpenCode's ACP surface **cannot carry
 a trust level** — asked to write a file it wrote it without ever requesting permission — so
 enabling it would silently promote `plan` and `manual` agents to unrestricted writes while the
-UI showed their chosen level; and Claude Code's framing is proven but its OAuth is expired, so
-no real model output has ever come through a live session. Enabling either needs one thing each:
-a way to carry trust over ACP, and a signed-in Claude account.
+UI showed their chosen level.
+
+**Claude Code's side is no longer blocked.** The earlier note here said its OAuth was expired and
+that no real model output had come through a live session. That was measured against the default
+login, which has no refresh token and cannot heal itself. Driven against a working account the
+probe returns real output: one pid across four messages, one session id throughout, a
+`control_request` interrupt acknowledged mid-turn, the MCP bridge attached, and — the part that
+disqualified ACP — `--permission-mode` carrying the agent's trust level, from the same
+`flagsForTrustLevel` the spawn-per-turn adapter uses, so the two cannot diverge. Claude Code can
+therefore be switched on without the silent promotion that would make enabling ACP dishonest.
+OpenCode still cannot, and still needs a way to carry trust over ACP.
 
 ## v1.5 — make the room usable at four agents (no transport change)
 
