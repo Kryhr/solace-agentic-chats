@@ -11,6 +11,7 @@ import { permissionOptionsFor, TRUST_LABELS } from "../lib/permissionOptions";
 import { formatProviderError } from "../lib/errorFormat";
 import { buildTranscript, displayText, renderKind } from "../lib/messageKind";
 import { MessageText } from "./MessageText";
+import { UrlBadges } from "./UrlBadges";
 import { TokenUsageBar } from "./TokenUsageBar";
 
 export function AgentHubPage({
@@ -19,6 +20,7 @@ export function AgentHubPage({
   modelInfo,
   permissionInfo,
   directHistory,
+  focusTurnId,
   onBack,
   backLabel,
   onSave,
@@ -33,6 +35,10 @@ export function AgentHubPage({
   modelInfo?: ProviderModelInfo;
   permissionInfo?: ProviderPermissionInfo;
   directHistory: ChatMessage[];
+  /** The turn the reader came here to read in full, from a "full detail in hub" link. Absent for
+   * every other way of arriving, which keeps the normal case - open the hub, land at the newest
+   * message - exactly as it was. */
+  focusTurnId?: string;
   onBack: () => void;
   /** The chat this returns to. Hardcoding "Group chat" was fine when there was only one; with
    * several it named a chat you were often not going back to. */
@@ -68,6 +74,28 @@ export function AgentHubPage({
 
   const shouldAnimate = trackEntrance(directHistory.map((m) => m.id));
   const transcript = buildTranscript(directHistory);
+
+  /**
+   * Land on the turn the reader came here to read, rather than at the bottom of the transcript.
+   *
+   * The whole promise of "full detail in hub" is that the rest of a capped answer is one click
+   * away. Dropping someone at the newest message of a long hub and leaving them to find it
+   * themselves keeps the letter of that and none of the point.
+   *
+   * It also stands the auto-scroll down for this arrival - otherwise the effect above would
+   * yank them straight back to the bottom. Guarded on actually FINDING the turn: a hub whose
+   * history has since been cleared, or a stale pasted link, scrolls nowhere and behaves exactly
+   * as it did before rather than jumping somewhere arbitrary.
+   */
+  useEffect(() => {
+    if (!focusTurnId) return;
+    const first = directHistory.find((m) => m.turnId === focusTurnId);
+    if (!first) return;
+    const el = historyRef.current?.querySelector(`[data-message-id="${CSS.escape(first.id)}"]`);
+    if (!el) return;
+    stickToBottom.current = false;
+    el.scrollIntoView({ block: "center" });
+  }, [focusTurnId, directHistory]);
 
   return (
     <div className="hub-page">
@@ -246,6 +274,8 @@ export function AgentHubPage({
           return (
             <div
               key={m.id}
+              // So a "full detail in hub" link can scroll to the turn it names - see focusTurnId.
+              data-message-id={m.id}
               className={`message-row hub-message ${kind === "user" ? "from-user" : ""} ${
                 isProgress ? "is-progress" : ""
               } ${kind === "answer" ? "is-answer" : ""} ${enter}`}
@@ -261,6 +291,10 @@ export function AgentHubPage({
                 <div className={`body ${kind === "error" ? "error-line" : ""}`}>
                   <MessageText text={displayText(m.text)} />
                 </div>
+                {/* The same verified badge the group chat shows. A hub is where an agent says
+                    "the preview is at localhost:4321" most often, so leaving it unbadged here
+                    would be leaving the claim unchecked exactly where it is most made. */}
+                <UrlBadges checks={m.urlChecks} />
               </div>
             </div>
           );

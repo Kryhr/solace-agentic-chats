@@ -10,11 +10,11 @@ import { join } from "node:path";
  * adapters independently recomputed the same expression to tell the MCP bridge where to call
  * back. That holds only while every copy agrees.
  *
- * It stopped agreeing. A second instance running on a different port left the adapters on the
- * old one, so every agent's post_to_group called the WRONG server carrying a turn token it had
- * never minted, and was correctly refused with "no matching in-flight turn". Agents could not
- * talk to each other mid-turn for an entire session, and one resent its message because it
- * could tell the first had never arrived.
+ * It stopped agreeing. The dev instance moved its listener to 4320 so it could run beside the
+ * stable one, and the adapters went on saying 4310 - so every agent's post_to_group called the
+ * STABLE instance carrying a turn token the DEV instance had minted, and was correctly refused
+ * with "no matching in-flight turn". Agents could not talk to each other mid-turn for an entire
+ * session, and one resent its message because it could tell the first had never arrived.
  *
  * Worse, the same stale literal was in the group-context block, so agents were being TOLD the
  * wrong port was the app's own - the sentence that exists to stop them confusing the app with
@@ -36,7 +36,7 @@ test("nothing outside serverPort.ts computes the port for itself", () => {
   const offenders: string[] = [];
   for (const f of tsFiles(SERVER_SRC)) {
     if (f.endsWith(`core${require("node:path").sep}serverPort.ts`)) continue;
-    const src = readFileSync(f, "utf8");
+    const src = readFileSync(f, "utf8").replace(/\r\n/g, "\n");
     // A literal port default anywhere else is a copy that will diverge from the listener.
     if (/process\.env\.PORT\s*\?\?\s*\d{4}/.test(src)) offenders.push(f);
   }
@@ -51,12 +51,12 @@ test("nothing outside serverPort.ts computes the port for itself", () => {
 test("the listener binds the same constant it hands to the bridge", () => {
   // If these two ever differ again, every agent's mid-turn posting breaks silently - the bridge
   // gets a clean HTTP refusal, not a crash, so nothing looks broken from the server's side.
-  const index = readFileSync(join(SERVER_SRC, "index.ts"), "utf8");
+  const index = readFileSync(join(SERVER_SRC, "index.ts"), "utf8").replace(/\r\n/g, "\n");
   assert.match(index, /const PORT = SERVER_PORT;/);
   assert.match(index, /import \{ SERVER_PORT \} from "\.\/core\/serverPort"/);
 });
 
 test("the port agents are told is the app's own comes from the same constant", () => {
-  const mgr = readFileSync(join(SERVER_SRC, "core", "agentManager.ts"), "utf8");
+  const mgr = readFileSync(join(SERVER_SRC, "core", "agentManager.ts"), "utf8").replace(/\r\n/g, "\n");
   assert.match(mgr, /const solacePorts = String\(SERVER_PORT\);/);
 });

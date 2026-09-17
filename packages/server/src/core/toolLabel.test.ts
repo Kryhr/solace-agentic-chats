@@ -2,7 +2,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { activityLabel, basename, commandHead, describeToolCall, humanizeToolName } from "./toolLabel";
+import {
+  KNOWN_ACTION_NAMES,
+  KNOWN_TOOL_NAMES,
+  activityLabel,
+  basename,
+  classifyToolCall,
+  commandHead,
+  describeToolCall,
+  humanizeToolName,
+} from "./toolLabel";
 
 /**
  * These tests are the guard on the one honesty rule in toolLabel.ts: a label is derived from the
@@ -128,7 +137,7 @@ test("describeToolCall survives input it cannot serialise or recognise", () => {
  * the label now.
  */
 test("real recorded codex stream produces labels from the real commands", () => {
-  const raw = readFileSync(join(import.meta.dirname, "__fixtures__codex-stream.jsonl"), "utf8");
+  const raw = readFileSync(join(import.meta.dirname, "__fixtures__codex-stream.jsonl"), "utf8").replace(/\r\n/g, "\n");
   const labels: string[] = [];
   let agentMessages = 0;
   for (const line of raw.split("\n")) {
@@ -167,4 +176,35 @@ test("copilot's own tool names produce real labels, not identifiers", () => {
   assert.equal(describeToolCall("mcp__solace__post_to_group", { text: "hi" }).label, "Using solace");
   // A hyphenated name that is NOT one of our servers must not be invented into one.
   assert.equal(describeToolCall("fetch_copilot_cli_documentation", {}).label, "Fetch copilot cli documentation");
+});
+
+/**
+ * The label table and the action table are two views of the same provider vocabulary, and the
+ * progress digest counts from the second one. A name present in one and missing from the other
+ * is the drift that would make a digest silently report "0 files written" for a whole provider
+ * while the hub went on labelling its writes perfectly - a wrong number, posted to the group,
+ * with nothing visibly broken.
+ */
+test("every tool the label table knows also has an action category, and vice versa", () => {
+  assert.deepEqual([...KNOWN_TOOL_NAMES].sort(), [...KNOWN_ACTION_NAMES].sort());
+});
+
+test("an action is derived from the provider's real arguments, and an unknown tool counts as nothing", () => {
+  assert.deepEqual(classifyToolCall("Write", { file_path: "C:/repo/src/app.ts" }), {
+    kind: "write",
+    paths: ["C:/repo/src/app.ts"],
+    command: undefined,
+  });
+  // Gemini's spelling of the same thing.
+  assert.equal(classifyToolCall("replace", { absolute_path: "/repo/a.ts" }).kind, "write");
+  // Codex reports a list of changed paths rather than one.
+  assert.deepEqual(classifyToolCall("file_change", { changes: [{ path: "/repo/a.ts" }, { path: "/repo/b.ts" }] }).paths, [
+    "/repo/a.ts",
+    "/repo/b.ts",
+  ]);
+  assert.equal(classifyToolCall("command_execution", { command: "npm test" }).command, "npm test");
+  // The important negative: a tool nobody has catalogued is "other", never guessed into a write
+  // because its name contains a promising word.
+  assert.equal(classifyToolCall("write_memory_summary", {}).kind, "other");
+  assert.deepEqual(classifyToolCall("write_memory_summary", {}).paths, []);
 });

@@ -10,7 +10,9 @@ import {
   MAX_RESUMES,
   MAX_TURN_IDLE_MS,
   MAX_TURN_MS,
+  MAX_DELIVERED_CHARS,
   announcesChainCutoff,
+  deliverableText,
   formatDuration,
   resumeBudgetMs,
   resumeExhausted,
@@ -74,6 +76,47 @@ test("the defaults are exactly the constants the code used before any of this wa
   // configurable - so the promise is spelled out instead: OFF is what the code did before, with
   // reasoning and tool-use lines going only to the agent's own hub.
   assert.equal(DEFAULT_APP_SETTINGS.showAgentWorkInGroupChat, false);
+  assert.equal(DEFAULT_APP_SETTINGS.maxDeliveredChars, MAX_DELIVERED_CHARS);
+});
+
+test("the delivery cap is the one passed in, not the module constant", () => {
+  // Same live-read guarantee as the turn budget. deliverableText defaults to the constant so
+  // every existing caller is unchanged, but drainQueue passes the CONFIGURED value at the
+  // moment of delivery - if this ignored its argument the setting would render, save and
+  // persist while changing nothing, which is the failure this project forbids.
+  const long = "x".repeat(2000);
+  assert.equal(deliverableText(long, 3000), long, "under the cap, nothing is touched");
+
+  const cut = deliverableText(long, 500);
+  assert.ok(cut.startsWith("x".repeat(500)));
+  assert.ok(!cut.startsWith("x".repeat(501)), "the cap passed in is the cap applied");
+  // The cut announces itself with the real length. A silent ellipsis is the original incident:
+  // the receiver read a truncated audit as a "preview" and asked for the rest, twice.
+  assert.match(cut, /was 2000 characters and was cut here at 500/);
+
+  // Omitting it keeps the old behaviour exactly, which every other caller and test relies on.
+  assert.equal(deliverableText("x".repeat(MAX_DELIVERED_CHARS)), "x".repeat(MAX_DELIVERED_CHARS));
+});
+
+test("the delivery cap is read from the settings at the moment of delivery", () => {
+  const store = new SettingsStore({ maxDeliveredChars: 2500 });
+  const manager = midTurnHarness(store);
+  const limits = () => (manager as unknown as { limits: () => { maxDeliveredChars: number } }).limits();
+
+  assert.equal(limits().maxDeliveredChars, 2500);
+  store.update({ maxDeliveredChars: 9000 });
+  assert.equal(limits().maxDeliveredChars, 9000, "a change applies without a restart or a turn boundary");
+});
+
+test("the delivery cap refuses values that would break the callers it exists for", () => {
+  // The ceiling is a real platform limit, not taste: Codex and Copilot pass the prompt on argv,
+  // and Windows stops at ~32,764 characters for the whole command line. A cap above that makes
+  // the turn fail to START, which is worse than a message arriving cut.
+  assert.equal(sanitizeAppSettings({ maxDeliveredChars: 30000 }).maxDeliveredChars, 30000);
+  assert.equal(sanitizeAppSettings({ maxDeliveredChars: 30001 }).maxDeliveredChars, 12000);
+  assert.equal(sanitizeAppSettings({ maxDeliveredChars: 1000 }).maxDeliveredChars, 1000);
+  assert.equal(sanitizeAppSettings({ maxDeliveredChars: 999 }).maxDeliveredChars, 12000);
+  assert.equal(sanitizeAppSettings({ maxDeliveredChars: 0 }).maxDeliveredChars, 12000, "0 is not 'no cap'");
 });
 
 test("every setting is filed under a section that actually exists", () => {

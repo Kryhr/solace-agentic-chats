@@ -276,7 +276,7 @@ describe("tool executor", () => {
     const result = await exec("plan").execute("write_file", JSON.stringify({ path: target, content: "x" }));
     assert.equal(result.isError, true);
     assert.match(result.content, /refused: this agent is in plan mode/);
-    assert.throws(() => readFileSync(target, "utf8"));
+    assert.throws(() => readFileSync(target, "utf8").replace(/\r\n/g, "\n"));
   });
 
   test("plan mode refuses a command", async () => {
@@ -296,7 +296,7 @@ describe("tool executor", () => {
     assert.match(asked[0], /^write_file: /);
     assert.equal(result.isError, true);
     assert.match(result.content, /denied/);
-    assert.throws(() => readFileSync(target, "utf8"));
+    assert.throws(() => readFileSync(target, "utf8").replace(/\r\n/g, "\n"));
   });
 
   test("manual mode approval lets the write through", async () => {
@@ -306,7 +306,7 @@ describe("tool executor", () => {
       JSON.stringify({ path: target, content: "yes" }),
     );
     assert.equal(result.isError, false);
-    assert.equal(readFileSync(target, "utf8"), "yes");
+    assert.equal(readFileSync(target, "utf8").replace(/\r\n/g, "\n"), "yes");
   });
 
   test("manual mode asks before a command, with the command itself on the card", async () => {
@@ -338,7 +338,7 @@ describe("tool executor", () => {
     }).execute("write_file", JSON.stringify({ path: join(root, "unreachable.txt"), content: "x" }));
     // The rejection surfaces as an error result, and crucially not as a success.
     assert.equal(result.isError, true);
-    assert.throws(() => readFileSync(join(root, "unreachable.txt"), "utf8"));
+    assert.throws(() => readFileSync(join(root, "unreachable.txt"), "utf8").replace(/\r\n/g, "\n"));
   });
 
   test("an approval is never raised for a refused write outside the cwd", async () => {
@@ -350,7 +350,7 @@ describe("tool executor", () => {
     );
     assert.equal(result.isError, true);
     assert.match(result.content, /^refused:/);
-    assert.throws(() => readFileSync(join(outside, "pwned.txt"), "utf8"));
+    assert.throws(() => readFileSync(join(outside, "pwned.txt"), "utf8").replace(/\r\n/g, "\n"));
   });
 
   test("write_file creates missing parent directories", async () => {
@@ -359,7 +359,7 @@ describe("tool executor", () => {
       JSON.stringify({ path: "deep/nested/dir/file.txt", content: "made it" }),
     );
     assert.equal(result.isError, false);
-    assert.equal(readFileSync(join(root, "deep", "nested", "dir", "file.txt"), "utf8"), "made it");
+    assert.equal(readFileSync(join(root, "deep", "nested", "dir", "file.txt"), "utf8").replace(/\r\n/g, "\n"), "made it");
   });
 
   test("edit_file replaces an exact string", async () => {
@@ -369,7 +369,7 @@ describe("tool executor", () => {
       JSON.stringify({ path: "edit-me.txt", old_text: "beta", new_text: "BETA" }),
     );
     assert.equal(result.isError, false);
-    assert.equal(readFileSync(join(root, "edit-me.txt"), "utf8"), "alpha\nBETA\ngamma\n");
+    assert.equal(readFileSync(join(root, "edit-me.txt"), "utf8").replace(/\r\n/g, "\n"), "alpha\nBETA\ngamma\n");
   });
 
   test("edit_file refuses an ambiguous match instead of guessing", async () => {
@@ -377,7 +377,7 @@ describe("tool executor", () => {
     const result = await exec("auto").execute("edit_file", JSON.stringify({ path: "dupe.txt", old_text: "x", new_text: "y" }));
     assert.equal(result.isError, true);
     assert.match(result.content, /appears 2 times/);
-    assert.equal(readFileSync(join(root, "dupe.txt"), "utf8"), "x\nx\n");
+    assert.equal(readFileSync(join(root, "dupe.txt"), "utf8").replace(/\r\n/g, "\n"), "x\nx\n");
   });
 
   test("edit_file reports a missing old_text honestly", async () => {

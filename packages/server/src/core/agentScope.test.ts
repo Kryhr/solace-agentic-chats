@@ -18,7 +18,7 @@ import { join } from "node:path";
  * delivery mechanism and hands them a roster of everyone in the chat. So this has to be enforced
  * in routing, not requested in a prompt.
  */
-const SRC = readFileSync(join(import.meta.dirname, "agentManager.ts"), "utf8");
+const SRC = readFileSync(join(import.meta.dirname, "agentManager.ts"), "utf8").replace(/\r\n/g, "\n");
 
 test("the operator's scope is derived from their most recent message", () => {
   assert.match(SRC, /private operatorScope\(chatId: string\): Set<string> \| undefined/);

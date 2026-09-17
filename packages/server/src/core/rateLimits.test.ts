@@ -123,7 +123,7 @@ test("a provider that has never reported has no entry, rather than a zero entry"
   assert.deepEqual(store.list(), []);
 });
 
-test("agents sharing one provider share one observation, newest wins", () => {
+test("agents sharing one provider AND one account share one observation, newest wins", () => {
   const store = new RateLimitStore();
   const older = parseClaudeRateLimitEvent(CLAUDE_EVENT, "2026-01-02T03:00:00.000Z")!;
   const newer = parseClaudeRateLimitEvent(
@@ -134,6 +134,54 @@ test("agents sharing one provider share one observation, newest wins", () => {
   assert.equal(store.record(older), false, "an older observation from a second agent must not overwrite");
   assert.equal(store.list().length, 1);
   assert.equal(store.get("claude-code")?.windows[0].usedPercent, 81);
+});
+
+/**
+ * THE INCIDENT. The operator runs two Claude agents on two different Claude subscriptions
+ * (CLAUDE_CONFIG_DIR per account - providerAccounts.ts, verified live). This store keyed on
+ * provider alone, so whichever account finished a turn most recently overwrote the other, and
+ * the usage view showed ONE "Claude Code" row carrying that figure - presented as the quota of
+ * both accounts. Reading 12% used, the operator would believe a nearly-spent second
+ * subscription had 88% left. A confidently wrong number is the cardinal sin here.
+ */
+test("two accounts of one provider keep two separate figures", () => {
+  const store = new RateLimitStore();
+  const work = parseClaudeRateLimitEvent(CLAUDE_EVENT, "2026-01-02T03:00:00.000Z")!;
+  const personal = parseClaudeRateLimitEvent(
+    { type: "rate_limit_event", rate_limit_info: { unifiedWindows: { five_hour: { utilization: 0.05 } } } },
+    "2026-01-02T03:10:00.000Z",
+  )!;
+  assert.equal(store.record({ ...work, account: "Work" }), true);
+  assert.equal(
+    store.record({ ...personal, account: "Personal" }),
+    true,
+    "a NEWER observation for a DIFFERENT account must not be read as superseding the first",
+  );
+  assert.equal(store.list().length, 2, "one row per account, not one per provider");
+  assert.equal(store.get("claude-code", "Work")?.windows[0].usedPercent, 79);
+  assert.equal(store.get("claude-code", "Personal")?.windows[0].usedPercent, 5);
+});
+
+test("an older observation for one account cannot overwrite that same account", () => {
+  const store = new RateLimitStore();
+  const newer = parseClaudeRateLimitEvent(CLAUDE_EVENT, "2026-01-02T03:10:00.000Z")!;
+  const older = parseClaudeRateLimitEvent(
+    { type: "rate_limit_event", rate_limit_info: { unifiedWindows: { five_hour: { utilization: 0.02 } } } },
+    "2026-01-02T03:00:00.000Z",
+  )!;
+  assert.equal(store.record({ ...newer, account: "Work" }), true);
+  assert.equal(store.record({ ...older, account: "Work" }), false);
+  assert.equal(store.get("claude-code", "Work")?.windows[0].usedPercent, 79);
+});
+
+/** The default login is its own account, NOT a fallback for a labelled one. Borrowing a
+ * labelled account's figure for the default login would reintroduce the same wrong number by a
+ * different route. */
+test("the default login does not inherit a labelled account's figure", () => {
+  const store = new RateLimitStore();
+  store.record({ ...parseClaudeRateLimitEvent(CLAUDE_EVENT, OBSERVED)!, account: "Work" });
+  assert.equal(store.get("claude-code"), undefined);
+  assert.equal(store.get("claude-code", undefined), undefined);
 });
 
 test("persisted state from before this feature (or with junk in it) loads as no observations", () => {
@@ -148,7 +196,13 @@ test("persisted state from before this feature (or with junk in it) loads as no 
 
 test("a well-formed persisted observation round-trips with its timestamp", () => {
   const parsed = parseCodexRateLimitEvent(CODEX_EVENT, OBSERVED)!;
-  assert.deepEqual(sanitizePersistedRateLimits(JSON.parse(JSON.stringify([parsed]))), [parsed]);
+  // `account` is written explicitly on the expected value rather than left off: the parser
+  // never sets it (the runtime stamps it - see accountUsage.test.ts) so the parsed object has
+  // no such key, while the sanitizer always produces one. Both mean the CLI's own default
+  // login; deepStrictEqual is the only thing that can tell them apart.
+  assert.deepEqual(sanitizePersistedRateLimits(JSON.parse(JSON.stringify([parsed]))), [
+    { ...parsed, account: undefined },
+  ]);
 });
 
 
@@ -214,4 +268,19 @@ test("an account home with no rollout for the session reports nothing rather tha
     if (previous === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = previous;
   }
+});
+
+test("the account rides along through persistence, and an older state file reads as the default login", () => {
+  const withAccount = sanitizePersistedRateLimits([
+    { provider: "claude-code", account: "Work", observedAt: OBSERVED, windows: [{ key: "five_hour", label: "5-hour limit", usedPercent: 79 }] },
+  ]);
+  assert.equal(withAccount[0].account, "Work", "a restart must not merge two accounts back into one");
+  const legacy = sanitizePersistedRateLimits([
+    { provider: "claude-code", observedAt: OBSERVED, windows: [{ key: "five_hour", label: "5-hour limit", usedPercent: 79 }] },
+  ]);
+  assert.equal(legacy[0].account, undefined, "no account key means the CLI's own default login, which is what it was");
+  const junk = sanitizePersistedRateLimits([
+    { provider: "claude-code", account: 7, observedAt: OBSERVED, windows: [{ key: "five_hour", label: "5-hour limit", usedPercent: 79 }] },
+  ]);
+  assert.equal(junk[0].account, undefined, "a non-string account is dropped, not coerced");
 });

@@ -1,16 +1,23 @@
-import type { ProviderId, ProviderRateLimit } from "@solace/shared";
+import type { AccountUsage } from "@solace/shared";
 import { Popover } from "./Popover";
-import { providerLabel } from "./ProviderIcon";
+import { ProviderIcon, providerLabel } from "./ProviderIcon";
 
 /**
- * Rate-limit usage per provider, shown next to the composer.
+ * Rate-limit usage per ACCOUNT, shown next to the composer.
  *
  * Every number here came out of a provider's own CLI output and is rendered as reported: the
  * bar width IS the reported percentage, the reset time IS the reported reset time, and the
  * "as of" is when that report arrived. Neither CLI has a pollable quota endpoint - the numbers
- * only ever arrive mid-turn - so a provider that hasn't reported yet says exactly that instead
+ * only ever arrive mid-turn - so an account that hasn't reported yet says exactly that instead
  * of showing an empty or zeroed bar, and no figure is ever derived from token counts, message
  * counts, elapsed time, or anything else that isn't the provider's own percentage.
+ *
+ * One row per account, not per provider. Two agents on two different Claude subscriptions used
+ * to collapse into one "Claude Code" row showing whichever account had spoken most recently,
+ * against both - so the operator could read 12% used and believe a second, nearly-spent
+ * subscription had plenty left. Each row is identified by its account label, with the email and
+ * plan the CLI itself reported (`claude auth status`, which costs no turn) underneath - see
+ * accountName below for why the label leads and not the email.
  */
 function formatPercent(value: number): string {
   const rounded = Math.round(value * 10) / 10;
@@ -40,19 +47,31 @@ function GaugeIcon() {
   );
 }
 
-export function UsageMeter({
-  rateLimits,
-  providersInUse,
-}: {
-  rateLimits: ProviderRateLimit[];
-  /** Providers that actually have an agent configured - the meter only talks about CLIs in use. */
-  providersInUse: ProviderId[];
-}) {
-  // The trigger's headline figure is the single highest window any provider reported, i.e. the
-  // one closest to running out. It is that provider's own number, shown unchanged - it is
-  // picked, not computed.
-  const highest = rateLimits
-    .flatMap((r) => r.windows.map((w) => ({ observation: r, window: w })))
+/**
+ * What to call this row, and what to say underneath it.
+ *
+ * The LABEL is the headline, not the email - and that is a finding, not a preference. Probed
+ * live against the operator's own two Claude logins, `claude auth status` returned the SAME
+ * email for both ("andr3w244@gmail.com") on two genuinely different subscriptions: one team,
+ * one max. Leading with the email would have printed two identical-looking rows for two
+ * different quotas, which is the very confusion this whole change exists to end. The label is
+ * unique by construction (it is a directory name), and there is exactly one default login.
+ *
+ * The email and plan still appear, on the second line, because they are the CLI's own answer to
+ * "which subscription is this" and are often the only way to tell two labels apart. Where a CLI
+ * reports neither, the line falls back to the provider's name alone - never a fabricated one.
+ */
+function accountName(row: AccountUsage): string {
+  return row.account ?? "Default login";
+}
+
+export function UsageMeter({ accounts }: { accounts: AccountUsage[] }) {
+  // The trigger's headline figure is the single highest window any ACCOUNT reported, i.e. the
+  // login closest to running out. It is that account's own number, shown unchanged - it is
+  // picked, not computed, and it is never an average across accounts (which would be a figure
+  // no provider ever reported about anything).
+  const highest = accounts
+    .flatMap((row) => (row.rateLimit?.windows ?? []).map((window) => ({ row, window })))
     .sort((a, b) => b.window.usedPercent - a.window.usedPercent)[0];
 
   return (
@@ -70,43 +89,62 @@ export function UsageMeter({
     >
       <div className="usage-popover-head">
         <span>Rate limits</span>
-        <span className="usage-popover-note">as each provider reported them</span>
+        <span className="usage-popover-note">per account, as each CLI reported</span>
       </div>
-      {providersInUse.length === 0 && <p className="usage-empty">No agents configured yet.</p>}
-      {providersInUse.map((provider) => {
-        const observation = rateLimits.find((r) => r.provider === provider);
-        return (
-          <section key={provider} className="usage-provider">
-            <header className="usage-provider-head">
-              <span className="usage-provider-name">{providerLabel(provider)}</span>
-              {observation?.planType && <span className="usage-plan">{observation.planType}</span>}
-            </header>
-            {!observation ? (
-              <p className="usage-empty">No usage reported yet — run a turn to find out.</p>
-            ) : (
-              <>
-                {observation.windows.map((w) => (
-                  <div key={w.key} className="usage-window">
-                    <div className="usage-window-head">
-                      <span>{w.label}</span>
-                      <span className="usage-window-pct">{formatPercent(w.usedPercent)} used</span>
-                    </div>
-                    <div
-                      className="usage-bar"
-                      role="img"
-                      aria-label={`${w.label}: ${formatPercent(w.usedPercent)} used`}
-                    >
-                      <div className="usage-bar-fill" style={{ width: `${Math.min(w.usedPercent, 100)}%` }} />
-                    </div>
-                    {w.resetsAt !== undefined && <div className="usage-window-reset">resets {formatReset(w.resetsAt)}</div>}
+      {accounts.length === 0 && <p className="usage-empty">No agents configured yet.</p>}
+      {accounts.map((row) => (
+        <section key={`${row.provider}|${row.account ?? ""}`} className="usage-account">
+          <header className="usage-account-head">
+            <ProviderIcon provider={row.provider} size={15} />
+            <div className="usage-account-id">
+              <span className="usage-account-name" title={accountName(row)}>
+                {accountName(row)}
+              </span>
+              <span className="usage-account-sub">
+                {[
+                  providerLabel(row.provider),
+                  // Only when the CLI actually said. An account whose CLI reports no identity
+                  // is named by its label alone rather than by anything inferred.
+                  row.email,
+                  row.agentHandles.length > 0 ? row.agentHandles.map((h) => `@${h}`).join(" ") : undefined,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+            </div>
+            {row.plan && <span className="usage-plan">{row.plan}</span>}
+          </header>
+          {!row.rateLimit ? (
+            <p className="usage-empty">
+              {/* Deliberately not a 0% bar. Nothing has been observed for THIS login, and a
+                  filled-in zero would be a number no provider ever reported. */}
+              {row.loggedIn === false
+                ? "Not signed in on this account yet."
+                : "No usage reported yet — run a turn to find out."}
+            </p>
+          ) : (
+            <>
+              {row.rateLimit.windows.map((w) => (
+                <div key={w.key} className="usage-window">
+                  <div className="usage-window-head">
+                    <span>{w.label}</span>
+                    <span className="usage-window-pct">{formatPercent(w.usedPercent)} used</span>
                   </div>
-                ))}
-                <div className="usage-observed">as of {formatClock(observation.observedAt)}</div>
-              </>
-            )}
-          </section>
-        );
-      })}
+                  <div
+                    className="usage-bar"
+                    role="img"
+                    aria-label={`${accountName(row)}, ${w.label}: ${formatPercent(w.usedPercent)} used`}
+                  >
+                    <div className="usage-bar-fill" style={{ width: `${Math.min(w.usedPercent, 100)}%` }} />
+                  </div>
+                  {w.resetsAt !== undefined && <div className="usage-window-reset">resets {formatReset(w.resetsAt)}</div>}
+                </div>
+              ))}
+              <div className="usage-observed">as of {formatClock(row.rateLimit.observedAt)}</div>
+            </>
+          )}
+        </section>
+      ))}
     </Popover>
   );
 }

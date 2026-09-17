@@ -38,9 +38,15 @@ import { ApprovalRegistry } from "./core/approvalRegistry";
 import { ArchiveStore } from "./core/archiveStore";
 import { SettingsStore } from "./core/settingsStore";
 import { getCopilotQuota } from "./core/copilotQuota";
+import { buildAccountUsage, readAccountIdentities } from "./core/accountUsage";
 import { CoordinationBoard } from "./core/coordination";
+import { TaskBoard } from "./core/taskBoard";
+import { PortRegistry } from "./core/portRegistry";
+import { attachUrlVerification } from "./core/urlVerification";
 import { isAllowedOrigin } from "./core/originPolicy";
 import { tryHandleCommand } from "./core/commands";
+import { ProgressDigest } from "./core/progressDigest";
+import type { ChatFeatures } from "./core/chatFeatures";
 import { checkGithubAuth, checkGithubConnection } from "./core/github";
 import {
   canReadVaultAtTrustLevel,
@@ -79,10 +85,10 @@ import {
   rememberImportedRepo,
   withInstalledIn,
 } from "./core/skills";
-import type { Block, ProviderId } from "@solace/shared";
+import type { AccountUsage, Block, ProviderId } from "@solace/shared";
 
-// From core/serverPort.ts, which is the ONLY place the port is decided - the listener, the MCP
-// bridge and the group-context block all read that one constant. See that file for why.
+// From core/serverPort.ts, the ONLY place the port is decided - the listener, the MCP bridge
+// and the group-context block all read that one constant. See that file for why.
 const PORT = SERVER_PORT;
 
 /**
@@ -116,6 +122,7 @@ async function main() {
   // object every other consumer has rather than a copy taken at boot.
   const settings = new SettingsStore(persisted.settings);
   const board = new CoordinationBoard(persisted.coordination);
+  const tasks = new TaskBoard(persisted.tasks);
   const chats = new ChatStore(persisted.chats, persisted.projects, settings);
   // User-registered MCP servers. The adapters do NOT take these through runTurn - they pull
   // them from the module-level provider registered just below, so that every path into a turn
@@ -126,6 +133,9 @@ async function main() {
   // core/connectedProviders.ts - an empty list here is the correct reading of an older state
   // file, not a failure to load one.
   const connectedClis = new ConnectedProviderStore(persisted.connectedCliProviders);
+  // Ports and servers. Global rather than per chat: a port is a property of this machine, so
+  // two agents in two different chats picking the same number is the same fight as two in one.
+  const ports = new PortRegistry(persisted.ports, WORKSPACE_ROOT);
   setMcpServerProvider((agentId) => resolveMcpServers(mcpServers.list(), agentId, WORKSPACE_ROOT));
   const agents = new AgentManager(
     bus,
@@ -137,7 +147,37 @@ async function main() {
     persisted.rateLimits,
     settings,
     board,
+    tasks,
   );
+
+  /**
+   * The progress digest: one derived line into the group every few minutes of a long turn.
+   *
+   * Posted as a system message so it can never be mistaken for something an agent said. Its
+   * whole content is COUNTED from the tool-use events the turn actually emitted - see
+   * core/progressDigest.ts, where that rule is written down and enforced.
+   */
+  const digest = new ProgressDigest(settings, (chatId, text) => {
+    bus.postMessage({
+      id: nanoid(),
+      channel: { chatId },
+      authorId: "system",
+      authorHandle: "system",
+      mentions: [],
+      text,
+      createdAt: new Date().toISOString(),
+    });
+  });
+  agents.progress = digest;
+  digest.start();
+
+  /**
+   * The subsystems the v1.5 commands drive, each landing on its own branch. Left undefined
+   * until then, which makes every command that needs one say so by name when it is run rather
+   * than print an empty result. Wiring one up is a single property here - see
+   * core/chatFeatures.ts.
+   */
+  const features: ChatFeatures = {};
 
   const persist = debounce(
     () =>
@@ -152,15 +192,37 @@ async function main() {
         projects: chats.listProjects(),
         settings: settings.get(),
         coordination: board.snapshot(),
+        tasks: tasks.snapshot(),
         mcpServers: mcpServers.list(),
         connectedCliProviders: connectedClis.list(),
+        ports: ports.snapshot(),
       }),
     300,
   );
+  ports.onChange = persist;
+  // Every tab shows the same Running servers panel, and a server killed in one has to stop
+  // being green in the others without a reload.
+  ports.onBroadcast = (state) => bus.emitEvent({ type: "servers:updated", payload: state });
+  // Any localhost URL an agent posts gets a real HTTP check, written back onto that message as
+  // a badge. Attached to the bus rather than to AgentManager: every message passes through here
+  // exactly once whatever posted it. See core/urlVerification.ts for why a check that could not
+  // run produces no badge at all rather than a cross.
+  attachUrlVerification(bus);
   mcpServers.onChange = persist;
   connectedClis.onChange = persist;
   bus.onChange = persist;
   agents.onChange = persist;
+  // The two boards write themselves as well as being written through AgentManager - forgetAgent
+  // and TaskBoard.create both mutate without a turn behind them. Without this, a board change
+  // made outside a turn would sit in memory until something else happened to trigger a save.
+  board.onChange = persist;
+  tasks.onChange = () => {
+    persist();
+    // Every open tab shows the same board, and the panel is only useful if it is current: the
+    // whole point of tasks-as-state is that "who owns what" stops being something you have to
+    // read a transcript to work out.
+    bus.emitEvent({ type: "tasks:updated", payload: { tasks: tasks.snapshot() } });
+  };
   settings.onChange = (next) => {
     persist();
     // Every tab shows the same Settings page, and these change how the server behaves for
@@ -284,6 +346,13 @@ async function main() {
 
   app.get<{ Params: { id: string } }>("/api/chats/:id/history", async (req) => bus.getHistoryFor({ chatId: req.params.id }));
 
+  /** This chat's task board, for the panel. Read-only on purpose: a task is claimed and
+   * finished by whoever is actually doing it, and a button that let the operator mark someone
+   * else's work done would put the board straight back to being a label nothing keeps true. */
+  app.get<{ Params: { id: string } }>("/api/chats/:id/tasks", async (req) => ({
+    tasks: agents.tasksForChat(req.params.id),
+  }));
+
   app.post<{ Params: { id: string }; Body: { text: string } }>("/api/chats/:id/messages", async (req, reply) => {
     const chat = chats.getChat(req.params.id);
     if (!chat) {
@@ -291,7 +360,7 @@ async function main() {
       return { error: "chat not found" };
     }
     const channel = { chatId: chat.id };
-    const handled = await tryHandleCommand(req.body.text, { channel, agents, bus, chats, archive, board });
+    const handled = await tryHandleCommand(req.body.text, { channel, agents, bus, chats, archive, board, features, digest });
     if (!handled) agents.submitMessage(chat.id, "user", "you", req.body.text);
     return { ok: true };
   });
@@ -368,6 +437,11 @@ async function main() {
     // Drop this agent from every per-agent MCP scope, so a scope does not keep a dead id that
     // would silently re-attach a server if that id were ever reused.
     mcpServers.forgetAgent(req.params.id);
+    // Release the ports it held, or they would be unavailable forever with nobody left to give
+    // them back. Servers it started are deliberately NOT killed - a process serving something
+    // does not stop mattering because the agent that happened to launch it was deleted. The
+    // Running servers panel still shows and can still stop them.
+    ports.forgetAgent(req.params.id);
     return { ok: true };
   });
 
@@ -401,11 +475,26 @@ async function main() {
     })
     .catch(() => {});
 
-  app.get("/api/usage", async () => {
+  /**
+   * Usage, one row per ACCOUNT rather than one per provider.
+   *
+   * The shape changed here because the old one could not express the truth: it returned a flat
+   * list keyed by provider, so two agents on two different Claude subscriptions had exactly one
+   * slot between them and the newer observation silently stood in for both. See
+   * core/accountUsage.ts and ProviderRateLimit.account.
+   *
+   * The identity probe (`claude auth status` and its siblings) spends nothing - no turn, no
+   * tokens - and is memoised for five minutes, so opening the popover repeatedly does not
+   * re-spawn a process per account.
+   */
+  app.get("/api/usage", async (): Promise<AccountUsage[]> => {
+    const roster = agents.listAgents();
     const reported = agents.listRateLimits();
-    if (reported.some((r) => r.provider === "copilot-cli")) return reported;
-    const copilot = await getCopilotQuota();
-    return copilot ? [...reported, copilot] : reported;
+    const limits = reported.some((r) => r.provider === "copilot-cli")
+      ? reported
+      : await getCopilotQuota().then((q) => (q ? [...reported, q] : reported)).catch(() => reported);
+    const identities = await readAccountIdentities(roster.map((a) => a.provider));
+    return buildAccountUsage(roster, limits, identities);
   });
 
   app.get("/api/providers/status", async () => checkAllProviders());
@@ -423,7 +512,7 @@ async function main() {
 
   app.post<{ Params: { id: string }; Body: { text: string } }>("/api/agents/:id/chat", async (req) => {
     const channel = { agentId: req.params.id };
-    const handled = await tryHandleCommand(req.body.text, { channel, agents, bus, chats, archive, board });
+    const handled = await tryHandleCommand(req.body.text, { channel, agents, bus, chats, archive, board, features, digest });
     if (!handled) agents.submitDirectMessage(req.params.id, req.body.text);
     return { ok: true };
   });
@@ -1012,6 +1101,66 @@ async function main() {
   );
 
   /**
+   * The task board's four tools. Same loopback + turn-token pair as every other /internal
+   * route, and the same `inbound` piggy-back, for the same reason: the response is a boundary
+   * the agent chose to stop at, so it is a safe moment to hand it anything that arrived.
+   *
+   * Pure bookkeeping inside this app, like the coordination routes above - taking a task and
+   * finishing one change what the board says, not what is on disk - so there is nothing here
+   * to gate behind approval.
+   */
+  app.post<{ Body: { agentId: string; turnToken?: string; title?: string; depends_on?: string[]; files?: string[] } }>(
+    "/internal/solace/task/create",
+    async (req, reply) => {
+      const result = agents.createTask(req.body.agentId, req.body.turnToken, {
+        title: req.body.title ?? "",
+        dependsOn: req.body.depends_on,
+        files: req.body.files,
+      });
+      if (!result.ok) {
+        reply.code(result.error === "no matching in-flight turn" ? 403 : 400);
+        return result;
+      }
+      return { ...result, inbound: agents.takeInboundNotice(req.body.agentId, req.body.turnToken) };
+    },
+  );
+
+  app.post<{ Body: { agentId: string; turnToken?: string; task_id?: string } }>(
+    "/internal/solace/task/claim",
+    async (req, reply) => {
+      const result = agents.claimTask(req.body.agentId, req.body.turnToken, req.body.task_id ?? "");
+      if (!result.ok) {
+        // "already owned by someone else" is a real request being refused on purpose - the
+        // single most important refusal this board makes - not an authorization failure.
+        reply.code(result.error === "no matching in-flight turn" ? 403 : 409);
+        return result;
+      }
+      return { ...result, inbound: agents.takeInboundNotice(req.body.agentId, req.body.turnToken) };
+    },
+  );
+
+  app.post<{ Body: { agentId: string; turnToken?: string; task_id?: string; result?: string } }>(
+    "/internal/solace/task/finish",
+    async (req, reply) => {
+      const done = agents.finishTask(req.body.agentId, req.body.turnToken, req.body.task_id ?? "", req.body.result);
+      if (!done.ok) {
+        reply.code(done.error === "no matching in-flight turn" ? 403 : 400);
+        return done;
+      }
+      return { ...done, inbound: agents.takeInboundNotice(req.body.agentId, req.body.turnToken) };
+    },
+  );
+
+  app.post<{ Body: { agentId: string; turnToken?: string } }>("/internal/solace/task/list", async (req, reply) => {
+    const result = agents.listTasks(req.body.agentId, req.body.turnToken);
+    if (!result.ok) {
+      reply.code(403);
+      return result;
+    }
+    return { ...result, inbound: agents.takeInboundNotice(req.body.agentId, req.body.turnToken) };
+  });
+
+  /**
    * How a running turn gets ONE vault entry's secret, addressed by the label the user gave
    * it. Same loopback + turn-token pair as every other /internal route, plus two rules that
    * only apply here:
@@ -1096,6 +1245,123 @@ async function main() {
     },
   );
 
+  /**
+   * reserve_port. Same loopback + turn-token pair as every other /internal route.
+   *
+   * The reply is deliberately verbose about a REFUSED preference: "@codex reserved 4545 at
+   * 14:02 for the docs preview" is the sentence that ends a port fight, and an agent that is
+   * only told "here is 4401 instead" will ask for 4545 again on its next turn.
+   */
+  app.post<{ Body: { agentId: string; turnToken?: string; preferred?: number; purpose?: string } }>(
+    "/internal/solace/reserve-port",
+    async (req, reply) => {
+      const ctx = agents.turnContextFor(req.body.agentId, req.body.turnToken);
+      if ("error" in ctx) {
+        reply.code(403);
+        return { ok: false, error: ctx.error };
+      }
+      const result = await ports.reserve(ctx.agent, {
+        preferred: req.body.preferred,
+        purpose: typeof req.body.purpose === "string" ? req.body.purpose.trim() || undefined : undefined,
+        chatId: ctx.chatId,
+      });
+      if (!result.ok) {
+        reply.code(409);
+        return result;
+      }
+      // Visible in the chat, for the same reason a file claim is: a reservation nobody can see
+      // is the prose it replaces. This is the line another agent reads before picking a port.
+      bus.postMessage({
+        id: nanoid(),
+        channel: { chatId: ctx.chatId },
+        authorId: "system",
+        authorHandle: "system",
+        mentions: [],
+        text:
+          `@${ctx.agent.handle} reserved port ${result.port}` +
+          `${req.body.purpose ? ` for ${String(req.body.purpose).trim()}` : ""}. It is held until they release it.`,
+        createdAt: new Date().toISOString(),
+      });
+      return { ...result, inbound: agents.takeInboundNotice(req.body.agentId, req.body.turnToken) };
+    },
+  );
+
+  app.post<{ Body: { agentId: string; turnToken?: string; port?: number } }>(
+    "/internal/solace/release-port",
+    async (req, reply) => {
+      const ctx = agents.turnContextFor(req.body.agentId, req.body.turnToken);
+      if ("error" in ctx) {
+        reply.code(403);
+        return { ok: false, error: ctx.error };
+      }
+      const port = Number(req.body.port);
+      if (!Number.isInteger(port)) {
+        reply.code(400);
+        return { ok: false, error: "release_port needs the port number you were given" };
+      }
+      // Only the holder can release - a release by anybody else is how one agent takes
+      // another's port while believing it is tidying up.
+      const released = ports.releasePort(port, ctx.agent.id);
+      return { ok: true, released, inbound: agents.takeInboundNotice(req.body.agentId, req.body.turnToken) };
+    },
+  );
+
+  /**
+   * start_server. The route that makes "it's live" survive the turn that said it.
+   *
+   * The process is spawned by THIS process, detached - see core/portRegistry.ts for the full
+   * reasoning, including why killCliTree needs no exception for it.
+   */
+  app.post<{ Body: { agentId: string; turnToken?: string; command?: string; port?: number; purpose?: string } }>(
+    "/internal/solace/start-server",
+    async (req, reply) => {
+      const ctx = agents.turnContextFor(req.body.agentId, req.body.turnToken);
+      if ("error" in ctx) {
+        reply.code(403);
+        return { ok: false, error: ctx.error };
+      }
+      const result = await ports.startServer(ctx.agent, {
+        command: typeof req.body.command === "string" ? req.body.command : "",
+        // The agent's own working directory, never a path from the request. An agent naming its
+        // own cwd would be a way to run a process anywhere on the machine from a tool whose
+        // whole description is about dev servers.
+        cwd: ctx.agent.cwd,
+        port: Number(req.body.port),
+        chatId: ctx.chatId,
+        purpose: typeof req.body.purpose === "string" ? req.body.purpose.trim() || undefined : undefined,
+      });
+      if (!result.ok) {
+        reply.code(409);
+        return result;
+      }
+      bus.postMessage({
+        id: nanoid(),
+        channel: { chatId: ctx.chatId },
+        authorId: "system",
+        authorHandle: "system",
+        mentions: [],
+        text:
+          `@${ctx.agent.handle} started a server on port ${result.server.port} (pid ${result.server.pid}): ` +
+          `${result.server.command}. It will keep running after this turn ends - stop it from Running servers.`,
+        createdAt: new Date().toISOString(),
+      });
+      return { ...result, inbound: agents.takeInboundNotice(req.body.agentId, req.body.turnToken) };
+    },
+  );
+
+  app.post<{ Body: { agentId: string; turnToken?: string } }>("/internal/solace/servers", async (req, reply) => {
+    if (!agents.verifyTurnToken(req.body.agentId, req.body.turnToken)) {
+      reply.code(403);
+      return { error: "no matching in-flight turn" };
+    }
+    const state = ports.list();
+    return {
+      inbound: agents.takeInboundNotice(req.body.agentId, req.body.turnToken),
+      reservations: state.reservations,
+      servers: state.servers.filter((s) => !s.stoppedAt),
+    };
+  });
+
   app.post<{ Body: { agentId: string; turnToken?: string } }>("/internal/solace/agents", async (req, reply) => {
     if (!agents.verifyTurnToken(req.body.agentId, req.body.turnToken)) {
       reply.code(403);
@@ -1118,6 +1384,27 @@ async function main() {
           currentTask: a.currentTask,
         })),
     };
+  });
+
+  /**
+   * The Running servers panel.
+   *
+   * `list()` re-verifies every recorded pid before answering, so this route cannot report a
+   * server that has died - which would be the same unverified-claim bug this whole feature
+   * exists to fix, committed by the UI instead of by an agent.
+   */
+  app.get("/api/servers", async () => {
+    ports.pruneStopped();
+    return ports.list();
+  });
+
+  app.post<{ Params: { id: string } }>("/api/servers/:id/stop", async (req, reply) => {
+    const result = ports.stopServer(req.params.id);
+    if (!result.ok) {
+      reply.code(404);
+      return { error: result.error ?? "no such server" };
+    }
+    return { ok: true };
   });
 
   app.post<{ Params: { id: string }; Body: { approved: boolean } }>("/api/approvals/:id/resolve", async (req, reply) => {

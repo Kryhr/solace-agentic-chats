@@ -123,32 +123,65 @@ export function parseCodexRateLimitEvent(event: unknown, observedAt: string): Pr
 }
 
 /**
- * Last-known rate limit per provider, not per agent: several agents can be pointed at the same
- * CLI and therefore the same real account, in which case they all draw down one shared limit.
- * The newest observation for a provider wins regardless of which agent's turn produced it.
+ * The key an observation is filed under: provider AND account.
+ *
+ * A pipe separator, because it cannot occur in a ProviderId (lowercase letters and hyphens) nor
+ * in an account label (isValidAccountLabel restricts those to letters, numbers, space, - and _),
+ * so no pair of distinct accounts can ever collide onto one key. Undefined - the CLI's own
+ * default login - is its own key, distinct from every labelled account.
+ *
+ * Deliberately a printable character rather than the NUL this first used. NUL is the obvious
+ * "cannot appear in real data" choice, but writing it means a raw control byte in a source file,
+ * which this repo has been bitten by before: it survives compilation, so nothing fails, and then
+ * turns up as a corrupt-looking diff. A separator that is impossible in the data AND readable in
+ * the file is strictly better.
+ */
+export function rateLimitKey(provider: ProviderId, account: string | undefined): string {
+  return `${provider}|${account ?? ""}`;
+}
+
+/**
+ * Last-known rate limit per provider AND ACCOUNT, not per agent.
+ *
+ * Per-agent would be wrong in the other direction: several agents CAN be pointed at one CLI and
+ * one login, and they really do draw down a single shared limit, so the newest observation for
+ * one account correctly wins over an older one whichever agent's turn produced it.
+ *
+ * But an ACCOUNT is where a subscription's quota actually lives. This app runs two Claude
+ * agents on two different Claude accounts (CLAUDE_CONFIG_DIR per account, core/providerAccounts
+ * .ts), and while this store keyed on provider alone, the second account's turn overwrote the
+ * first account's figure: the usage view showed one row for "Claude Code" carrying whichever
+ * account had spoken most recently, and presented it as the quota of BOTH. A wrong number shown
+ * confidently is worse than no number, so the key gained the account.
  */
 export class RateLimitStore {
-  private byProvider = new Map<ProviderId, ProviderRateLimit>();
+  private byAccount = new Map<string, ProviderRateLimit>();
 
   constructor(initial: ProviderRateLimit[] = []) {
     for (const entry of initial) this.record(entry);
   }
 
-  /** Returns false when the incoming observation is older than the one already held, which can
-   * happen because two agents on the same provider run turns concurrently. */
+  /** Returns false when the incoming observation is older than the one already held FOR THAT
+   * SAME ACCOUNT, which can happen because two agents on one account run turns concurrently.
+   * An observation for a different account is never "older than" one for this account - they
+   * describe different subscriptions - so it is always recorded. */
   record(entry: ProviderRateLimit): boolean {
-    const existing = this.byProvider.get(entry.provider);
+    const key = rateLimitKey(entry.provider, entry.account);
+    const existing = this.byAccount.get(key);
     if (existing && existing.observedAt > entry.observedAt) return false;
-    this.byProvider.set(entry.provider, entry);
+    this.byAccount.set(key, entry);
     return true;
   }
 
-  get(provider: ProviderId): ProviderRateLimit | undefined {
-    return this.byProvider.get(provider);
+  /** The figure for one login. Undefined `account` means the CLI's own default login and does
+   * NOT fall back to a labelled account's figure: those are different subscriptions, and
+   * borrowing one's number for the other is the exact bug this keying exists to prevent. */
+  get(provider: ProviderId, account?: string): ProviderRateLimit | undefined {
+    return this.byAccount.get(rateLimitKey(provider, account));
   }
 
   list(): ProviderRateLimit[] {
-    return [...this.byProvider.values()];
+    return [...this.byAccount.values()];
   }
 }
 
@@ -159,7 +192,7 @@ export function sanitizePersistedRateLimits(value: unknown): ProviderRateLimit[]
   const out: ProviderRateLimit[] = [];
   for (const entry of value) {
     if (!entry || typeof entry !== "object") continue;
-    const { provider, windows, observedAt, planType } = entry as Record<string, unknown>;
+    const { provider, account, windows, observedAt, planType } = entry as Record<string, unknown>;
     if (typeof provider !== "string" || typeof observedAt !== "string" || !Array.isArray(windows)) continue;
     const clean = windows
       .filter((w): w is RateLimitWindow => {
@@ -175,6 +208,10 @@ export function sanitizePersistedRateLimits(value: unknown): ProviderRateLimit[]
     if (clean.length === 0) continue;
     out.push({
       provider: provider as ProviderId,
+      // A state file written before usage was keyed by account has no `account` key at all, and
+      // reads back as the default login - which is exactly what it was: every observation in
+      // such a file predates the second account existing in the store's key.
+      account: typeof account === "string" && account.length > 0 ? account : undefined,
       windows: clean,
       observedAt,
       planType: typeof planType === "string" ? planType : undefined,

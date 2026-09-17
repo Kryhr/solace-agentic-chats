@@ -79,6 +79,37 @@ const GET_SECRET_DESCRIPTION = [
   "pass it in a way that does not (a prompt, an env var, a file you delete afterwards).",
 ].join("\n");
 
+const RESERVE_PORT_DESCRIPTION = [
+  "Get a port that is genuinely free and is then held in YOUR name, before you start anything on",
+  "it. Call this instead of picking a number - two agents in this chat have already restarted each",
+  "other's servers by both deciding on the same port in conversation.",
+  "",
+  "The port you get back has just been bind-tested, so it is not merely unclaimed inside Solace -",
+  "nothing on this machine is on it. Another agent asking after you gets a different port and is",
+  "told you hold this one.",
+  "",
+  "Release it with release_port when you are done.",
+].join("\n");
+
+const START_SERVER_DESCRIPTION = [
+  "Start a long-running server (a dev server, a preview, an API) in a way that SURVIVES the end of",
+  "your turn.",
+  "",
+  "This matters more than it sounds. A server you start with your own shell tool is a child of the",
+  "process running your turn, and that whole process tree is killed when the turn ends or is",
+  "stopped. So the URL is live while you are writing about it and dead by the time the user clicks",
+  "it - which has happened repeatedly and is why this tool exists. A server started HERE is",
+  "launched by the Solace server itself, detached from your turn, and keeps running until",
+  "somebody stops it from the Running servers panel.",
+  "",
+  "Pass a port you got from reserve_port. The command must be one line and runs in your working",
+  "directory. Do not use this for a command that finishes on its own (a build, a test run) - use",
+  "your normal shell tool for those.",
+  "",
+  "IMPORTANT: a server started any other way still dies with your turn. If you want it to be there",
+  "afterwards, it has to be started with this.",
+].join("\n");
+
 const server = new Server({ name: "solace", version: "0.0.1" }, { capabilities: { tools: {} } });
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -180,6 +211,125 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           why: { type: "string", description: "Optional: what you will do once it arrives." },
         },
         required: ["kind", "value"],
+      },
+    },
+    {
+      name: "list_tasks",
+      description:
+        "Show the shared task board for this chat: every task, who owns it, what it is waiting for and " +
+        "which files it covers. Call this FIRST, before you decide what to work on - the board is what " +
+        "stops two agents building the same thing, which has actually happened here twice.",
+      inputSchema: { type: "object", properties: {} },
+    },
+    {
+      name: "create_task",
+      description:
+        "Put a piece of work on the board so it has an owner, an id everyone can refer to, and a place in " +
+        "the order. Use it for work you are about to start, and for work you are handing to someone else. " +
+        "`depends_on` is what must be FINISHED first: a task that depends on another is not started, and " +
+        "whoever owns it is woken automatically the moment the dependency is finished - so express an " +
+        "ordering here rather than asking another agent to tell you when they are done.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "One line saying what is to be done. Specific enough to claim." },
+          depends_on: {
+            type: "array",
+            items: { type: "string" },
+            description: 'Task ids that must be finished first, e.g. ["T1","T2"]. Call list_tasks for the ids.',
+          },
+          files: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Files or folders this task covers, relative to your working directory. Claiming the task claims " +
+              "these, so other agents are told not to touch them.",
+          },
+        },
+        required: ["title"],
+      },
+    },
+    {
+      name: "claim_task",
+      description:
+        "Take a task, by id, BEFORE you start building it. This is the one call that actually prevents " +
+        "duplicated work: a task can only be claimed once, so if someone already owns it you are told who " +
+        "instead of quietly building a second copy. It also claims that task's files for you. " +
+        "If the task waits on an unfinished one, you take ownership but must NOT start - end your turn, and " +
+        "you will be given a fresh one automatically the moment the dependency is finished.",
+      inputSchema: {
+        type: "object",
+        properties: { task_id: { type: "string", description: 'The id from list_tasks, e.g. "T3".' } },
+        required: ["task_id"],
+      },
+    },
+    {
+      name: "finish_task",
+      description:
+        "Mark your task done, and release its files. Everyone whose own task was waiting on this one is " +
+        "given a turn immediately - so this is how work moves on, and skipping it leaves them idle waiting " +
+        "for something that already happened. Only say it is done if it actually is.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          task_id: { type: "string" },
+          result: { type: "string", description: "Optional: one line on what landed, for the board." },
+        },
+        required: ["task_id"],
+      name: "reserve_port",
+      description: RESERVE_PORT_DESCRIPTION,
+      inputSchema: {
+        type: "object",
+        properties: {
+          preferred: {
+            type: "integer",
+            description:
+              "Optional: a specific port you would like. It is given to you only if nobody holds it AND nothing is actually listening on it; otherwise you get a different one and are told exactly why.",
+          },
+          purpose: {
+            type: "string",
+            description: 'What it is for, e.g. "the marketing site preview". Shown to the other agents.',
+          },
+        },
+      },
+    },
+    {
+      name: "start_server",
+      description: START_SERVER_DESCRIPTION,
+      inputSchema: {
+        type: "object",
+        properties: {
+          command: {
+            type: "string",
+            description:
+              "The command line that starts the server, on ONE line (chain with &&). It runs in your working directory.",
+          },
+          port: {
+            type: "integer",
+            description: "The port it will listen on. Call reserve_port first and pass what it gave you.",
+          },
+          purpose: { type: "string", description: "Optional: what this server is, for the Running servers panel." },
+        },
+        required: ["command", "port"],
+      },
+    },
+    {
+      name: "list_servers",
+      description:
+        "What is actually running right now and who holds which port - checked against real process ids, not " +
+        "remembered. Look here before you assume a port is free, before you restart anything, and before you tell " +
+        "the group a URL is live.",
+      inputSchema: { type: "object", properties: {} },
+    },
+    {
+      name: "release_port",
+      description:
+        "Give a port back when you are finished with it, so another agent can have it. Only you can release the " +
+        "ports you hold. This does NOT stop a server - use it after the server is gone.",
+      inputSchema: {
+        type: "object",
+        properties: { port: { type: "integer" } },
+        required: ["port"],
       },
     },
     {
@@ -317,6 +467,148 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         json.wokenImmediately
           ? "That had already happened, so you have been given a fresh turn instead of waiting."
           : "Recorded. End your turn now - you will be given a new one automatically when it lands.",
+        json,
+      );
+    }
+
+    if (name === "list_tasks") {
+      const { status, json } = await callServer("/internal/solace/task/list", {});
+      if (status === 403) return toolError("This turn is no longer the agent's in-flight turn.");
+      const tasks = Array.isArray(json?.tasks) ? json.tasks : [];
+      if (tasks.length === 0) {
+        return withInbound(
+          "The board is empty. Create the work you are about to do with create_task, so the others can see it is taken.",
+          json,
+        );
+      }
+      // Rendered as lines rather than raw JSON: this is read by a model, and the fields that
+      // decide what it does next (who owns it, what it waits for) should not be buried in
+      // punctuation. Finished tasks stay listed - "already done" is the answer to the question
+      // that was actually asked in a real chat, after the answer had already been posted.
+      const byId = new Map(tasks.map((t) => [t.id, t]));
+      const lines = tasks.map((t) => {
+        const waiting = (t.dependsOn ?? []).filter((d) => byId.get(d) && byId.get(d).status !== "done");
+        const state =
+          t.status === "done"
+            ? `done by @${t.ownerHandle ?? "?"}${t.result ? ` - ${t.result}` : ""}`
+            : t.status === "claimed"
+              ? `@${t.ownerHandle}${waiting.length ? ` (waiting on ${waiting.join(", ")})` : " (in progress)"}`
+              : "unclaimed";
+        const files = t.files?.length ? ` [files: ${t.files.join(", ")}]` : "";
+        const deps = t.dependsOn?.length ? ` [after: ${t.dependsOn.join(", ")}]` : "";
+        return `${t.id} ${state}: ${t.title}${deps}${files}`;
+      });
+      return withInbound(lines.join("\n"), json);
+    }
+
+    if (name === "create_task") {
+      const title = typeof args.title === "string" ? args.title.trim() : "";
+      if (!title) return toolError("create_task needs a `title` - one line saying what is to be done.");
+      const { status, json } = await callServer("/internal/solace/task/create", {
+        title,
+        depends_on: Array.isArray(args.depends_on) ? args.depends_on : undefined,
+        files: Array.isArray(args.files) ? args.files : undefined,
+      });
+      if (status === 403) return toolError("This turn is no longer the agent's in-flight turn.");
+      if (json?.ok !== true) return toolError(json?.error ?? "The task was refused.");
+      // An unknown dependency id is surfaced, not swallowed: it means the task looks ready to
+      // start when the author believed it was not.
+      const unknown = json.unknownDeps?.length
+        ? ` WARNING: no task called ${json.unknownDeps.join(", ")} exists in this chat, so nothing is actually ` +
+          `holding this back. Call list_tasks and create_task again with the right ids if that is wrong.`
+        : "";
+      return withInbound(
+        `${json.task.id} is on the board: ${json.task.title}. Everyone sees it in their context. ` +
+          `Call claim_task("${json.task.id}") if you are the one doing it.${unknown}`,
+    if (name === "reserve_port") {
+      const { status, json } = await callServer("/internal/solace/reserve-port", {
+        preferred: typeof args.preferred === "number" ? args.preferred : undefined,
+        purpose: args.purpose,
+      });
+      if (status === 403) return toolError("This turn is no longer the agent's in-flight turn.");
+      if (json?.ok !== true) return toolError(json?.error ?? "No port could be reserved.");
+      // The refusal reason is carried through verbatim and NOT softened: "@codex holds 4545" is
+      // the whole value of asking, and an agent told only "here is 4401" asks for 4545 again
+      // on its next turn.
+      const refused = json.preferredRefused ? ` You did not get the port you asked for: ${json.preferredRefused}` : "";
+      return withInbound(
+        `Port ${json.port} is yours - it was bind-tested free just now and is held in your name.` +
+          refused +
+          ` Start your server with start_server on ${json.port} so it outlives this turn.`,
+        json,
+      );
+    }
+
+    if (name === "claim_task") {
+      const taskId = typeof args.task_id === "string" ? args.task_id.trim() : "";
+      if (!taskId) return toolError('claim_task needs a `task_id`, e.g. "T3". Call list_tasks for the ids.');
+      const { status, json } = await callServer("/internal/solace/task/claim", { task_id: taskId });
+      if (status === 403) return toolError("This turn is no longer the agent's in-flight turn.");
+      if (json?.ok !== true) return toolError(json?.error ?? "The claim was refused.");
+      const clash = json.files?.conflicts?.length
+        ? ` Some of its files are owned by someone else: ${json.files.conflicts
+            .map((c) => `${c.path} (@${c.owner})`)
+            .join(", ")}. @mention them rather than editing those.`
+        : "";
+      if (json.blocked) {
+        return withInbound(
+          `You own ${json.task.id} (${json.task.title}), but do NOT start it: it waits on ` +
+            `${json.waitingOn.map((t) => t.id).join(", ")}. End your turn now - you will be given a fresh one ` +
+            `automatically the moment ${json.waitFor.id} is finished. Do not poll and do not build it anyway.${clash}`,
+          json,
+        );
+      }
+      const files = json.files?.claimed?.length ? ` You now own: ${json.files.claimed.join(", ")}.` : "";
+      return withInbound(
+        `${json.task.id} is yours: ${json.task.title}. Nobody else can claim it now.${files}${clash} ` +
+          `Call finish_task when it is actually done.`,
+    if (name === "release_port") {
+      const port = typeof args.port === "number" ? args.port : Number(args.port);
+      if (!Number.isInteger(port)) return toolError("release_port needs the `port` number you were given.");
+      const { status, json } = await callServer("/internal/solace/release-port", { port });
+      if (status === 403) return toolError("This turn is no longer the agent's in-flight turn.");
+      if (json?.ok !== true) return toolError(json?.error ?? "That port could not be released.");
+      return withInbound(
+        json.released ? `Released port ${port}.` : `You were not holding port ${port}, so nothing changed.`,
+        json,
+      );
+    }
+
+    if (name === "finish_task") {
+      const taskId = typeof args.task_id === "string" ? args.task_id.trim() : "";
+      if (!taskId) return toolError("finish_task needs a `task_id`.");
+      const { status, json } = await callServer("/internal/solace/task/finish", {
+        task_id: taskId,
+        result: typeof args.result === "string" ? args.result : undefined,
+      });
+      if (status === 403) return toolError("This turn is no longer the agent's in-flight turn.");
+      if (json?.ok !== true) return toolError(json?.error ?? "The task could not be finished.");
+      const woke = json.unblocked?.length
+        ? ` That unblocked ${json.unblocked.map((t) => `${t.id} (@${t.ownerHandle})`).join(", ")} - they have ` +
+          `been given a turn already, so you do not need to @mention them about it.`
+        : "";
+      return withInbound(`${json.task.id} is done, and its files are released.${woke}`, json);
+    if (name === "start_server") {
+      const command = typeof args.command === "string" ? args.command.trim() : "";
+      const port = typeof args.port === "number" ? args.port : Number(args.port);
+      if (!command) return toolError("start_server needs a `command`.");
+      if (!Number.isInteger(port)) return toolError("start_server needs a `port` - call reserve_port first.");
+      const { status, json } = await callServer("/internal/solace/start-server", { command, port, purpose: args.purpose });
+      if (status === 403) return toolError("This turn is no longer the agent's in-flight turn.");
+      if (json?.ok !== true) return toolError(json?.error ?? "The server was not started.");
+      return withInbound(
+        `Started: ${json.server.command} (pid ${json.server.pid}) on port ${json.server.port}. It is detached from ` +
+          `this turn and will still be running after your turn ends. Output is being written to ${json.server.logPath}. ` +
+          `Before telling anyone it is live, check it - the URL you post will be badged with a real HTTP status.`,
+        json,
+      );
+    }
+
+    if (name === "list_servers") {
+      const { status, json } = await callServer("/internal/solace/servers", {});
+      if (status === 403) return toolError("This turn is no longer the agent's in-flight turn.");
+      return withInbound(
+        JSON.stringify({ servers: json?.servers ?? [], reservations: json?.reservations ?? [] }),
         json,
       );
     }

@@ -203,7 +203,14 @@ export class CoordinationBoard {
    */
   resolve(
     chatId: string,
-    event: { kind: "contract"; title: string; by: string } | { kind: "posted"; by: string } | { kind: "files" },
+    event:
+      | { kind: "contract"; title: string; by: string }
+      | { kind: "posted"; by: string }
+      | { kind: "files" }
+      // A task finishing. Carries `by` for the same self-wake guard every other event has: an
+      // agent that finishes the very task it was waiting on must not be handed a turn to react
+      // to its own action.
+      | { kind: "task"; taskId: string; title: string; by: string },
     cwd: string,
   ): Array<{ block: Block; because: string }> {
     const s = this.state(chatId);
@@ -223,6 +230,12 @@ export class CoordinationBoard {
       } else if (block.kind === "agent" && event.kind === "posted") {
         if (block.value.replace(/^@/, "").toLowerCase() === event.by.toLowerCase()) {
           because = `@${event.by} posted to the group`;
+        }
+      } else if (block.kind === "task" && event.kind === "task") {
+        // Exact id, case-insensitively - unlike a contract title, a task id is machine-issued
+        // and a fuzzy match here would wake an agent for "T1" when "T12" finished.
+        if (block.value.trim().toLowerCase() === event.taskId.toLowerCase()) {
+          because = `@${event.by} finished ${event.taskId} (${event.title})`;
         }
       } else if (block.kind === "file") {
         const target = isAbsolute(block.value) ? block.value : resolve(cwd, block.value);

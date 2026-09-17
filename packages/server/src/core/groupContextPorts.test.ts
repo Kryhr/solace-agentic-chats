@@ -16,7 +16,7 @@ import { join } from "node:path";
  * and a coordination board; the failure mode being guarded is a sentence going missing, and the
  * cheapest honest guard for that is to check the sentence is there.
  */
-const SRC = readFileSync(join(import.meta.dirname, "agentManager.ts"), "utf8");
+const SRC = readFileSync(join(import.meta.dirname, "agentManager.ts"), "utf8").replace(/\r\n/g, "\n");
 
 test("the group context names the app's own ports and forbids reporting them", () => {
   assert.match(SRC, /belong to the chat app you are talking through, not to your work/);
@@ -27,10 +27,10 @@ test("the group context names the app's own ports and forbids reporting them", (
 
 test("the API port comes from the one constant the listener also binds", () => {
   // Stronger than it used to be, and for a real reason. This used to assert the block computed
-  // `process.env.PORT ?? 4310` for itself. That WAS the bug: when a second instance moved its
-  // listener, this copy went on naming the old port, so agents were told the wrong port was the
-  // app's own - by the very sentence that exists to stop them confusing the app with their own
-  // work. A port decided in two places is a port that will disagree, so there is one constant.
+  // `process.env.PORT ?? 4310` for itself. That WAS the bug: the dev instance moved its listener
+  // to 4320 and this copy went on saying 4310, so agents were told the wrong port was the app's
+  // own - by the very sentence that exists to stop them confusing the app with their own work.
+  // A port decided in two places is a port that will disagree, so there is now one constant.
   assert.match(SRC, /const solacePorts = String\(SERVER_PORT\);/);
   assert.match(SRC, /\$\{solacePorts\} is its API/);
   assert.ok(!/process\.env\.PORT\s*\?\?\s*\d{4}/.test(SRC), "must not recompute the port here");

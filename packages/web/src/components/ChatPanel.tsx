@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
+  AccountUsage,
   AgentConfig,
   AgentStatus,
   ChatMessage,
@@ -7,6 +8,7 @@ import type {
   ProjectMeta,
   ProviderModelInfo,
   ProviderRateLimit,
+  Task,
 } from "@solace/shared";
 import { ProviderIcon, UserAvatar } from "./ProviderIcon";
 import { Composer } from "./Composer";
@@ -14,7 +16,12 @@ import { stopAgent } from "../api";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 import { useEntranceTracker } from "../lib/useEntranceTracker";
 import { displayText, renderKind } from "../lib/messageKind";
+import { buildGroupStream, chipFor, fullTextInHubOf, messageClassOf } from "../lib/messageClass";
+import { operatorScope, queueNoticeFor, rateLimitedUntil } from "../lib/chatScope";
+import { StatusRun } from "./StatusRun";
 import { MessageText } from "./MessageText";
+import { TaskBoardPanel } from "./TaskBoardPanel";
+import { UrlBadges } from "./UrlBadges";
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -26,8 +33,10 @@ export function ChatPanel({
   history,
   agents,
   statuses,
+  tasks,
   modelCatalog,
-  rateLimits,
+  usage,
+  onOpenHub,
   connected,
   onNewChat,
   onSend,
@@ -39,8 +48,16 @@ export function ChatPanel({
   history: ChatMessage[];
   agents: AgentConfig[];
   statuses: Record<string, AgentStatus>;
+  /** This chat's task board. Empty is the normal state for a chat whose agents have not put
+   * anything on it yet, and renders as no toggle at all rather than as an empty control. */
+  tasks: Task[];
   modelCatalog: ProviderModelInfo[];
-  rateLimits: ProviderRateLimit[];
+  /** One row per account, from GET /api/usage. */
+  usage: AccountUsage[];
+  /** Open an agent's hub, at a specific turn when the caller knows which one. Supplied by App,
+   * which owns routing; absent in any context with nowhere to navigate to, in which case the
+   * "full detail in hub" link is not offered rather than being offered and doing nothing. */
+  onOpenHub?: (agentId: string, turnId?: string) => void;
   connected: boolean;
   onNewChat: () => void;
   onSend: (text: string) => Promise<void>;
@@ -50,6 +67,13 @@ export function ChatPanel({
   /** Shown once the reader has scrolled far enough up that new messages are arriving off-screen.
    * A ref alone cannot drive this - it has to be state for the button to appear and disappear. */
   const [scrolledUp, setScrolledUp] = useState(false);
+  /** The board starts collapsed: the transcript is what is being read, and a board that pushed
+   * it down on every chat would cost more than it gives. Per tab and per session on purpose -
+   * remembering it would mean deciding whose preference wins between two open tabs. */
+  const [showTasks, setShowTasks] = useState(false);
+  /** What is actually still waiting for somebody. A count of every task ever created would
+   * climb forever and stop meaning anything. */
+  const openTaskCount = tasks.filter((t) => t.status !== "done").length;
 
   const agentById = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
   // Scoped to THIS chat. "Is this agent busy?" and "is this agent busy here?" are different
@@ -94,6 +118,34 @@ export function ChatPanel({
   };
 
   const shouldAnimate = trackEntrance(history.map((m) => m.id));
+
+  /**
+   * What the group actually shows: acknowledgements removed, consecutive status lines folded.
+   *
+   * Both are reversible views of a complete record - every message is still in the agent's own
+   * hub, in full, in order. This drops nothing from the transcript, only from this rendering of
+   * it. See lib/messageClass.ts for the class names this depends on and what happens before the
+   * branch that produces them lands.
+   */
+  const stream = useMemo(() => buildGroupStream(history), [history]);
+
+  /** Re-derived from history with the server's own rule - see lib/chatScope.operatorScope. */
+  const scopedTo = useMemo(
+    () => operatorScope(history, new Set(agents.map((a) => a.id))),
+    [history, agents],
+  );
+
+  /**
+   * One line per agent that cannot answer immediately.
+   *
+   * Scoped to the agents this message would actually REACH: while the chat is scoped, telling
+   * the operator that an agent they are not talking to is busy is noise about somebody else's
+   * work. Unscoped, a plain message goes to everyone, so everyone busy is worth saying.
+   */
+  const queueNotices = useMemo(() => {
+    const reached = scopedTo.length > 0 ? agents.filter((a) => scopedTo.includes(a.handle)) : agents;
+    return reached.map((a) => queueNoticeFor(a, statuses[a.id])).filter((n): n is string => n !== undefined);
+  }, [agents, statuses, scopedTo]);
 
   // Every chat can be archived, and the app must still say something useful when they all have
   // been - an empty transcript with a live composer pointed at nothing would be a dead end.
@@ -156,10 +208,58 @@ export function ChatPanel({
           </span>
         </div>
 
-        {/* Slot for the group-chat action row. The "Save chat" button lands here in a later
-            phase; the container exists now so it has a home that matches the hub's. */}
-        <div className="hub-page-actions chat-header-actions" />
+        {/* The group-chat action row. The "Save chat" button lands here in a later phase. */}
+        <div className="hub-page-actions chat-header-actions">
+          {tasks.length > 0 && (
+            <button
+              className={`task-board-toggle ${showTasks ? "is-open" : ""}`}
+              onClick={() => setShowTasks((v) => !v)}
+              aria-expanded={showTasks}
+            >
+              Tasks
+              <span className="count">
+                {openTaskCount === 0 ? "all done" : `${openTaskCount} open`}
+              </span>
+              <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M4 6.5 8 10.5l4-4" />
+              </svg>
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Between the header and the transcript, on the same rail as both, so opening it reads
+          as the page telling you more rather than as a panel arriving from somewhere else. */}
+      <TaskBoardPanel tasks={tasks} agents={agents} open={showTasks} />
+      {/* One line per agent that has something true to say about itself right now: what tool it
+          is running, or when its account can work again. An agent that is simply idle says
+          nothing - a permanent roster strip repeating "idle · idle · idle" is chrome, and the
+          sidebar already answers "who is in this chat". */}
+      {agents.some((a) => statuses[a.id]?.workingOn || rateLimitedUntil(statuses[a.id])) && (
+        <div className="chat-roster-strip">
+          {agents.map((a) => {
+            const status = statuses[a.id];
+            const limitedUntil = rateLimitedUntil(status);
+            const working = status?.workingOn;
+            if (!working && !limitedUntil) return null;
+            return (
+              <div key={a.id} className="chat-roster-line">
+                <ProviderIcon provider={a.provider} size={14} />
+                <span className="chat-roster-handle">@{a.handle}</span>
+                {limitedUntil ? (
+                  <span className="chat-roster-limited">rate-limited until {formatTime(limitedUntil)}</span>
+                ) : (
+                  <span className="chat-roster-working">
+                    {/* The provider's own tool name through the fixed label table - never a
+                        description of what the agent is trying to achieve. */}
+                    working on: <span className="chat-roster-tool">{working}</span>
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       <div className="chat-history" ref={historyRef} onScroll={onHistoryScroll}>
         {history.length === 0 && (
@@ -184,7 +284,9 @@ export function ChatPanel({
             </div>
           </div>
         )}
-        {history.map((m) => {
+        {stream.map((item) => {
+          if (item.kind === "status-run") return <StatusRun key={item.id} messages={item.messages} />;
+          const m = item.message;
           // Group chat only ever receives completed answers (AgentManager posts every
           // intermediate line to the agent's own hub channel instead), so in practice this is
           // "answer" for every agent row. It goes through the same classifier as the hub anyway,
@@ -201,6 +303,13 @@ export function ChatPanel({
           const modelLabel =
             m.model || (author ? modelCatalog.find((c) => c.provider === author.provider)?.currentDefaultModel : undefined);
           const enter = shouldAnimate(m.id) ? "message-enter" : "";
+          // What the routing layer classified this as, if anything. Undefined for every message
+          // today and for every message ever persisted - see lib/messageClass.ts.
+          const messageClass = messageClassOf(m);
+          const chip = chipFor(messageClass);
+          // Only when the reply budget ACTUALLY cut this message. Recomputing it from the text
+          // length here would put the link on any message that merely happened to be long.
+          const cut = fullTextInHubOf(m);
           if (isSystem) {
             // A verification notice contradicts something an agent just asserted, so it reads
             // as a labelled callout rather than the faint centered bookkeeping used for
@@ -222,11 +331,19 @@ export function ChatPanel({
             );
           }
           return (
-            <div key={m.id} className={`message-row ${isUser ? "from-user" : ""} ${enter}`}>
+            <div
+              key={m.id}
+              className={`message-row ${isUser ? "from-user" : ""} ${enter} ${
+                messageClass ? `is-class-${messageClass}` : ""
+              }`}
+            >
               {isUser ? <UserAvatar /> : author ? <ProviderIcon provider={author.provider} /> : <UserAvatar />}
               <div className="message">
                 <div className="meta">
                   <span className="meta-author">{m.authorHandle}</span>
+                  {/* Before the model and the mentions, because what a message IS changes how
+                      you read the rest of the line. */}
+                  {chip && <span className={`class-chip class-chip-${chip.tone}`}>{chip.label}</span>}
                   {showModel && modelLabel && <span className="meta-model">{modelLabel}</span>}
                   {m.mentions.map((h) => (
                     <span key={h} className="mention">
@@ -238,6 +355,25 @@ export function ChatPanel({
                 <div className={`body ${toolUse ? "tool-use" : ""} ${errorLine ? "error-line" : ""}`}>
                   <MessageText text={text} />
                 </div>
+                {/* Any localhost URL in this message, with what really answered on it. Renders
+                    nothing at all when no check ran - see UrlBadges. */}
+                <UrlBadges checks={m.urlChecks} />
+                {/* The room gets the head; the hub keeps the whole thing. The link says how much
+                    more there is, from the length the server recorded when it cut - never an
+                    estimate, and never a promise of detail that turns out not to exist. */}
+                {cut && onOpenHub && (
+                  <button
+                    type="button"
+                    className="hub-link"
+                    onClick={() => onOpenHub(m.authorId, cut.turnId)}
+                  >
+                    full detail in hub
+                    <span className="hub-link-size">{cut.chars.toLocaleString()} chars</span>
+                    <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M6 3.5l4.5 4.5L6 12.5" />
+                    </svg>
+                  </button>
+                )}
               </div>
             </div>
           );
@@ -269,7 +405,13 @@ export function ChatPanel({
           // prevent the others from being stopped.
           for (const a of list) void stopAgent(a.id);
         }}
-        usage={{ rateLimits, providersInUse: [...new Set(agents.map((a) => a.provider))] }}
+        usage={usage}
+        scopedTo={scopedTo}
+        queueNotices={queueNotices}
+        // Sends the command rather than clearing anything locally: the scope lives in the
+        // history the server reads, so the only way to actually clear it is to post a message
+        // that mentions nobody, which is exactly what /all does.
+        onClearScope={() => void onSend("/all")}
         onSend={onSend}
         onSubmitted={() => {
           // Sending a message is a deliberate "I'm back in this conversation" signal, even if

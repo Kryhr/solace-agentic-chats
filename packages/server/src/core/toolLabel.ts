@@ -182,6 +182,109 @@ const LABELS: Record<string, Labeller> = {
   },
 };
 
+/**
+ * What a tool call DID, in the five categories anything countable falls into.
+ *
+ * This is the machine-readable half of the same table above, and it exists for the progress
+ * digest (progressDigest.ts), which has to COUNT tool calls rather than describe one. Parsing
+ * the English label back out ("starts with 'Writing'") would have been a second, silently
+ * drifting vocabulary; a category on the same table cannot drift, because toolLabel.test.ts
+ * fails the moment a name appears in one of the two tables and not the other.
+ *
+ * "other" is the honest answer for a tool whose category we do not know, including every tool
+ * not in the table at all. Nothing is ever counted as a write on the strength of its name
+ * looking write-ish - a digest line claiming files were written when none were is exactly the
+ * failure this whole feature is built to avoid.
+ */
+export type ToolActionKind = "read" | "write" | "shell" | "search" | "web" | "other";
+
+const ACTIONS: Record<string, ToolActionKind> = {
+  read: "read",
+  read_file: "read",
+  read_many_files: "read",
+  view: "read",
+  notebookread: "read",
+
+  write: "write",
+  write_file: "write",
+  edit: "write",
+  edit_file: "write",
+  multiedit: "write",
+  notebookedit: "write",
+  replace: "write",
+  apply_patch: "write",
+  file_change: "write",
+
+  bash: "shell",
+  shell: "shell",
+  run_shell_command: "shell",
+  command_execution: "shell",
+  // These three inspect or stop an invocation that is ALREADY running. Counting them as shell
+  // runs would report one `npm test` as several.
+  bashoutput: "other",
+  killshell: "other",
+  powershell: "shell",
+  read_powershell: "other",
+  stop_powershell: "other",
+  list_powershell: "other",
+
+  grep: "search",
+  search_file_content: "search",
+  rg: "search",
+  glob: "search",
+  list_directory: "search",
+  ls: "search",
+
+  webfetch: "web",
+  web_fetch: "web",
+  websearch: "web",
+  web_search: "web",
+  google_web_search: "web",
+
+  task: "other",
+  agent: "other",
+  todowrite: "other",
+  todo_list: "other",
+  save_memory: "other",
+  exitplanmode: "other",
+  slashcommand: "other",
+  mcp_tool_call: "other",
+};
+
+/** The two tables' key sets, exported ONLY so a test can hold them to each other. A name in one
+ * and not the other is the drift that would make the digest silently stop counting a provider's
+ * writes while the hub kept labelling them correctly. */
+export const KNOWN_TOOL_NAMES: string[] = Object.keys(LABELS);
+export const KNOWN_ACTION_NAMES: string[] = Object.keys(ACTIONS);
+
+export interface ToolAction {
+  kind: ToolActionKind;
+  /** The file this call touched, when the tool's own arguments named one. Never inferred. */
+  paths: string[];
+  /** The shell command verbatim, when there was one. */
+  command?: string;
+}
+
+/**
+ * The same derivation `describeToolCall` performs, expressed as data instead of a sentence.
+ *
+ * `name` and `input` must be the provider's own, unchanged - the paths below come out of the
+ * real argument values, so a pre-flattened string would yield nothing and the digest would
+ * silently count zero.
+ */
+export function classifyToolCall(name: string, input?: unknown): ToolAction {
+  const key = (name ?? "").trim().toLowerCase();
+  const kind = ACTIONS[key] ?? "other";
+  const command = str(input, "command", "cmd", "script");
+  const paths: string[] = [];
+  if (kind === "read" || kind === "write") {
+    const single = str(input, "file_path", "absolute_path", "path", "notebook_path");
+    if (single) paths.push(single);
+    for (const p of changedPaths(input)) paths.push(p);
+  }
+  return { kind, paths, command };
+}
+
 function withFile(verb: string, input: unknown, ...keys: string[]): string {
   const path = str(input, ...keys);
   return path ? `${verb} ${basename(path)}` : `${verb} a file`;

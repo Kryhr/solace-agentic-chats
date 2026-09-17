@@ -12,6 +12,8 @@ import {
   type ProviderModelInfo,
   type ProviderPermissionInfo,
   type ProviderRateLimit,
+  type Task,
+  type AccountUsage,
   type TrustLevel,
 } from "@solace/shared";
 import {
@@ -27,6 +29,7 @@ import {
   fetchChats,
   fetchPermissionModes,
   fetchProviderModels,
+  fetchUsage,
   linkProject,
   removeAgent,
   resolveApproval,
@@ -37,6 +40,7 @@ import {
   unlinkProject,
   updateAgent,
   updateChat,
+  fetchChatTasks,
   type ChatArchive,
 } from "./api";
 import { AgentCard } from "./components/AgentCard";
@@ -47,6 +51,7 @@ import { ArchivesPage } from "./components/ArchivesPage";
 import { ChatPanel } from "./components/ChatPanel";
 import { ChatRail } from "./components/ChatRail";
 import { ConnectionsPanel } from "./components/ConnectionsPanel";
+import { RunningServersPanel } from "./components/RunningServersPanel";
 import { SettingsPage } from "./components/SettingsPage";
 import { SkillsPage } from "./components/SkillsPage";
 import { agentsInScope, chatsInScope } from "./lib/projectScope";
@@ -54,14 +59,25 @@ import { agentsInScope, chatsInScope } from "./lib/projectScope";
 type View =
   /** chatId null means "whichever chat is first" - the hash carries no id on a cold start. */
   | { type: "chat"; chatId: string | null }
-  | { type: "hub"; agentId: string }
+  /** `turnId` is set only when the reader arrived from a "full detail in hub" link, and names
+   * the turn whose full text they came to read. In the hash, so a refresh or a pasted link lands
+   * in the same place rather than at the bottom of a long transcript. */
+  | { type: "hub"; agentId: string; turnId?: string }
   | { type: "archives" }
   | { type: "skills" }
   | { type: "settings" };
 
 function parseHash(hash: string): View {
-  const agentMatch = hash.match(/^#\/agent\/(.+)$/);
-  if (agentMatch) return { type: "hub", agentId: agentMatch[1] };
+  // The turn is a query on the agent route rather than another path segment, so an agent id
+  // containing a slash could never be mistaken for one.
+  const agentMatch = hash.match(/^#\/agent\/([^?]+)(?:\?turn=(.+))?$/);
+  if (agentMatch) {
+    return {
+      type: "hub",
+      agentId: decodeURIComponent(agentMatch[1]),
+      turnId: agentMatch[2] ? decodeURIComponent(agentMatch[2]) : undefined,
+    };
+  }
   const chatMatch = hash.match(/^#\/chat\/(.+)$/);
   if (chatMatch) return { type: "chat", chatId: chatMatch[1] };
   if (hash === "#/archives") return { type: "archives" };
@@ -81,12 +97,26 @@ export default function App() {
   // effect invoke - is naturally idempotent instead of appending a visible duplicate.
   const [agentsById, setAgentsById] = useState<Record<string, AgentConfig>>({});
   const [statuses, setStatuses] = useState<Record<string, AgentStatus>>({});
-  /** Keyed by provider, not by agent: several agents can share one CLI and therefore one real
-   * account and one real limit. */
-  const [rateLimits, setRateLimits] = useState<Record<string, ProviderRateLimit>>({});
+  /**
+   * Usage, one row per ACCOUNT, exactly as the server resolved it.
+   *
+   * Not keyed by provider here, and not joined together in this tab at all. Two agents can share
+   * one CLI AND one login, in which case they share one real limit - but two agents can equally
+   * be on two different subscriptions of the same provider, and keying by provider showed the
+   * account that spoke most recently against both of them. Which figure belongs to which login
+   * is decided once, on the server (core/accountUsage.ts), and this holds the answer.
+   *
+   * Fetched rather than pushed because a row also carries who the account IS - the email and
+   * plan the CLI itself reports. The socket's usage:rate-limit events are what tell us to ask
+   * again; they are a signal that a number moved, not the number's new home.
+   */
+  const [accountUsage, setAccountUsage] = useState<AccountUsage[]>([]);
   /** Chat transcripts, keyed chatId -> messageId. Nested rather than flat so a chat can be
    * emptied or dropped without walking every message the tab has ever seen. */
   const [chatHistory, setChatHistory] = useState<Record<string, Record<string, ChatMessage>>>({});
+  /** Every chat's task board, keyed by chat id - the whole map, because the server re-sends it
+   * whole on every change (see the tasks:updated event). A chat with no tasks is absent. */
+  const [tasksByChat, setTasksByChat] = useState<Record<string, Task[]>>({});
   const [chats, setChats] = useState<ChatMeta[]>([]);
   const [projects, setProjects] = useState<ProjectMeta[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(
@@ -155,6 +185,10 @@ export default function App() {
   }, [chatHistory, activeChatId]);
 
   const loadChatHistory = (chatId: string) => {
+    // The board comes down the socket on every change, but a tab that has just opened (or just
+    // reconnected) has never seen one of those events - so the chat it is actually showing is
+    // fetched alongside its transcript, for the same reason and at the same moment.
+    fetchChatTasks(chatId).then((list) => setTasksByChat((t) => ({ ...t, [chatId]: list })));
     fetchChatHistory(chatId).then((list) => {
       // Server rows first, this tab's live rows second: a message that arrived over the socket
       // while the fetch was in flight must not be overwritten by the older snapshot.
@@ -199,8 +233,34 @@ export default function App() {
     loadChatHistory(activeChatId);
   }, [activeChatId]);
 
-  const goToHub = (agentId: string) => {
-    location.hash = `#/agent/${agentId}`;
+  /**
+   * Re-read the usage rows.
+   *
+   * Coalesced, because a single group turn can emit several rate-limit events in a row (Claude
+   * reports a window per event) and four agents working at once multiply that. One request per
+   * burst is enough: the rows are read from an in-memory store and a memoised identity cache,
+   * and the figure they carry is whatever was observed most recently either way.
+   */
+  const usageTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshUsage = () => {
+    if (usageTimer.current) clearTimeout(usageTimer.current);
+    usageTimer.current = setTimeout(() => {
+      usageTimer.current = null;
+      // A failed read leaves the previous rows in place rather than blanking the meter: the last
+      // real observation is still the last real observation, and an empty meter would read as
+      // "no account has reported", which is a claim about the accounts rather than about the
+      // request that just failed.
+      fetchUsage().then(setAccountUsage).catch(() => {});
+    }, 250);
+  };
+  useEffect(() => () => {
+    if (usageTimer.current) clearTimeout(usageTimer.current);
+  }, []);
+
+  const goToHub = (agentId: string, turnId?: string) => {
+    location.hash = turnId
+      ? `#/agent/${encodeURIComponent(agentId)}?turn=${encodeURIComponent(turnId)}`
+      : `#/agent/${encodeURIComponent(agentId)}`;
   };
   const goToChat = (chatId?: string) => {
     const target = chatId ?? lastChatIdRef.current;
@@ -245,7 +305,7 @@ export default function App() {
           // server has never heard of - a fresh "hello" is this tab's one chance to notice
           // the server's approval state has moved on and drop anything it no longer knows.
           setPendingApprovals(Object.fromEntries(event.approvals.map((a) => [a.id, a])));
-          setRateLimits(Object.fromEntries((event.rateLimits ?? []).map((r) => [r.provider, r])));
+          void refreshUsage();
           if (event.settings) setSettings(event.settings);
         } else if (event.type === "chat:message" || event.type === "chat:message:updated") {
           // Both branches are the same write. History is keyed by id, so replacing an existing
@@ -262,18 +322,38 @@ export default function App() {
             const agentId = channel.agentId;
             setDirectById((d) => ({ ...d, [agentId]: { ...d[agentId], [event.payload.id]: event.payload } }));
           }
+        } else if (event.type === "tasks:updated") {
+          // Replaced whole, not merged: the payload is the authoritative board for every chat,
+          // so a chat whose last task was deleted has to end up empty rather than keeping the
+          // rows this tab happened to see last.
+          setTasksByChat(event.payload.tasks);
         } else if (event.type === "chats:updated") {
           setChats(event.payload.chats);
           setProjects(event.payload.projects);
+        } else if (event.type === "servers:updated") {
+          // Forwarded as a DOM event rather than lifted into App state: the Running servers
+          // panel owns this list entirely, and threading it through here would put a
+          // second-by-second-changing value into the state that every message render depends
+          // on. The panel re-fetches, so it also re-verifies rather than trusting the payload.
+          window.dispatchEvent(new CustomEvent("solace:servers-updated"));
         } else if (event.type === "settings:updated") {
           setSettings(event.payload);
         } else if (event.type === "usage:rate-limit") {
-          setRateLimits((r) => ({ ...r, [event.payload.provider]: event.payload }));
+          // The event says a figure moved; the server says whose it is. Asking again is a
+          // loopback request against an in-memory store plus a five-minute identity cache, so
+          // it is cheaper than the chance of this tab filing an observation under the wrong
+          // login - which is the whole bug the per-account keying exists to close.
+          void refreshUsage();
         } else if (event.type === "agent:status") {
           setStatuses((s) => ({ ...s, [event.payload.agentId]: event.payload }));
         } else if (event.type === "agent:added" || event.type === "agent:updated") {
           setAgentsById((a) => ({ ...a, [event.payload.id]: event.payload }));
+          // The usage rows ARE the roster of accounts in use, so adding an agent - or moving an
+          // existing one onto a second account - changes which rows exist, not just what is in
+          // them. Without this the new login stayed invisible until something else refreshed.
+          refreshUsage();
         } else if (event.type === "agent:removed") {
+          refreshUsage();
           setAgentsById((a) => {
             const next = { ...a };
             delete next[event.payload.agentId];
@@ -455,6 +535,11 @@ export default function App() {
               permanently open. */}
           <ConnectionsPanel sections={["cli", "github", "local-server", "hosted-api"]} />
 
+          {/* What agents actually have running, with open and kill. Below Connections because
+              it is the most volatile list in the rail - it changes during a session, while
+              everything above it is set up once. */}
+          <RunningServersPanel />
+
         </div>
 
         <div className="sidebar-footer">
@@ -512,6 +597,7 @@ export default function App() {
           modelInfo={modelCatalog.find((m) => m.provider === hubAgent.provider)}
           permissionInfo={permissionCatalog.find((p) => p.provider === hubAgent.provider)}
           directHistory={hubDirectHistory}
+          focusTurnId={view.type === "hub" ? view.turnId : undefined}
           onBack={() => goToChat()}
           backLabel={chats.find((c) => c.id === lastChatIdRef.current)?.title ?? "Chats"}
           onSave={(patch) => {
@@ -534,8 +620,10 @@ export default function App() {
           // the whole roster here would offer @mentions that silently go nowhere.
           agents={activeChatAgents}
           statuses={statuses}
+          tasks={activeChatId ? (tasksByChat[activeChatId] ?? []) : []}
           modelCatalog={modelCatalog}
-          rateLimits={Object.values(rateLimits)}
+          usage={accountUsage}
+          onOpenHub={goToHub}
           connected={connected}
           onNewChat={() => void handleNewChat()}
           onSend={(text) => (activeChatId ? sendChatMessage(activeChatId, text) : Promise.resolve())}

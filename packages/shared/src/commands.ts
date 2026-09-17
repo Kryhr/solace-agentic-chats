@@ -47,6 +47,49 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   { name: "model", hint: "<value>", help: "switch its model (from an agent's own hub)", scope: "hub" },
   { name: "effort", hint: "<value>", help: "switch its thinking effort (from an agent's own hub)", scope: "hub" },
   { name: "reset", hint: "", help: "forget its session so the next turn starts fresh (from an agent's own hub)", scope: "hub" },
+
+  // --- v1.5: saying what a message IS, rather than letting the room guess -------------------
+  // Everything above routes identically: an FYI, a question and a status line all land in the
+  // same stream at the same weight and all cost every addressed agent a real turn. These two
+  // let the sender say which it is.
+  { name: "ask", hint: "@handle <question>", help: "ask one agent a question - it interrupts their turn after the usual grace", scope: "chat" },
+  { name: "fyi", hint: "<text>", help: "context for everyone that costs nobody a turn", scope: "chat" },
+
+  // --- v1.5: the task board --------------------------------------------------------------
+  { name: "assign", hint: "@handle <task>", help: "put a task on the board, owned by that agent", scope: "chat" },
+  { name: "tasks", hint: "", help: "the task board for this chat: who owns what, and what is still open", scope: "chat" },
+  { name: "done", hint: "<id>", help: "mark a task on the board finished", scope: "chat" },
+  { name: "unassign", hint: "<id>", help: "take a task off its owner, leaving it open", scope: "chat" },
+
+  // --- v1.5: scope you can see -------------------------------------------------------------
+  // Scope today is INFERRED from the @mentions on your last message, which is invisible: there
+  // is no way to see what it currently is, and no way to set it without addressing somebody.
+  { name: "only", hint: "@a [@b ...]", help: "scope this chat to these agents until you clear it", scope: "chat" },
+  { name: "all", hint: "", help: "clear the scope - every agent in this chat is reachable again", scope: "chat" },
+
+  // --- v1.5: holding an agent back without removing it -------------------------------------
+  { name: "mute", hint: "@handle", help: "stop routing messages to an agent, without removing it from the chat", scope: "both" },
+  { name: "unmute", hint: "@handle", help: "route to a muted agent again", scope: "both" },
+  { name: "pause", hint: "@handle", help: "hold an agent's queue - work piles up instead of running", scope: "both" },
+  { name: "resume", hint: "@handle", help: "let a paused agent work through its queue again", scope: "both" },
+  { name: "interrupt", hint: "@handle <message>", help: "stop an agent's turn right now for this message - no grace period", scope: "both" },
+
+  // --- v1.5: the port and server registry --------------------------------------------------
+  { name: "servers", hint: "[kill <id>]", help: "servers agents have started, and stop one", scope: "both" },
+  { name: "ports", hint: "", help: "which port is reserved by whom", scope: "both" },
+
+  // --- v1.5: server-derived facts, never a model summary -----------------------------------
+  { name: "who", hint: "<file>", help: "who has claimed a file, and what they said they were doing to it", scope: "chat" },
+  { name: "summary", hint: "", help: "what has actually happened in this chat: files touched, tests run, servers started", scope: "chat" },
+  { name: "diff", hint: "[stat]", help: "git diff of this chat's project since the chat was created", scope: "both" },
+
+  // --- v1.5: where status lines go ---------------------------------------------------------
+  { name: "quiet", hint: "", help: "send status messages to each agent's hub only, not the group", scope: "chat" },
+  { name: "loud", hint: "", help: "put status messages back in the group", scope: "chat" },
+
+  // --- v1.5: multi-account -----------------------------------------------------------------
+  { name: "accounts", hint: "[@handle <label>]", help: "which login each agent is on, and switch one to another account", scope: "both" },
+
   { name: "help", hint: "", help: "show this list", scope: "both" },
 ];
 

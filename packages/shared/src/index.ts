@@ -18,6 +18,12 @@ export type { ConnectorKind, ConnectorKindId } from "./connectors";
 export const CONNECTOR_KINDS = KINDS;
 export const connectorKind = kindById;
 
+// Ports and servers. Same re-binding rule as above for the two runtime values.
+import { emptyPortRegistry as emptyPorts, NEVER_ALLOCATE_PORTS as NEVER_ALLOCATE } from "./ports";
+export type { PortRegistryState, PortReservation, RunningServer, UrlCheck } from "./ports";
+export const emptyPortRegistry = emptyPorts;
+export const NEVER_ALLOCATE_PORTS = NEVER_ALLOCATE;
+
 // Same re-binding rule again - see the two comments above.
 import {
   DEFAULT_APP_SETTINGS as DEFAULTS,
@@ -52,6 +58,21 @@ export type { Block, Contract, CoordinationState, FileClaim } from "./coordinati
 export const emptyCoordination = emptyCoord;
 export const normalizePath = normPath;
 export const pathCoveredBy = covered;
+
+// Same re-binding rule again - see the comments above.
+import {
+  canStart as taskCanStart,
+  effectiveStatus as taskEffectiveStatus,
+  openTasks as tasksOpen,
+  unknownDependencies as taskUnknownDeps,
+  unmetDependencies as taskUnmetDeps,
+} from "./tasks";
+export type { EffectiveTaskStatus, Task, TaskStatus } from "./tasks";
+export const effectiveStatus = taskEffectiveStatus;
+export const unmetDependencies = taskUnmetDeps;
+export const unknownDependencies = taskUnknownDeps;
+export const canStart = taskCanStart;
+export const openTasks = tasksOpen;
 
 // Same re-binding rule again - see the comments above.
 import {
@@ -422,11 +443,52 @@ export interface RateLimitWindow {
  */
 export interface ProviderRateLimit {
   provider: ProviderId;
+  /**
+   * WHICH LOGIN these numbers describe: the AgentConfig.account label the turn ran under, or
+   * undefined for the CLI's own default login.
+   *
+   * Not decoration. A subscription's quota belongs to an ACCOUNT, and this app runs two
+   * accounts of one provider at once (core/providerAccounts.ts). Keyed by provider alone, the
+   * newest observation from either account overwrote the other, so one account's remaining
+   * quota was displayed against both - a confidently wrong number, which is the one thing
+   * this codebase will not ship. The store keys on provider + account for that reason.
+   */
+  account?: string;
   windows: RateLimitWindow[];
   /** ISO time the provider's own event carrying these numbers was received. */
   observedAt: string;
   /** The provider's own plan label, if its event carried one (Codex's plan_type). */
   planType?: string;
+}
+
+/**
+ * One row of the usage view: an account, who it actually is, and what it last reported.
+ *
+ * The identity fields come from the CLI's own read-only status command (`claude auth status`
+ * and friends, via core/providerAccounts.listAccounts) - they cost no turn and no tokens, and
+ * every one of them is copied verbatim from that output. An account the CLI says nothing about
+ * carries no email and no plan rather than a placeholder.
+ *
+ * `rateLimit` is ABSENT, not zeroed, for an account that has never reported. "We have not seen
+ * a number for this login" and "this login has used 0%" are different claims and only one of
+ * them is ever true here.
+ */
+export interface AccountUsage {
+  provider: ProviderId;
+  /** The account label, or undefined for the CLI's own default login. */
+  account?: string;
+  /** The email the CLI itself reported for this login. Undefined = it did not say. */
+  email?: string;
+  /** The CLI's own word for the plan ("max", "pro", "team"). Undefined = it did not say. */
+  plan?: string;
+  /** What the CLI answered about sign-in state. Undefined = it has no read-only way to say,
+   * which is a different fact from "signed out" and must not be rendered as one. */
+  loggedIn?: boolean;
+  /** The last real observation for THIS account. Absent means none has ever arrived. */
+  rateLimit?: ProviderRateLimit;
+  /** Handles of the agents configured to run on this account, so a row can be tied back to the
+   * agents it governs. Empty only for an account with no agent pointed at it. */
+  agentHandles: string[];
 }
 
 export interface AgentStatus {
@@ -449,7 +511,42 @@ export interface AgentStatus {
    * which is not the same question as "is this agent busy HERE" - so every open chat showed
    * every working agent, including chats that had nothing to do with the turn. */
   activeChatId?: string;
-  /** The last rate-limit report seen on a turn run by this agent, if its provider ever sent one. */
+  /**
+   * Turns waiting behind the one in flight. 0 (or absent) means nothing is queued.
+   *
+   * So the composer can say "@claude is mid-turn - queued #2" instead of the message vanishing
+   * into a silence that looks identical to the app having dropped it. 45% of replies to an
+   * @mention took over two minutes, and almost all of that was the recipient being busy - which
+   * the sender had no way to see.
+   */
+  queuedTurns?: number;
+  /**
+   * The median duration of this agent's COMPLETED turns since the server started, in
+   * milliseconds, once enough of them have finished to be worth quoting.
+   *
+   * Absent until there are at least three samples, and absent forever for an agent that has
+   * never finished a turn. That is the whole discipline of this field: "~3 min" derived from one
+   * previous turn is a number the app made up, and the UI says nothing rather than guessing. The
+   * median rather than the mean because one twelve-minute build should not move the estimate for
+   * the twenty short turns around it.
+   */
+  medianTurnMs?: number;
+  /**
+   * The label of the tool this agent is running right now - "Read src/app.ts", "npm test".
+   *
+   * Only while a turn is in flight, and only the provider's own tool name and arguments through
+   * the existing fixed label table (core/toolLabel.ts). Never a description of what the agent is
+   * trying to achieve: that would be a claim nothing verified. Absent when the turn has not
+   * called a tool yet, which is a real state and reads as "working" rather than as a tool.
+   */
+  workingOn?: string;
+  /** Which login this agent runs on - AgentConfig.account, echoed here so a status row can
+   * name the account its rateLimit belongs to without the client joining against the roster.
+   * Undefined = the CLI's own default login. */
+  account?: string;
+  /** The last rate-limit report for THIS AGENT'S provider AND account. Two agents on two
+   * different accounts of one provider therefore carry two different figures, where before
+   * they shared whichever one was observed most recently - see ProviderRateLimit.account. */
   rateLimit?: ProviderRateLimit;
   /** Set when a failed turn's error text yielded a real, parseable future reset time and a
    * retry has genuinely been scheduled for it (an ISO timestamp) - lets the UI show "retrying
@@ -465,6 +562,31 @@ export interface AgentStatus {
    * provider's to change. Absent means no turn has run yet, or that provider's stream never
    * says - it must never be back-filled with the configured value to look complete. */
   resolvedModel?: string;
+  /**
+   * What a message sent to this agent RIGHT NOW would be queued behind, so the composer can say
+   * "@claude is mid-turn - queued (#2), ~3 min" instead of leaving the operator watching
+   * nothing. Measured: 45% of replies to an @mention took over two minutes, and every one of
+   * those long waits was the recipient being busy - which the UI had no way to show.
+   *
+   * `etaMs` and `medianTurnMs` are absent, not zero, until this agent has actually completed
+   * turns to measure. A queue position is a fact we have; a duration for an agent that has never
+   * run is a guess, and the room already has enough confident numbers nobody checked.
+   */
+  queue?: {
+    /** Turns waiting to start, NOT counting the one in flight. */
+    waiting: number;
+    /** The position a message sent now would take. 1 means it starts next (or immediately, if
+     * the agent is idle). */
+    nextPosition: number;
+    /** Median duration of this agent's own completed turns, in ms. Absent until `samples` > 0 -
+     * never a default, never another agent's number. */
+    medianTurnMs?: number;
+    /** How long until a message sent now would START, from `medianTurnMs` and what is ahead of
+     * it. Absent whenever `medianTurnMs` is. */
+    etaMs?: number;
+    /** How many completed turns `medianTurnMs` was computed from. 0 means no estimate exists. */
+    samples: number;
+  };
 }
 
 /**
@@ -624,7 +746,18 @@ export function isChatChannel(channel: ChatChannel): channel is { chatId: string
 /** "announcement" is an agent telling the group something nobody needs to answer. It is the one
  * kind that deliberately summons NOBODY: an ordinary unaddressed message gives every agent in
  * the chat a real billed turn, so a status update used to cost three of them. */
-export type AgentMessageKind = "answer" | "progress" | "tool" | "reasoning" | "error" | "announcement";
+/** "status" is a report of work done or in progress that asks for nothing and cost nobody a
+ * turn. It is posted to the group so the room can show a collapsed "N updates" row rather than
+ * N full messages; the agent's own hub keeps it as an ordinary message. Acknowledgements are
+ * not in this list on purpose - they never reach the group at all. */
+export type AgentMessageKind =
+  | "answer"
+  | "progress"
+  | "tool"
+  | "reasoning"
+  | "error"
+  | "announcement"
+  | "status";
 
 /** One tool invocation, as reported by the provider. Nothing here is invented: `name` is the
  * provider's own tool name and `detail` is its own arguments - `label` is derived from those two
@@ -668,6 +801,34 @@ export interface ChatMessage {
    * indicator instead of guessing at turn boundaries from adjacency. Absent on user messages
    * and on history written before this existed - the client falls back to adjacency there. */
   turnId?: string;
+  /**
+   * The result of really connecting to every localhost URL this message contains, attached to
+   * the message itself rather than posted as a separate note. This is the difference between
+   * "an agent said it's live" and "it is live": the badge carries the HTTP status and the time
+   * the check ran.
+   *
+   * ABSENT means no check has run, or a check could not run at all - which renders as nothing.
+   * It never renders as a tick and never as a cross: a badge that appears without a real check
+   * behind it would be the same unverified claim in a more convincing typeface. An entry that
+   * IS here always has a genuine observation behind it, including a failed one.
+   *
+   * Written after the message is posted (see core/urlVerification.ts), via ChatBus.updateMessage
+   * - a connect takes a real, if short, network wait, and holding the message back for it would
+   * delay every localhost-mentioning message in the room.
+   */
+  urlChecks?: import("./ports").UrlCheck[];
+  /**
+   * Set only on a GROUP message whose text is the head of a longer answer that was capped for
+   * the room - the full text is in the author's own hub, whole and uncut.
+   *
+   * Agent messages measured median 282 / p90 1,359 characters, which is a report queue rather
+   * than a channel. `chars` is the real length of the full answer (so the UI can say how much
+   * more there is without inventing a number) and `turnId` is the turn to open the hub at.
+   * Never set when the answer was addressed to somebody: a message written TO someone is
+   * delivered whole. Other agents always receive the full text regardless of this field - it
+   * caps what the room is shown, never what is delivered.
+   */
+  fullTextInHub?: { chars: number; turnId?: string };
 }
 
 /**
@@ -778,4 +939,14 @@ export type ServerEvent =
   /** App settings changed. Sent as the whole object for the same reason as chats:updated - it
    * is a handful of fields, and one authoritative payload is the only shape a second tab
    * cannot apply out of order. */
-  | { type: "settings:updated"; payload: import("./settings").AppSettings };
+  | { type: "settings:updated"; payload: import("./settings").AppSettings }
+  /** Every chat's task board, re-sent whole on every change - the same shape and the same
+   * reasoning as chats:updated. There are tens of tasks, not thousands, and one authoritative
+   * payload is the only shape a second tab cannot apply out of order. Keyed by chat id; a chat
+   * with no tasks is absent rather than present-and-empty. */
+  | { type: "tasks:updated"; payload: { tasks: Record<string, import("./tasks").Task[]> } }
+  /** The port/server registry changed: a port was reserved or released, a server was started,
+   * killed, or found to have died. Sent as the whole registry for the same reason as
+   * chats:updated - it is a handful of rows, and one authoritative payload is the only shape a
+   * second tab cannot apply out of order. */
+  | { type: "servers:updated"; payload: import("./ports").PortRegistryState };

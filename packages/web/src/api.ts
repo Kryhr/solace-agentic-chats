@@ -1,4 +1,5 @@
 import type {
+  AccountUsage,
   AgentConfig,
   AgentStatus,
   AppSettings,
@@ -18,12 +19,14 @@ import type {
   McpServerScope,
   ModelDiscoveryResult,
   PendingApproval,
+  PortRegistryState,
   ProviderId,
   ProviderModelInfo,
   ProviderPermissionInfo,
   ProviderStatus,
   ProviderRateLimit,
   ServerEvent,
+  Task,
 } from "@solace/shared";
 
 export interface ProjectInfo {
@@ -86,6 +89,12 @@ export async function deleteChat(id: string): Promise<void> {
 
 export async function fetchChatHistory(chatId: string): Promise<ChatMessage[]> {
   return fetch(`/api/chats/${chatId}/history`).then((r) => r.json());
+}
+
+/** This chat's task board. Read-only: tasks are created, claimed and finished by the agents
+ * doing the work, through the MCP bridge - see the note on the server route. */
+export async function fetchChatTasks(chatId: string): Promise<Task[]> {
+  return fetch(`/api/chats/${chatId}/tasks`).then((r) => r.json().then((d) => d.tasks ?? []));
 }
 
 export async function createProject(name: string): Promise<ProjectInfo> {
@@ -155,6 +164,21 @@ export async function fetchArchives(): Promise<ChatArchive[]> {
  */
 export async function fetchSettings(): Promise<{ settings: AppSettings; definitions: SettingDefinition[] }> {
   return fetch("/api/settings").then((r) => r.json());
+}
+
+/**
+ * Usage, one row per ACCOUNT.
+ *
+ * Fetched rather than pushed because a row carries WHO the account is - the email and plan the
+ * CLI itself reports - and that comes from running the CLI's own read-only status command. It
+ * costs no turn and no tokens, and the server memoises it, but it is not something to put on
+ * every socket frame. The live `usage:rate-limit` events still arrive over the socket; they are
+ * what tells this page to ask again.
+ */
+export async function fetchUsage(): Promise<AccountUsage[]> {
+  const res = await fetch("/api/usage");
+  if (!res.ok) throw new Error(`Failed to load usage (${res.status})`);
+  return res.json();
 }
 
 /**
@@ -666,4 +690,23 @@ export async function createAccount(
   const json = await res.json();
   if (!res.ok) throw new Error(json?.error ?? "Could not create that account");
   return json;
+}
+
+// -----------------------------------------------------------------------------------------
+// Running servers
+// -----------------------------------------------------------------------------------------
+
+/** What is actually up, on which port, started by whom. The server re-checks every recorded
+ * pid before answering, so a row that says "running" has just been verified - see
+ * core/portRegistry.ts. */
+export async function fetchServers(): Promise<PortRegistryState> {
+  const res = await fetch("/api/servers");
+  if (!res.ok) return { reservations: [], servers: [] };
+  return res.json();
+}
+
+/** Stop a server and give its port back. Idempotent: killing something that has already
+ * exited is not an error. */
+export async function stopServer(id: string): Promise<void> {
+  await fetch(`/api/servers/${id}/stop`, { method: "POST" });
 }

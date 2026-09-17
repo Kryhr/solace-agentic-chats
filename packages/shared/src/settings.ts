@@ -176,6 +176,41 @@ export interface AppSettings {
    * group chat - a turn you started in an agent's hub already shows you everything.
    */
   showAgentWorkInGroupChat: boolean;
+
+  /**
+   * The most characters of ONE message that are handed to a receiving agent, before the rest is
+   * cut and the cut is announced in the prompt. Read live in agentManager.drainQueue, which
+   * passes it into deliverableText at the moment of delivery.
+   *
+   * Default 12000 = the old MAX_DELIVERED_CHARS. Range 1000..30000, and the ceiling is not a
+   * taste judgement: Codex and Copilot take their prompt on argv, where Windows stops at ~32,764
+   * characters for the WHOLE command line, and this message is only one part of a prompt that
+   * also carries the group context. Set it above what that leaves room for and the turn fails to
+   * start rather than arriving truncated.
+   *
+   * Worth raising only if every agent you route long messages to reaches its CLI over stdio
+   * rather than argv. Lowering it is the cheaper direction: an agent that receives 12,000
+   * characters pays for every one of them on every turn that re-reads the conversation. However
+   * it is set, a cut message SAYS it was cut, with its real length - the original incident was a
+   * silent ellipsis, which is why one agent spent two turns writing its findings to a file to
+   * get them across.
+   */
+  maxDeliveredChars: number;
+  /**
+   * How often a long turn posts ONE derived progress line into the group, in minutes. Read live
+   * in ProgressDigest.tick (server/core/progressDigest.ts), at the moment the line would be
+   * emitted - never cached at boot, same rule as every limit above.
+   *
+   * Default 3. Range 0..60, where 0 turns the digest off entirely. The measured problem: a turn
+   * that thinks and builds for twelve minutes is twelve minutes of silence followed by a
+   * 1,300-character dump, and two agents doing that in parallel cannot coordinate.
+   *
+   * What it posts is COUNTED from real tool-use events - files written, test runs, server
+   * starts - and nothing else. It is not a model summary and there is no path by which it could
+   * become one. When nothing countable has happened it posts nothing at all, because silence is
+   * more honest than "still working".
+   */
+  progressDigestMinutes: number;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -196,6 +231,11 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   // false IS the old behaviour - working went only to the agent's own hub - so the "nothing
   // changes for someone who never opens Settings" promise holds here too.
   showAgentWorkInGroupChat: false,
+  maxDeliveredChars: 12_000,
+  // Also new behaviour rather than a constant made configurable. 3 minutes is under the median
+  // gap this is meant to fill and well above the rate at which a line every milestone would
+  // become its own kind of noise.
+  progressDigestMinutes: 3,
 };
 
 /**
@@ -206,7 +246,20 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
  * the entry names its section, and the page renders whatever sections turn out to be non-empty.
  * A section with no settings in it is not rendered at all, so an empty heading can never appear.
  */
-export type SettingSectionId = "turns" | "collaboration" | "projects" | "appearance";
+/**
+ * Grouped by what a setting AFFECTS, not by which file implements it.
+ *
+ * "turns" and "collaboration" previously did double duty: the trust level a new agent starts on
+ * sat under turn limits, and the two settings that decide how much an agent says in the group
+ * sat in two different places. Someone looking for "why is the chat so noisy" had to know that
+ * one of the answers was filed under Collaboration and the other under Appearance.
+ */
+export type SettingSectionId =
+  | "turns"
+  | "coordination"
+  | "noise"
+  | "trust"
+  | "projects";
 
 export interface SettingSection {
   id: SettingSectionId;
@@ -218,25 +271,42 @@ export interface SettingSection {
 export const SETTING_SECTIONS: SettingSection[] = [
   {
     id: "turns",
-    title: "Agents & turns",
-    blurb: "When a single turn is stopped, resumed or given up on, and what a new agent starts as.",
+    title: "Turn limits",
+    blurb: "When a single turn is stopped, resumed or given up on. Every one of these costs real billed time.",
   },
   {
-    id: "collaboration",
-    title: "Collaboration",
-    blurb: "What agents are allowed to do to each other's work: interrupt it, chain off it, take it over.",
+    id: "coordination",
+    title: "Coordination",
+    blurb: "What agents may do to each other's work: interrupt it, chain off it, take it over.",
+  },
+  {
+    id: "noise",
+    title: "Chat noise",
+    blurb: "How much reaches the group, and how much stays in an agent's own hub. Nothing here is ever discarded.",
+  },
+  {
+    id: "trust",
+    title: "Trust & permissions",
+    blurb: "What a new agent is allowed to do on your machine before you change it.",
   },
   {
     id: "projects",
     title: "Projects",
     blurb: "Which agents belong to which folder, and whether that follows you around.",
   },
-  {
-    id: "appearance",
-    title: "Appearance",
-    blurb: "What the group chat shows. These change what is displayed, not what agents actually do.",
-  },
 ];
+
+/**
+ * "Appearance" is deliberately gone, not renamed.
+ *
+ * Its single setting - whether an agent's working also appears in the group - is filed under
+ * Chat noise now, because that is what it changes: how much lands in the room. Filing it under
+ * Appearance implied it was a display preference, when turning it on genuinely buries other
+ * people's messages under four agents' tool calls. It never changed anything about how the app
+ * looks. An empty heading is worse than no heading (settings.test.ts asserts every section has
+ * at least one setting in it), so the section went with it rather than being kept as a label
+ * with nothing under it.
+ */
 
 /** Fields every setting has, whatever control it renders as. */
 interface BaseSettingDefinition {
@@ -276,7 +346,7 @@ export type SettingDefinition = ToggleSettingDefinition | NumberSettingDefinitio
 export const SETTING_DEFINITIONS: SettingDefinition[] = [
   {
     key: "handoverOnUsageExhausted",
-    section: "collaboration",
+    section: "coordination",
     kind: "toggle",
     label: "Hand work over when an agent runs out of usage",
     description:
@@ -360,7 +430,7 @@ export const SETTING_DEFINITIONS: SettingDefinition[] = [
   },
   {
     key: "maxHandovers",
-    section: "collaboration",
+    section: "coordination",
     kind: "number",
     min: 0,
     max: 5,
@@ -375,7 +445,7 @@ export const SETTING_DEFINITIONS: SettingDefinition[] = [
   },
   {
     key: "maxMidTurnPosts",
-    section: "collaboration",
+    section: "noise",
     kind: "number",
     min: 0,
     max: 50,
@@ -390,7 +460,7 @@ export const SETTING_DEFINITIONS: SettingDefinition[] = [
   },
   {
     key: "defaultTrustLevel",
-    section: "turns",
+    section: "trust",
     kind: "select",
     options: [
       { value: "plan", label: "Plan - propose, change nothing" },
@@ -408,7 +478,7 @@ export const SETTING_DEFINITIONS: SettingDefinition[] = [
   },
   {
     key: "maxMentionChainDepth",
-    section: "collaboration",
+    section: "coordination",
     kind: "number",
     min: 0,
     max: 20,
@@ -423,7 +493,7 @@ export const SETTING_DEFINITIONS: SettingDefinition[] = [
   },
   {
     key: "agentQuestionGraceMinutes",
-    section: "collaboration",
+    section: "coordination",
     kind: "number",
     min: 1,
     max: 60,
@@ -438,8 +508,41 @@ export const SETTING_DEFINITIONS: SettingDefinition[] = [
       "agents from killing each other's work in a loop.",
   },
   {
+    key: "maxDeliveredChars",
+    section: "noise",
+    kind: "number",
+    min: 1000,
+    max: 30000,
+    unit: "characters",
+    label: "Most of one message an agent is handed",
+    description:
+      "A longer message is cut here, and the cut says so in the agent's own prompt with the real length - " +
+      "never a silent ellipsis, which is what once made an agent spend two turns writing its findings to a " +
+      "file to get them across. The ceiling is not taste: Codex and Copilot take their prompt as a command " +
+      "line, which Windows stops at about 32,764 characters for the whole thing, and this message is only " +
+      "one part of it. Lowering it is the cheaper direction - every delivered character is re-read, and paid " +
+      "for, on each following turn.",
+  },
+  {
+    key: "progressDigestMinutes",
+    // "collaboration" on the branch that wrote this; the section is named "coordination" here.
+    section: "coordination",
+    kind: "number",
+    min: 0,
+    max: 60,
+    unit: "minutes",
+    label: "How often a long turn reports progress to the group",
+    description:
+      "A turn that works for twelve minutes says nothing for twelve minutes and then posts a wall of text, " +
+      "which is why two agents working in parallel end up building the same thing twice. With this set, the " +
+      "group gets one short line every so often - \"4 files written · 2 test runs · server started on :4321\". " +
+      "Every part of that line is COUNTED from the tool calls the provider actually reported; no model writes " +
+      "it and none is asked to. If nothing countable has happened yet, nothing is posted at all rather than a " +
+      "reassuring \"still working\". Set 0 to turn it off.",
+  },
+  {
     key: "showAgentWorkInGroupChat",
-    section: "appearance",
+    section: "noise",
     kind: "toggle",
     label: "Show agents' working in the group chat",
     description:

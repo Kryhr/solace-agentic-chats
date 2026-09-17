@@ -10,7 +10,7 @@ import { join } from "node:path";
  * needs a live agent, a live turn and a provider process to exercise end to end, and the thing
  * being guarded in every case is a line going missing rather than a value coming out wrong.
  */
-const SRC = readFileSync(join(import.meta.dirname, "agentManager.ts"), "utf8");
+const SRC = readFileSync(join(import.meta.dirname, "agentManager.ts"), "utf8").replace(/\r\n/g, "\n");
 
 test("a message that is ONLY the end-of-thread marker is not posted", () => {
   // Four messages reading exactly "[no-reply]" appeared in one session. The old line was

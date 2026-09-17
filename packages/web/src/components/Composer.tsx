@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { COMMAND_DEFINITIONS } from "@solace/shared";
-import type { AgentConfig, ProviderId, ProviderRateLimit } from "@solace/shared";
+import type { AccountUsage, AgentConfig } from "@solace/shared";
 import { ProviderIcon } from "./ProviderIcon";
 import { SendIcon } from "./SendIcon";
 import { UsageMeter } from "./UsageMeter";
@@ -44,6 +44,9 @@ export function Composer({
   onSend,
   onSubmitted,
   mentionAgents,
+  scopedTo,
+  onClearScope,
+  queueNotices,
   surface,
   busyAgents,
   onStopAgents,
@@ -64,7 +67,26 @@ export function Composer({
    * or its own hub page. */
   busyAgents?: AgentConfig[];
   onStopAgents?: (agents: AgentConfig[]) => void;
-  usage?: { rateLimits: ProviderRateLimit[]; providersInUse: ProviderId[] };
+  /** One row per ACCOUNT, already resolved by the server (GET /api/usage). The composer does
+   * not join limits to accounts itself: which login a figure belongs to is a server-side fact
+   * and getting it wrong here would show one subscription's quota against another. */
+  usage?: AccountUsage[];
+  /**
+   * Which agents this chat's work is currently scoped to, and how to clear it.
+   *
+   * The scope was already being ENFORCED - an agent's reply cannot widen the roster past the
+   * agents the operator named - while being completely invisible. The chip is the missing half:
+   * from the operator's side, routing that silently ignores an agent is indistinguishable from
+   * the app ignoring their addressing. Empty means unscoped, and the chip is not rendered.
+   */
+  scopedTo?: string[];
+  onClearScope?: () => void;
+  /**
+   * One line per agent that cannot answer straight away, as the server reported it. Written by
+   * the caller (lib/chatScope.queueNoticeFor) rather than derived here, because whether an
+   * estimate may be quoted at all depends on how many turns that agent has actually finished.
+   */
+  queueNotices?: string[];
 }) {
   const [draft, setDraft] = useState("");
   const [cursor, setCursor] = useState(0);
@@ -221,7 +243,37 @@ export function Composer({
           ))}
         </div>
       )}
+      {/* Above the composer, not inside it: this describes where the next message will GO, so it
+          belongs between the transcript and the box rather than among the box's own controls. */}
+      {scopedTo && scopedTo.length > 0 && (
+        <div className="scope-chip">
+          <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <circle cx="8" cy="8" r="5.5" />
+            <path d="M8 5.5v2.8l1.8 1.1" />
+          </svg>
+          <span className="scope-chip-text">
+            Scoped to {scopedTo.map((h) => `@${h}`).join(" ")}
+          </span>
+          {onClearScope && (
+            <button type="button" className="scope-chip-clear" onClick={onClearScope}>
+              /all to clear
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="composer">
+        {/* Polite, not assertive: this appears as a side effect of an agent becoming busy, which
+            is not an interruption worth cutting across whatever a screen reader is reading. */}
+        {queueNotices && queueNotices.length > 0 && (
+          <div className="composer-queue" aria-live="polite">
+            {queueNotices.map((notice) => (
+              <span key={notice} className="composer-queue-line">
+                {notice}
+              </span>
+            ))}
+          </div>
+        )}
         {sendError && (
           <div className="composer-error" role="alert">
             {sendError}
@@ -245,7 +297,7 @@ export function Composer({
             onClick={(e) => setCursor(e.currentTarget.selectionStart ?? 0)}
             onKeyDown={onKeyDown}
           />
-          {usage && <UsageMeter rateLimits={usage.rateLimits} providersInUse={usage.providersInUse} />}
+          {usage && <UsageMeter accounts={usage} />}
           {/* Sits beside Send rather than replacing it: a turn running is not a reason you
               cannot say something else, and swapping the button under the cursor mid-thought is
               how people stop the wrong thing. Only rendered while something is actually

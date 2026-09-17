@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { nanoid } from "nanoid";
 import {
   isChatChannel,
+  pathCoveredBy,
   type AgentConfig,
   type AgentRunState,
   type AgentStatus,
@@ -20,6 +21,7 @@ import { RateLimitStore } from "./rateLimits";
 import { addUsage } from "./usage";
 import { clearCopilotQuotaCache, getCopilotQuota } from "./copilotQuota";
 import { CoordinationBoard } from "./coordination";
+import { TaskBoard } from "./taskBoard";
 import { buildSkillsPointer } from "./skills";
 import type { Block } from "@solace/shared";
 import { SettingsStore } from "./settingsStore";
@@ -28,8 +30,19 @@ import type { ApprovalRegistry } from "./approvalRegistry";
 import { extractLiveClaims, findUnreachableClaims, unreachableClaimNotice } from "./claimCheck";
 import { getCredentialSecrets, listSecretValues } from "./credentials";
 import type { PersistedAgentSession } from "./persistence";
-import { classifyIncoming, type IncomingKind } from "./turnIntent";
+import {
+  classFromDeclaredKind,
+  classGetsATurn,
+  classifyIncoming,
+  classifyMessageClass,
+  extractFilePaths,
+  incomingKindForClass,
+  type IncomingKind,
+  type MessageClass,
+} from "./turnIntent";
 import { describeToolCall } from "./toolLabel";
+import { AgentGate } from "./agentGate";
+import type { ProgressDigest } from "./progressDigest";
 import { WORKSPACE_ROOT } from "./workspace";
 
 export interface QueuedTurn {
@@ -63,6 +76,16 @@ export interface QueuedTurn {
    * interrupt a turn that is already running. See turnIntent.ts for why the classification is
    * deliberately biased toward "work". */
   kind: IncomingKind;
+  /** What the message that created this turn WAS - see turnIntent.MessageClass. Distinct from
+   * `kind`, which is only ever about whether a running turn may be killed for it. Absent on
+   * internal re-runs (restore, retry, wake) where no message arrived at all, and on state files
+   * written before classes existed. */
+  class?: MessageClass;
+  /** Set only on a "finding" turn that was routed to this agent because it OWNS the file the
+   * finding is about, per the coordination board's claims. That is the one non-question case
+   * allowed to preempt a running turn: the owner is the only agent who can act on it, and a
+   * finding sitting undelivered for a whole build is a file being edited on a wrong premise. */
+  ownedFileFinding?: boolean;
   /** When this turn was created, ISO. Arrival order is the delivery guarantee, and `queue` gets
    * deliberately reordered on an interrupt (question -> resume -> the rest), so the order has to
    * live on the turn itself rather than in the array - and has to survive a restart. */
@@ -173,6 +196,18 @@ interface AgentRuntime {
   /** When the in-flight turn started, so the UI can say how long it has been working rather
    * than just that it is. Cleared when the turn ends. */
   turnStartedAt?: string;
+  /**
+   * How long each COMPLETED turn took, in milliseconds, this process's lifetime.
+   *
+   * Kept in memory only and deliberately not persisted: the point of the figure is to answer
+   * "how long will this probably take", and a duration measured against a different machine
+   * state, a different model or a different provider plan is not evidence about now. An empty
+   * list after a restart correctly means "we do not know yet" - which the UI says rather than
+   * filling in.
+   */
+  /** The label of the tool the in-flight turn is running, from the provider's own tool name via
+   * the existing label table. Cleared when the turn ends; absent before its first tool call. */
+  workingOn?: string;
   /** The last rate-limit figure this agent's own turn heard from the provider. */
   rateLimit?: ProviderRateLimit;
   /** The most recently failed turn, kept around so a "Retry" action (automatic or
@@ -209,6 +244,21 @@ interface AgentRuntime {
    * Stop/Remove can disarm it: auto-resuming work after the user explicitly pressed Stop would
    * be the worst possible behaviour of this whole feature. */
   interruptTimer?: NodeJS.Timeout;
+  /** Which message the armed interruptTimer is for, so an OPERATOR question arriving behind an
+   * agent's can re-arm at the operator's much shorter grace instead of inheriting the agent
+   * one. Without it, "if (interruptTimer) return" made the operator wait out the agent-question
+   * grace - four minutes by default - purely because an agent asked first. */
+  interruptArmedFor?: { turnId: string; fromOperator: boolean; firesAt: number };
+  /**
+   * How long this agent's own completed turns actually took, in ms, most recent last.
+   *
+   * The ONLY source for the "~3 min" the composer shows. Deliberately per agent and never
+   * pooled: a Claude turn and an OpenCode turn are not the same length, and a number borrowed
+   * from another agent is exactly the kind of confident figure nobody checked that this app
+   * refuses to show. Empty until this agent finishes a turn, and empty again after a restart -
+   * it is not persisted, so the UI shows no estimate rather than a stale one.
+   */
+  turnDurationsMs: number[];
 }
 
 /**
@@ -342,6 +392,14 @@ const HOUSE_STYLE = [
   "- Write about your own work in the first person: \"I removed the dead files\", not \"codex removed the dead files\". Your name is already on the message. Use other agents' handles only when you mean THEM.",
   "If you have post_to_group, send a short update when you start something substantial, when you",
   "commit to a direction, and when you hand work off - so the others are not waiting in the dark.",
+  // Ports and servers, measured: two agents each restarting a server the other was holding
+  // (twice), and 22 "it's live" claims of which 4 were contradicted within fifteen messages. A
+  // sentence in the chat is not a reservation and a server started inside a turn dies with it,
+  // so both of those are a tool call rather than a good intention. The full reasoning lives on
+  // the tools themselves; this is the pointer that makes them the first thing reached for.
+  "- Never pick a port yourself. Call reserve_port - it hands you one that is genuinely free and holds it in your name, and tells you who has a port you cannot have.",
+  "- Start any long-running server with start_server, not your shell. A server you start any other way is inside this turn's process tree and dies when the turn ends, so the URL is live while you write about it and dead when the user clicks it.",
+  "- Any localhost URL you post is checked against a real HTTP request and badged with the status. Check it yourself first - a ✗ next to your message is worse than saying you have not verified it.",
 ].join("\n");
 
 /** How an agent says "I'm done, don't hand this back to me" - see routeChatMessage. Matched
@@ -354,6 +412,62 @@ const END_THREAD_MARKER = /\[no-reply\]/i;
  * working into the group would spend the user's money doing it. Eight is enough for genuine
  * coordination (announce, ask, hand off, answer) and far short of a transcript. */
 export const MAX_MID_TURN_POSTS = 8;
+
+/**
+ * How much of an agent's final answer the GROUP is shown, when that answer is not addressed to
+ * anybody.
+ *
+ * Agent messages measured median 282 / p90 1,359 characters across 670 real messages. The median
+ * is fine; the tail is what turns a room of four into a report queue nobody reads. 600 is above
+ * the median by design - most messages are untouched - and cuts the p90 to a head the room can
+ * actually scan.
+ *
+ * Three things this cap deliberately does NOT do, each of which was a real incident:
+ *   - It never truncates what another AGENT receives. A 200-character delivery cap once made an
+ *     agent write its findings to a file on disk to get them across (see deliverableText).
+ *   - It never touches a message addressed to someone. A message written TO you arrives whole.
+ *   - It never loses the text: the agent's own hub already holds the full answer, and the group
+ *     message carries fullTextInHub so the UI can link straight to it.
+ */
+export const GROUP_REPLY_BUDGET_CHARS = 600;
+
+/** How many recent turn durations one agent keeps, for the queue estimate. Twenty is enough for
+ * a median to stop swinging on a single long turn, and short enough that an agent whose work has
+ * changed shape stops being described by what it was doing an hour ago. */
+export const TURN_DURATION_SAMPLES = 20;
+
+/**
+ * The median of some durations, or undefined when there are none.
+ *
+ * Median, not mean, because turn durations are wildly skewed - one twelve-minute build sits
+ * among a dozen forty-second answers, and a mean would report a typical wait that has never
+ * once happened. Returns undefined rather than 0 for an empty list: the caller must be able to
+ * tell "no history" from "instant", and the UI shows nothing for the first.
+ */
+export function medianMs(values: number[]): number | undefined {
+  const usable = values.filter((v) => Number.isFinite(v) && v >= 0).sort((a, b) => a - b);
+  if (usable.length === 0) return undefined;
+  const mid = Math.floor(usable.length / 2);
+  return usable.length % 2 === 1 ? usable[mid] : Math.round((usable[mid - 1] + usable[mid]) / 2);
+}
+
+/**
+ * The head of an over-budget answer, cut at a sentence or a line rather than mid-word.
+ *
+ * Returns undefined when nothing needed cutting, so the caller can tell "this is the whole
+ * message" from "this is a head" without comparing lengths again. The cut point walks BACK from
+ * the budget to the last sentence end or newline, and only falls back to a hard character cut
+ * when that would throw away more than a third of the budget - a paragraph with no punctuation
+ * in it should still be shown, not reduced to two words.
+ */
+export function capForGroup(text: string, budget: number = GROUP_REPLY_BUDGET_CHARS): string | undefined {
+  const trimmed = text.trim();
+  if (trimmed.length <= budget) return undefined;
+  const window = trimmed.slice(0, budget);
+  const breakAt = Math.max(window.lastIndexOf("\n"), window.search(/[.!?](?=[^.!?]*$)/) + 1);
+  const head = breakAt > Math.floor(budget * 0.66) ? window.slice(0, breakAt) : window;
+  return head.trimEnd();
+}
 
 /** How long a QUESTION may sit undelivered in pendingInbound before the running turn is killed
  * to answer it. Tuned to be longer than the gap between two tool calls of a working agent (which
@@ -511,15 +625,43 @@ function stripPromptWrapper(prompt: string): string {
  * already carries the group context. 12,000 leaves room for the rest. When it does bite, it says
  * so in words: a silent ellipsis is what made the original failure so hard to see from outside.
  */
-const MAX_DELIVERED_CHARS = 12_000;
+export const MAX_DELIVERED_CHARS = 12_000;
 
-export function deliverableText(prompt: string): string {
+/**
+ * `maxChars` defaults to the constant, so every existing caller and test behaves exactly as
+ * before. The manager passes the CONFIGURED value in at the moment of delivery, which is what
+ * makes the setting live rather than a number captured at boot - the same shape resumeBudgetMs
+ * already uses for the turn budget.
+ */
+/**
+ * The median of a list of turn durations, or undefined when there are too few to mean anything.
+ *
+ * MIN_TURN_SAMPLES is the whole point of this function existing rather than being one inline
+ * expression. "@claude is mid-turn - queued #2, ~3 min" is a promise, and a promise built from a
+ * single previous turn is a number the app invented: one turn that happened to read a file takes
+ * eight seconds and one that builds a page takes twelve minutes, and either one alone would be
+ * quoted with equal confidence. Under three samples the UI is told nothing and says nothing
+ * about how long the wait will be, which is the honest version of the same line.
+ *
+ * Median, not mean, because one twelve-minute build must not drag the estimate for the twenty
+ * short turns around it.
+ */
+export const MIN_TURN_SAMPLES = 3;
+
+export function medianOf(durations: number[]): number | undefined {
+  if (durations.length < MIN_TURN_SAMPLES) return undefined;
+  const sorted = [...durations].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? Math.round((sorted[mid - 1] + sorted[mid]) / 2) : sorted[mid];
+}
+
+export function deliverableText(prompt: string, maxChars: number = MAX_DELIVERED_CHARS): string {
   const stripped = stripPromptWrapper(prompt).replace(/\r\n/g, "\n").trim();
-  if (stripped.length <= MAX_DELIVERED_CHARS) return stripped;
+  if (stripped.length <= maxChars) return stripped;
   const notice =
     `[solace: this message was ${stripped.length} characters and was cut here at ` +
-    `${MAX_DELIVERED_CHARS}. Ask the sender for the rest, or ask them to write it to a file.]`;
-  return `${stripped.slice(0, MAX_DELIVERED_CHARS)}\n\n${notice}`;
+    `${maxChars}. Ask the sender for the rest, or ask them to write it to a file.]`;
+  return `${stripped.slice(0, maxChars)}\n\n${notice}`;
 }
 
 export function summarizePrompt(prompt: string): string {
@@ -681,10 +823,35 @@ export const MAX_HANDOVERS = 2;
  * Also excluded: the failing agent itself, and anyone this work has already been through (an
  * agent that just ran out of usage will still be out of usage), so a chain cannot cycle.
  *
- * Order is roster order, which is stable, and puts agents that can actually change files ahead
- * of ones that cannot - a `plan` agent is a legal recipient (it may be all there is), but it is
- * the last resort rather than the first pick.
+ * Order is stable roster order within each band, and puts agents that can actually change files
+ * ahead of ones that cannot - a `plan` agent is a legal recipient (it may be all there is), but
+ * it is the last resort rather than the first pick.
+ *
+ * The bands, best first, are the whole point of preferring a sibling account:
+ *
+ *   0. SAME provider, DIFFERENT account. The best possible recipient. The model and its
+ *      behaviour match exactly, so the work continues as the same kind of work rather than in a
+ *      different model's voice and habits - and the two accounts are separate real
+ *      subscriptions, so the limit that just stopped the first agent does not apply here at all.
+ *      Multi-account now works for 8 of the 11 CLIs (see providerAccounts.supportsMultipleAccounts),
+ *      so this band is usually populated when anything is.
+ *   1. A DIFFERENT provider. A real fallback: different model, different behaviour, but its own
+ *      quota.
+ *   2. SAME provider, SAME account (which includes two agents that both named no account at
+ *      all). Last, because agents sharing one account share one real limit: the agent that just
+ *      ran out is the same login, so this candidate is likely to fail on arrival. It stays
+ *      eligible rather than being filtered out, because a limit can be per-model or per-window
+ *      and "probably exhausted" is not "certainly exhausted" - but it is never preferred over an
+ *      account that is definitely someone else's.
  */
+export function handoverBand(from: AgentConfig, candidate: AgentConfig): 0 | 1 | 2 {
+  if (candidate.provider !== from.provider) return 1;
+  // Normalised so "undefined" and "" cannot read as two different accounts, which would promote
+  // an agent on the identical default login into the best band.
+  const accountOf = (a: AgentConfig) => (a.account ?? "").trim().toLowerCase();
+  return accountOf(candidate) !== accountOf(from) ? 0 : 2;
+}
+
 export function eligibleHandoverAgents(
   from: AgentConfig,
   roster: AgentConfig[],
@@ -695,7 +862,11 @@ export function eligibleHandoverAgents(
   alreadyTried.add(from.id);
   const eligible = roster.filter((a) => !alreadyTried.has(a.id) && sameWorkingDirectory(cwdOf(a), cwdOf(from)));
   const canWrite = (a: AgentConfig) => (a.trustLevel === "plan" ? 1 : 0);
-  return eligible.sort((a, b) => canWrite(a) - canWrite(b));
+  // Write-capability first, then the provider/account band. A plan-mode agent may not be able to
+  // finish the work at all, which is a harder blocker than being on a busier account.
+  return eligible.sort(
+    (a, b) => canWrite(a) - canWrite(b) || handoverBand(from, a) - handoverBand(from, b),
+  );
 }
 
 /**
@@ -728,6 +899,10 @@ interface EnqueueOptions {
   /** Defaults to "work": the safe classification, and the right one for every internal re-run
    * (restore, retry, rate-limit retry) where nothing new has actually arrived. */
   kind?: IncomingKind;
+  /** See QueuedTurn.class. Absent for every internal re-run, where no message arrived. */
+  class?: MessageClass;
+  /** See QueuedTurn.ownedFileFinding. */
+  ownedFileFinding?: boolean;
   sessionRetryDone?: boolean;
   resume?: QueuedTurn["resume"];
   handover?: QueuedTurn["handover"];
@@ -750,6 +925,8 @@ function restoredTurnOptions(turn: QueuedTurn): EnqueueOptions {
     mentionChainDepth: turn.mentionChainDepth,
     addressedBy: turn.addressedBy,
     kind: turn.kind,
+    class: turn.class,
+    ownedFileFinding: turn.ownedFileFinding,
     sessionRetryDone: turn.sessionRetryDone,
     resume: turn.resume,
     handover: turn.handover,
@@ -817,6 +994,14 @@ export class AgentManager {
    * the current truth for both. */
   private rateLimits: RateLimitStore;
 
+  /** Muted and paused agents - see core/agentGate.ts. Public because the commands set it and
+   * routing reads it; it holds two Sets of ids and no behaviour of its own. */
+  readonly gate = new AgentGate();
+
+  /** Set by index.ts. Fed the turn's real tool-use events so it can COUNT them; it is never
+   * given, and never asks for, any generated text. See core/progressDigest.ts. */
+  progress: ProgressDigest | null = null;
+
   constructor(
     private bus: ChatBus,
     /** Which chats exist, and which agents each one reaches - see ChatStore.agentsForChat.
@@ -836,8 +1021,16 @@ export class AgentManager {
     /** Claims, contracts, blocks and announcement watermarks. Defaults to an empty board so
      * every existing caller and test keeps working with coordination simply unused. */
     private board: CoordinationBoard = new CoordinationBoard(),
+    /** The task board: owner, status, depends-on and files per task. Defaults to an empty
+     * board for the same reason as `board` above. All of its rules live in core/taskBoard.ts;
+     * what is here is the turn-token wrapper around each one, plus the context injection. */
+    private tasks: TaskBoard = new TaskBoard(),
   ) {
     this.rateLimits = new RateLimitStore(initialRateLimits);
+    // Unpausing has to actually run the backlog. Without this the queue would only drain when
+    // the next message happened to arrive, which for an agent nobody is talking to is never -
+    // /resume would look like it had silently dropped everything that piled up.
+    this.gate.onResumed = (id) => void this.drainQueue(id);
     for (const config of initialAgents) {
       this.agents.set(config.id, {
         config,
@@ -846,6 +1039,7 @@ export class AgentManager {
         busy: false,
         queue: [],
         pendingInbound: [],
+        turnDurationsMs: [],
         totalUsage: {},
       });
     }
@@ -931,6 +1125,7 @@ export class AgentManager {
       maxMidTurnPosts: s.maxMidTurnPosts,
       interruptGraceMs: s.interruptGraceSeconds * 1000,
       agentQuestionGraceMs: s.agentQuestionGraceMinutes * 60_000,
+      maxDeliveredChars: s.maxDeliveredChars,
     };
   }
 
@@ -982,6 +1177,7 @@ export class AgentManager {
       busy: false,
       queue: [],
       pendingInbound: [],
+      turnDurationsMs: [],
       totalUsage: {},
     });
     this.bus.emitEvent({ type: "agent:added", payload: config });
@@ -1005,6 +1201,11 @@ export class AgentManager {
     // Its claims would otherwise outlive it and hold a lane nobody can release, and its block
     // would sit on the board waiting for a wake-up that can never be delivered.
     this.board.forgetAgent(id);
+    // Same reasoning for tasks: a task still owned by a deleted agent is a lane nobody can
+    // take, so its claimed tasks go back on the board as open. Finished ones keep their owner.
+    this.tasks.forgetAgent(id);
+    // A mute or a pause held against an id nobody can look up any more is state with no way out.
+    this.gate.forget(id);
     this.agents.delete(id);
     this.bus.emitEvent({ type: "agent:removed", payload: { agentId: id } });
     this.onChange?.();
@@ -1132,6 +1333,8 @@ export class AgentManager {
       mentionChainDepth: turn.mentionChainDepth,
       addressedBy: turn.addressedBy,
       kind: turn.kind,
+      // Carried so a re-run of this work keeps the class it was routed as - see QueuedTurn.class.
+      class: turn.class,
     });
     return true;
   }
@@ -1149,7 +1352,10 @@ export class AgentManager {
    * tell a real update apart from a stale/typo'd id instead of both reporting success. */
   updateAgent(
     id: string,
-    patch: Partial<Pick<AgentConfig, "trustLevel" | "currentTask" | "model" | "effort" | "authMode" | "credentialId">>,
+    // "account" is here so /accounts can switch an agent between two logins of the same
+    // provider without going through the Add-agent form. Setting it to undefined is meaningful
+    // and is how /accounts @handle default puts an agent back on the CLI's own login.
+    patch: Partial<Pick<AgentConfig, "trustLevel" | "currentTask" | "model" | "effort" | "authMode" | "credentialId" | "account">>,
   ): boolean {
     const runtime = this.agents.get(id);
     if (!runtime) return false;
@@ -1229,12 +1435,57 @@ export class AgentManager {
         runtime.busy && runtime.currentTurn && isChatChannel(runtime.currentTurn.replyChannel)
           ? runtime.currentTurn.replyChannel.chatId
           : undefined,
-      rateLimit: runtime.rateLimit ?? this.rateLimits.get(runtime.config.provider),
+      // Work waiting behind the turn in flight. Counted off the real queue rather than tracked
+      // separately, so it cannot drift from what will actually run.
+      queuedTurns: runtime.queue.length,
+      medianTurnMs: medianOf(runtime.turnDurationsMs),
+      workingOn: runtime.busy ? runtime.workingOn : undefined,
+      account: runtime.config.account,
+      // Resolved by provider AND account. Before, an agent that had never run a turn borrowed
+      // whatever figure the provider had last reported - which, with two accounts of one
+      // provider, was routinely the OTHER account's remaining quota shown against this one.
+      rateLimit: runtime.rateLimit ?? this.rateLimits.get(runtime.config.provider, runtime.config.account),
       retryAt: runtime.scheduledRetryAt,
       canRetry: runtime.lastFailedTurn !== undefined,
       // Display only, and only when the provider actually told us - see AgentStatus.resolvedModel.
       resolvedModel: runtime.lastResolvedModel,
+      queue: this.queueStateFor(runtime),
     };
+  }
+
+  /**
+   * What a message sent to this agent right now would be queued behind, and how long that is
+   * likely to take - the data behind "@claude is mid-turn - queued (#2), ~3 min".
+   *
+   * The position is arithmetic on real queue contents and is always reported. The duration is
+   * not: it exists only once this agent has actually finished turns, and is its OWN median, not
+   * a pooled one and not a default. `medianTurnMs` and `etaMs` are simply absent until then, so
+   * the UI can say "queued (#2)" with no time rather than "~0 min", which would be a confident
+   * number nobody measured - the exact thing the house rule forbids.
+   *
+   * The estimate is the median for everything ahead in the queue, plus whatever is left of the
+   * in-flight turn. The in-flight remainder is floored at zero rather than going negative: a
+   * turn already running longer than the median tells us the estimate has been beaten, not that
+   * it will finish in the past. That case is genuinely unknowable from a median alone, and it is
+   * reported as "any moment" rather than dressed up.
+   */
+  private queueStateFor(runtime: AgentRuntime): AgentStatus["queue"] {
+    const waiting = runtime.queue.length;
+    const inFlight = runtime.busy && runtime.currentTurn ? 1 : 0;
+    const medianTurnMs = medianMs(runtime.turnDurationsMs);
+    const samples = runtime.turnDurationsMs.length;
+    const state: NonNullable<AgentStatus["queue"]> = {
+      waiting,
+      nextPosition: waiting + inFlight + 1,
+      samples,
+    };
+    if (medianTurnMs === undefined) return state;
+    state.medianTurnMs = medianTurnMs;
+    const startedAt = runtime.turnStartedAt ? Date.parse(runtime.turnStartedAt) : NaN;
+    const remainingOfCurrent =
+      inFlight === 1 && Number.isFinite(startedAt) ? Math.max(0, medianTurnMs - (Date.now() - startedAt)) : 0;
+    state.etaMs = remainingOfCurrent + medianTurnMs * waiting;
+    return state;
   }
 
   private emitStatus(id: string) {
@@ -1245,11 +1496,43 @@ export class AgentManager {
 
   /** Human operator posts a message into one chat. No @mention reaches every agent in that chat
    * (each gets its own turn); an @mention reaches only the mentioned agent(s). */
-  submitMessage(chatId: string, authorId: string, authorHandle: string, text: string) {
+  /**
+   * `declaredKind` is what /ask exists for. Left undefined for an ordinary typed message, so
+   * classifyIncoming decides as it always has - inferring a question from wording is a guess and
+   * stays one. Passing it is the operator SAYING this is a question, which is what buys it the
+   * interrupt-after-grace treatment in armInterruptTimer rather than a place in the queue.
+   */
+  submitMessage(chatId: string, authorId: string, authorHandle: string, text: string, declaredKind?: IncomingKind) {
     this.routeChatMessage(chatId, authorId, authorHandle, text, {
       broadcastIfUnmentioned: true,
       mentionChainDepth: 0,
+      declaredKind,
     });
+  }
+
+  /**
+   * Abort whatever this agent is doing RIGHT NOW, so that whatever was just queued for it is
+   * picked up next. This is `/interrupt`: the operator saying stop, rather than a question
+   * waiting out its grace period in armInterruptTimer.
+   *
+   * Uses exactly the same abort path as the graced interrupt (abortKind "interrupt"), so the
+   * killed turn is resumed afterwards by the existing scheduleResume machinery and counts
+   * against the same resume budget - a force preempt costs a real billed turn and must not be
+   * able to sneak past the limit that says how often that may happen.
+   *
+   * Returns false when there was nothing running, which the command reports as such rather than
+   * printing "interrupted" for a turn that never existed.
+   */
+  forcePreempt(agentId: string): boolean {
+    const runtime = this.agents.get(agentId);
+    if (!runtime?.busy || !runtime.activeController) return false;
+    this.clearInterruptTimer(runtime);
+    runtime.abortKind = "interrupt";
+    runtime.activeController.abort();
+    // A killed turn must not leave a live approval card for it in the UI - same reasoning and
+    // the same call as every other abort path here.
+    this.approvals?.expireForAgent(agentId);
+    return true;
   }
 
   /**
@@ -1328,7 +1611,21 @@ export class AgentManager {
       /** Set only when the SENDER explicitly said what this is (the solace bridge's `kind`
        * argument). Left undefined everywhere else so classifyIncoming decides - an agent
        * declaring its own message a question is a deliberate act; inferring one is a guess. */
-      declaredKind?: IncomingKind;
+      declaredKind?: IncomingKind | MessageClass;
+      /**
+       * Is this the answer to a turn that was itself a QUESTION?
+       *
+       * The one case where a status-shaped message must still be delivered as an ordinary
+       * message. "@claude which port is it on?" can perfectly well be answered "Done - it's on
+       * 4321", which classifies as status; suppressing that would leave the asker waiting
+       * forever for a reply that was written, sent, and silently filed in somebody else's hub.
+       * An answer that is OWED is never suppressed, whatever shape it takes.
+       */
+      answeringAQuestion?: boolean;
+      /** The turn whose final answer this is, when it is one. Rides onto a capped group message
+       * as fullTextInHub.turnId so the "full detail in hub" affordance can open the hub at the
+       * exact turn rather than at the top of a long history. */
+      hubTurnId?: string;
     },
   ) {
     // The chat can be deleted while a turn is still running. Posting into it anyway would write
@@ -1372,13 +1669,60 @@ export class AgentManager {
     const displayText = text.replace(END_THREAD_MARKER, "").trim();
     const isMarkerOnly = displayText.length === 0 && END_THREAD_MARKER.test(text);
 
+    const isAgentAuthor = this.agents.has(authorId);
+
+    // What this message IS - the axis that decides who pays a turn for it and where it shows.
+    //
+    // Only agent-authored traffic is classified. The operator's messages are never suppressed
+    // whatever words they open with: the 36 measured noise messages (19 unasked status reports,
+    // 17 acknowledgements) were all from agents, and a human typing "done" into their own chat
+    // and getting silence back would be the app deciding it knew better than the person using
+    // it. A sender that declared its own kind is believed either way.
+    const messageClass: MessageClass = isAgentAuthor
+      ? (classFromDeclaredKind(opts.declaredKind) ?? classifyMessageClass(displayText))
+      : (classFromDeclaredKind(opts.declaredKind) ??
+        (classifyIncoming(displayText) === "question" ? "question" : "handoff"));
+
+    // status and ack cost nobody a turn. An ack never reaches the group at all; a status line is
+    // posted so the room can fold N of them into one collapsed row, and both are written to the
+    // author's own hub in full so nothing is ever only in a classifier's opinion.
+    if (isAgentAuthor && !classGetsATurn(messageClass) && !isMarkerOnly && !opts.answeringAQuestion) {
+      const common = {
+        authorId,
+        authorHandle,
+        mentions,
+        text: displayText,
+        model: opts.model,
+        createdAt: new Date().toISOString(),
+      };
+      // The hub copy is the record. It is posted first and unconditionally, so that if anything
+      // below is ever wrong about the group the message still exists somewhere a human can read.
+      this.bus.postMessage({
+        ...common,
+        id: nanoid(),
+        channel: { agentId: authorId },
+        agentKind: messageClass === "ack" ? "progress" : "status",
+        turnId: opts.hubTurnId,
+      });
+      if (messageClass === "status") {
+        this.bus.postMessage({ ...common, id: nanoid(), channel, agentKind: "status" });
+      }
+      return;
+    }
+
+    // Cap an unaddressed final answer for the ROOM only - see GROUP_REPLY_BUDGET_CHARS. A
+    // message addressed to somebody is delivered whole, because it was written to be read by
+    // that person rather than skimmed by a room.
+    const addressedToSomeone = mentions.length > 0 || Boolean(opts.replyTo);
+    const groupHead = isAgentAuthor && !addressedToSomeone ? capForGroup(displayText) : undefined;
+
     const message: ChatMessage = {
       id: nanoid(),
       channel,
       authorId,
       authorHandle,
       mentions,
-      text: displayText,
+      text: groupHead ?? displayText,
       model: opts.model,
       createdAt: new Date().toISOString(),
       // Group chat only ever receives an agent's completed answer for a turn (drainQueue posts
@@ -1386,6 +1730,9 @@ export class AgentManager {
       // says here is, by construction, final. Marked rather than left blank so the group chat
       // uses the same renderer as the hub instead of relying on absence-means-answer.
       agentKind: authorId === "user" ? undefined : "answer",
+      // Only set when something was actually cut, so "absent" means "this is the whole message"
+      // rather than "we did not check".
+      fullTextInHub: groupHead ? { chars: displayText.length, turnId: opts.hubTurnId } : undefined,
     };
     // A marker-only message still ends the thread (endsThread below reads the raw text) - it
     // just is not shown, because there is nothing in it to show.
@@ -1446,8 +1793,6 @@ export class AgentManager {
       return;
     }
 
-    const isAgentAuthor = this.agents.has(authorId);
-
     // An agent may not summon an agent the operator left out of this task. It may still reply to
     // anyone already in it - including whoever addressed it - so genuine collaboration between
     // the scoped agents is untouched; what is refused is widening the roster, which costs the
@@ -1482,22 +1827,123 @@ export class AgentManager {
     }
     if (reachable.length === 0 && targets.length > 0) return; // every target was out of scope
 
+    // A FINDING - "src/api/routes.ts looks wrong" - is charged to the file's OWNER and nobody
+    // else. This is the case the measured data is worst at: an agent auditing a backend posts
+    // one observation, and with four agents in the room every addressed one pays a turn
+    // reasoning about a file three of them do not own and must not edit (the coordination block
+    // tells them so explicitly). Routing it to the owner makes one agent pay for one file.
+    //
+    // Falls back to the addressee whenever the board cannot answer - no claim, no file it
+    // recognises, or an owner who is not in this chat. A finding that reaches the wrong agent
+    // wastes a turn; a finding that reaches nobody loses a real defect report, so the fallback
+    // is always "route it as it would have been routed before this existed".
+    const findingOwner =
+      messageClass === "finding" ? this.ownerOfFinding(chatId, authorId, displayText, memberIds) : undefined;
+    const finalReach = findingOwner ? [findingOwner.handle] : reachable;
+
+    const mutedSkipped: string[] = [];
     for (const runtime of this.agents.values()) {
       if (runtime.config.id === authorId) continue; // an agent doesn't reply to itself
       if (!memberIds.has(runtime.config.id)) continue; // works in a different project's directory
+      // Muted: in the chat, addressable, and deliberately not given work. Collected rather than
+      // skipped in silence - a message ADDRESSED to a muted agent that vanished without a word
+      // is indistinguishable from the app losing it, which is the one thing routing must never
+      // look like. An unaddressed broadcast is not announced: nobody was singled out, so there
+      // is no expectation of a specific reply to explain away. See core/agentGate.ts.
+      if (this.gate.isMuted(runtime.config.id)) {
+        if (reachable.includes(runtime.config.handle)) mutedSkipped.push(runtime.config.handle);
+        continue;
+      }
       // targets empty here means an unaddressed *human* message (the broadcast case above) -
       // everyone in this chat gets a turn and decides relevance for themselves.
-      if (reachable.length > 0 && !reachable.includes(runtime.config.handle)) continue;
+      if (finalReach.length > 0 && !finalReach.includes(runtime.config.handle)) continue;
+      // Never hand work to an agent whose provider has already said it is out of usage: the
+      // turn would fail on arrival, and failing loudly on arrival is worse than not starting,
+      // because the message is consumed either way.
+      const limited = this.rateLimitedUntil(runtime);
+      if (limited) {
+        this.sayInChat(
+          chatId,
+          `@${runtime.config.handle} is rate-limited by ${runtime.config.provider} until ` +
+            `${limited.toLocaleTimeString()}, so nothing was sent to it. It will pick its queued work back ` +
+            `up then - or @mention someone else if this cannot wait.`,
+        );
+        continue;
+      }
       this.enqueueTurn(runtime.config.id, this.buildGroupPrompt(chatId, authorHandle, displayText, runtime.config.id), channel, {
         mentionChainDepth: opts.mentionChainDepth + 1,
         addressedBy: isAgentAuthor ? { id: authorId, handle: authorHandle } : undefined,
-        // An agent that declared what it was sending is believed; everything else (every human
-        // message, and every agent final answer coming back through here) gets classified.
-        kind: opts.declaredKind ?? classifyIncoming(displayText),
+        // The class decides who gets a turn; the kind decides whether that turn may kill a
+        // running one. Derived from the one class rather than classified twice, so the two can
+        // never disagree about the same message.
+        kind: incomingKindForClass(messageClass),
+        class: messageClass,
+        // Only an owner-routed finding preempts; a finding that fell back to the addressee is an
+        // ordinary piece of work for somebody who does not own the file.
+        ownedFileFinding: findingOwner?.id === runtime.config.id,
         inbound: true,
         groupMessage: { from: authorHandle, text: displayText },
       });
     }
+    if (mutedSkipped.length > 0) {
+      this.sayInChat(
+        chatId,
+        `${mutedSkipped.map((h) => `@${h}`).join(", ")} ${mutedSkipped.length === 1 ? "is" : "are"} muted, so ` +
+          `that message was not routed to ${mutedSkipped.length === 1 ? "it" : "them"} and nothing was queued. ` +
+          `/unmute ${mutedSkipped.map((h) => `@${h}`).join(" ")} to start routing again.`,
+      );
+    }
+  }
+
+  /**
+   * Who owns the file a finding is about, per the coordination board's claims.
+   *
+   * Every file named in the message is looked up, and the FIRST one with a claim wins - a
+   * finding that names three files is about the first problem the sender found, and splitting
+   * one message across three agents would charge three turns for it, which is the thing this
+   * whole class exists to stop.
+   *
+   * Never returns the author (an agent does not get a turn for its own message), never returns
+   * an agent this chat cannot reach, and never returns anything at all when the board has no
+   * claim covering any named file - "nobody has claimed it" is a real answer and the honest
+   * response to it is to fall back to the addressee rather than to pick somebody.
+   */
+  private ownerOfFinding(
+    chatId: string,
+    authorId: string,
+    text: string,
+    memberIds: Set<string>,
+  ): { id: string; handle: string } | undefined {
+    const paths = extractFilePaths(text);
+    if (paths.length === 0) return undefined;
+    const claims = this.board.forChat(chatId).claims;
+    for (const path of paths) {
+      for (const claim of claims) {
+        if (claim.agentId === authorId) continue;
+        if (!memberIds.has(claim.agentId)) continue;
+        if (!this.agents.has(claim.agentId)) continue;
+        if (!claim.paths.some((owned) => pathCoveredBy(path, owned))) continue;
+        return { id: claim.agentId, handle: claim.handle };
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * When this agent's provider says its limit resets, if it is out of usage RIGHT NOW.
+   *
+   * Deliberately reads only `scheduledRetryAt`, which is set from a reset time this app actually
+   * parsed out of the provider's own error text on a real failed turn (see parseResetTime). The
+   * rate-limit WINDOWS a provider reports during a healthy turn are a usage percentage, not a
+   * refusal: an agent at 97% of its five-hour window can still run, and refusing to route to it
+   * on that basis would stop work that would have succeeded. Returns undefined for a reset time
+   * already in the past, so a stale value can never make an agent permanently unreachable.
+   */
+  private rateLimitedUntil(runtime: AgentRuntime): Date | undefined {
+    if (!runtime.scheduledRetryAt) return undefined;
+    const at = new Date(runtime.scheduledRetryAt);
+    if (!Number.isFinite(at.getTime()) || at.getTime() <= Date.now()) return undefined;
+    return at;
   }
 
   // -------------------------------------------------------------------------------------
@@ -1519,6 +1965,24 @@ export class AgentManager {
       : this.chats.defaultChatIdFor(runtime.config);
     if (!chatId) return { error: "there are no chats to coordinate in - the user has not created one" };
     return { runtime, chatId };
+  }
+
+  /**
+   * Who is running right now, for a tool that lives outside this class.
+   *
+   * The port/server registry (core/portRegistry.ts) needs exactly what coordinationContext
+   * resolves - a verified in-flight turn, the agent behind it, and the chat it is coordinating
+   * in - and needs it resolved the SAME way, or a port reservation and a file claim from one
+   * turn could land against different chats. Rather than duplicating that resolution, or moving
+   * the registry's logic in here where it does not belong, this exposes the answer.
+   */
+  turnContextFor(
+    agentId: string,
+    token: unknown,
+  ): { agent: AgentConfig; chatId: string } | { error: string } {
+    const ctx = this.coordinationContext(agentId, token);
+    if ("error" in ctx) return { error: ctx.error };
+    return { agent: ctx.runtime.config, chatId: ctx.chatId };
   }
 
   /** Post a visible system line into a chat, so every coordination act is auditable by the user
@@ -1633,6 +2097,113 @@ export class AgentManager {
     return { ok: true as const };
   }
 
+  // -------------------------------------------------------------------------------------
+  // The task board
+  //
+  // Four thin wrappers, and nothing else. Every rule - who may claim what, what "blocked"
+  // means, which tasks a finish unblocks - lives in core/taskBoard.ts, because a rule that
+  // needs a live agent, a live turn and a provider process to exercise is a rule nobody tests.
+  // What is here is the part that genuinely belongs to a turn: the token check, the visible
+  // system line, and turning an unmet dependency into a real wake-up.
+  // -------------------------------------------------------------------------------------
+
+  createTask(agentId: string, token: unknown, input: { title: string; dependsOn?: string[]; files?: string[] }) {
+    const ctx = this.coordinationContext(agentId, token);
+    if ("error" in ctx) return { ok: false as const, error: ctx.error };
+    const result = this.tasks.create(ctx.chatId, ctx.runtime.config.handle, input);
+    if (!result.ok) return result;
+    this.sayInChat(
+      ctx.chatId,
+      `${result.task.id} on the board: ${result.task.title} (added by @${ctx.runtime.config.handle}` +
+        `${result.task.dependsOn.length ? `, after ${result.task.dependsOn.join(", ")}` : ""}).`,
+    );
+    this.onChange?.();
+    return result;
+  }
+
+  /**
+   * Claim a task, and - if it waits on something unfinished - park the claimant on the existing
+   * block machinery rather than letting it start early or idle.
+   *
+   * The block is deliberately the SAME mechanism block_on uses. A second scheduler for task
+   * dependencies would be a second thing that can forget to wake somebody, and the one that
+   * forgets is the one that matters: an agent idle after the thing it waited for landed is the
+   * exact failure this board exists to remove.
+   */
+  claimTask(agentId: string, token: unknown, taskId: string) {
+    const ctx = this.coordinationContext(agentId, token);
+    if ("error" in ctx) return { ok: false as const, error: ctx.error };
+    const result = this.tasks.claim(ctx.chatId, ctx.runtime.config, taskId);
+    if (!result.ok) return result;
+
+    // A task's files become a real lane, not an intention. This is the whole join between the
+    // two boards: "I'll take the landing page" said in prose stopped nobody, and a claim the
+    // other agents can see in their context does.
+    const files =
+      result.task.files.length > 0
+        ? this.board.claim(ctx.chatId, ctx.runtime.config, result.task.files, result.task.title)
+        : { claimed: [], conflicts: [] };
+
+    if (result.waitingOn.length === 0) {
+      this.sayInChat(
+        ctx.chatId,
+        `@${ctx.runtime.config.handle} is on ${result.task.id}: ${result.task.title}` +
+          `${files.claimed.length ? ` (files: ${files.claimed.join(", ")}, under ${ctx.runtime.config.cwd})` : ""}.`,
+      );
+      this.onChange?.();
+      return { ...result, files, blocked: false as const };
+    }
+
+    // One block per agent, so one dependency: whichever is waited on first. Named explicitly
+    // in the message so the user can see which one the wake-up will be about.
+    const waitFor = result.waitingOn[0];
+    this.board.blockOn(ctx.chatId, ctx.runtime.config, "task", waitFor.id, `to start ${result.task.id}`);
+    this.sayInChat(
+      ctx.chatId,
+      `@${ctx.runtime.config.handle} owns ${result.task.id} (${result.task.title}) but cannot start it yet - ` +
+        `it waits on ${result.waitingOn.map((t) => `${t.id} ${t.ownerHandle ? `@${t.ownerHandle}` : "unclaimed"}`).join(", ")}. ` +
+        `It will be woken when ${waitFor.id} is finished.`,
+    );
+    this.onChange?.();
+    return { ...result, files, blocked: true as const, waitFor };
+  }
+
+  /** Finish a task and wake everyone whose own task was waiting on it. */
+  finishTask(agentId: string, token: unknown, taskId: string, result?: string) {
+    const ctx = this.coordinationContext(agentId, token);
+    if ("error" in ctx) return { ok: false as const, error: ctx.error };
+    const done = this.tasks.finish(ctx.chatId, ctx.runtime.config, taskId, result);
+    if (!done.ok) return done;
+    // The lane goes back, or the next agent to need those files is blocked by somebody who has
+    // finished with them.
+    if (done.task.files.length > 0) this.board.release(ctx.chatId, ctx.runtime.config.id, done.task.files);
+    this.sayInChat(
+      ctx.chatId,
+      `${done.task.id} done: ${done.task.title} (@${ctx.runtime.config.handle})` +
+        `${done.task.result ? ` - ${done.task.result}` : ""}.`,
+    );
+    const woken = this.wake(ctx.chatId, {
+      kind: "task",
+      taskId: done.task.id,
+      title: done.task.title,
+      by: ctx.runtime.config.handle,
+    });
+    this.onChange?.();
+    return { ...done, woken };
+  }
+
+  listTasks(agentId: string, token: unknown) {
+    const ctx = this.coordinationContext(agentId, token);
+    if ("error" in ctx) return { ok: false as const, error: ctx.error };
+    return { ok: true as const, tasks: this.tasks.forChat(ctx.chatId) };
+  }
+
+  /** For the UI's board panel. Unlike the four above this is not a turn acting - the browser is
+   * asking - so it takes a chat id and no token. */
+  tasksForChat(chatId: string) {
+    return this.tasks.forChat(chatId);
+  }
+
   /**
    * Turn every satisfied block into a real turn for that agent.
    *
@@ -1649,7 +2220,12 @@ export class AgentManager {
       this.sayInChat(chatId, `@${block.handle} is unblocked: ${because}.`);
       this.enqueueTurn(
         block.agentId,
-        `[solace] You said you were waiting on "${block.value}"${block.why ? ` (${block.why})` : ""}. ` +
+        // A "task" block was recorded by the system when this agent claimed a task with an
+        // unfinished dependency, not typed by the agent - so telling it "you said you were
+        // waiting" would be describing something it never did.
+        (block.kind === "task"
+          ? `[solace] ${block.value} was blocking a task you own${block.why ? ` (${block.why})` : ""}. `
+          : `[solace] You said you were waiting on "${block.value}"${block.why ? ` (${block.why})` : ""}. `) +
           `That has now happened: ${because}. Pick your work back up from there. ` +
           `If you are still blocked on something else, say so and call block_on again.`,
         { chatId },
@@ -1687,7 +2263,11 @@ export class AgentManager {
     agentId: string,
     token: unknown,
     text: string,
-    kind?: "question" | "work" | "fyi",
+    /** What the SENDER says this is. The bridge has carried "question" | "work" | "fyi" since
+     * before message classes existed and still sends those, so both vocabularies are accepted
+     * and mapped in one place - see classFromDeclaredKind. An unrecognised value is ignored and
+     * the text is classified, rather than being half-believed. */
+    kind?: IncomingKind | MessageClass,
   ): { ok: true } | { ok: false; reason: "no-turn" | "capped" | "empty" | "no-chat"; error: string } {
     if (!this.verifyTurnToken(agentId, token)) {
       return { ok: false, reason: "no-turn", error: "no matching in-flight turn" };
@@ -1733,7 +2313,9 @@ export class AgentManager {
     // back to whoever addressed this agent - that reply path is what routeChatMessage's
     // [no-reply] marker exists to opt out of. An explicit @mention in the text still always
     // goes through, because that is a deliberate act.
-    const routed = kind === "question" || END_THREAD_MARKER.test(trimmed) ? trimmed : `${trimmed}\n\n[no-reply]`;
+    const declaredClass = classFromDeclaredKind(kind);
+    const routed =
+      declaredClass === "question" || END_THREAD_MARKER.test(trimmed) ? trimmed : `${trimmed}\n\n[no-reply]`;
 
     this.routeChatMessage(chatId, agentId, runtime.config.handle, routed, {
       broadcastIfUnmentioned: false,
@@ -1742,6 +2324,9 @@ export class AgentManager {
       mentionChainDepth: runtime.currentTurnDidWork ? 0 : turn.mentionChainDepth + 1,
       model: runtime.lastResolvedModel ?? runtime.config.model,
       replyTo: turn.addressedBy,
+      // Same rule as the final answer: an agent that was asked something may well answer through
+      // this tool mid-turn, and that answer is owed to the asker whatever shape it takes.
+      answeringAQuestion: turn.kind === "question",
       declaredKind: kind,
     });
     return { ok: true };
@@ -1863,11 +2448,32 @@ ${text}` : text;
           `saving it all for your final answer, which nobody sees until your whole turn ends. If you already ` +
           `@mentioned someone through that tool, do NOT repeat the same @mention in your final answer: they ` +
           `have already received it, and repeating it makes them run a second turn answering the same question. ` +
+          // Classes are inferred from the text for every message, and the inference is
+          // deliberately cautious - it only ever suppresses something short and unambiguous. An
+          // agent that says outright what it is sending gets that believed instead of guessed,
+          // which is both cheaper and more accurate than any wording this prompt could ask for.
+          `That tool takes a "kind", and saying which is cheaper and more accurate than leaving it to be read ` +
+          `off your text: "question" when you need an answer back, "work" when you are handing something on, ` +
+          `and "fyi" for a progress report or an acknowledgement - an "fyi" appears in the room but summons ` +
+          `NOBODY, so use it for anything that needs no reply instead of an unaddressed message that costs ` +
+          `every agent here a turn. If you are reporting that a specific FILE looks wrong, name the path: that ` +
+          `is routed to whoever owns that file and to nobody else. ` +
           `"list_agents" tells you who is here and whether they are mid-turn.`
         : "";
     // The house style rides along with the context block, so it follows the same
     // send-once-per-session rule and costs nothing on every later turn.
     const coordination = this.coordinationBlock(chatId, self);
+    // The task board, one line per OPEN task and nothing else. This is what turns "announce
+    // what you are taking" from a request in the prompt into the cheapest thing to do: the
+    // agent arrives already knowing what exists, what is taken, and by whom, so the who-builds-
+    // what paragraphs have nothing left to negotiate.
+    //
+    // Its size is a hard cap, not a guideline - see TASK_BLOCK_MAX_CHARS. Codex and Copilot
+    // pass the whole prompt on argv and Windows caps a command line at ~32,764 characters;
+    // this repo has already had every Codex and Copilot turn die with spawn ENAMETOOLONG from
+    // an over-large context block. A board grows with the work, so it is exactly the next
+    // thing that would do it.
+    const taskBoard = this.tasks.contextBlock(chatId, self);
     // When the operator addresses SEVERAL agents in one message, they are asking for
     // collaboration, and the default behaviour is the opposite of it.
     //
@@ -1890,7 +2496,12 @@ ${text}` : text;
     // this agent's provider conversation for the folder it is about to work in. After that the
     // agent has already been told, and the CLI's own session carries it forward.
     const skills = this.sessionIsNew(runtime, chatId) ? `\n\n${buildSkillsPointer()}` : "";
-    return `${identity}${roster}${coordination}\n\n${HOUSE_STYLE}${collaboration}]${skills}\n\n[group chat message from ${fromHandle}]: ${text}`;
+    // The project's own living context, from the folder this chat actually works in - so a chat
+    // in repo A and one in repo B get different files and neither inherits the other's. A
+    // POINTER, not the content: this file grows over months and Codex/Copilot take their prompt
+    // on argv, where Windows caps the command line at ~32KB. Once per session, same rule as the
+    // skills pointer, because the CLI's own conversation carries it forward after the first turn.
+    return `${identity}${roster}${taskBoard}${coordination}\n\n${HOUSE_STYLE}${collaboration}]${skills}\n\n[group chat message from ${fromHandle}]: ${text}`;
   }
 
 
@@ -2013,6 +2624,8 @@ The operator addressed this to you AND ${named}, and every one of you is running
       addressedBy: opts.addressedBy,
       sessionRetryDone: opts.sessionRetryDone,
       kind: opts.kind ?? "work",
+      class: opts.class,
+      ownedFileFinding: opts.ownedFileFinding,
       receivedAt: opts.receivedAt ?? new Date().toISOString(),
       resume: opts.resume,
       handover: opts.handover,
@@ -2077,7 +2690,7 @@ The operator addressed this to you AND ${named}, and every one of you is running
     // Only stand the interrupt down once no operator question is still waiting: a held-back
     // agent question never armed it, but an operator question that arrived during this delivery
     // still needs its grace period to run out rather than be silently disarmed.
-    if (!runtime.pendingInbound.some((t) => t.kind === "question" && !t.addressedBy)) {
+    if (!runtime.pendingInbound.some((t) => (t.kind === "question" || t.ownedFileFinding) && !t.addressedBy)) {
       this.clearInterruptTimer(runtime);
     }
 
@@ -2086,9 +2699,18 @@ The operator addressed this to you AND ${named}, and every one of you is running
       // The whole message, not a 200-char preview - see deliverableText. Newlines are kept:
       // these are numbered findings and file paths, and flattening them was half of why the
       // truncated delivery read as a "preview" rather than as content.
-      const text = deliverableText(t.prompt);
+      const text = deliverableText(t.prompt, this.limits().maxDeliveredChars);
       if (t.kind === "question") {
         return `- ${who} asked: "${text}" - answer it now with post_to_group, then continue what you were doing.`;
+      }
+      if (t.ownedFileFinding) {
+        // Named as a finding about a file this agent OWNS, because that is why it and nobody
+        // else received it - the board says the file is in this agent's lane. Told to check
+        // rather than to trust: the sender is reporting what it read, not what it can change.
+        return (
+          `- ${who} reported a problem in a file YOU own: "${text}" - check it against what is actually ` +
+          `on disk now, and say what you found. Nobody else was given this.`
+        );
       }
       if (t.kind === "work") {
         return `- ${who} sent work: "${text}" - finish the file or task you are on first, then do this before you end your turn.`;
@@ -2107,6 +2729,7 @@ The operator addressed this to you AND ${named}, and every one of you is running
   private clearInterruptTimer(runtime: AgentRuntime) {
     if (runtime.interruptTimer) clearTimeout(runtime.interruptTimer);
     runtime.interruptTimer = undefined;
+    runtime.interruptArmedFor = undefined;
   }
 
   /**
@@ -2129,10 +2752,20 @@ The operator addressed this to you AND ${named}, and every one of you is running
    * answer beats one getting an instant answer to a turn that was destroyed to produce it.
    */
   private armInterruptTimer(runtime: AgentRuntime) {
-    if (runtime.interruptTimer) return;
+    // An interrupt-eligible message is a question, or a finding about a file this agent OWNS.
+    //
+    // The finding case is new and narrow on purpose. The owner is the only agent who can act on
+    // it, and the thing being reported is that the file is wrong - so every minute it waits is a
+    // minute the owner may spend building on the premise it contradicts. It is NOT a question,
+    // so it never gets the operator's short grace; it rides the agent-question grace and the
+    // same once-per-turn cap, which is what keeps it an interruption rather than a livelock.
+    const interruptible = (t: QueuedTurn) => t.kind === "question" || t.ownedFileFinding === true;
     const candidates = runtime.pendingInbound
-      .filter((t) => t.kind === "question")
+      .filter(interruptible)
       .sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt));
+    // A finding is always from an agent - the operator's messages are never classified into a
+    // suppressible or file-owner class (see routeChatMessage) - so "no addressedBy" still means
+    // "from the operator", which is what the two graces below actually differ on.
     const fromOperator = candidates.filter((t) => !t.addressedBy);
     const fromAgents = candidates.filter((t) => t.addressedBy);
 
@@ -2141,6 +2774,25 @@ The operator addressed this to you AND ${named}, and every one of you is running
     let oldest = fromOperator[0];
     const { interruptGraceMs, agentQuestionGraceMs } = this.limits();
     let graceMs = interruptGraceMs;
+
+    // An already-armed timer is left alone UNLESS the operator has since asked something and the
+    // armed one is an agent's.
+    //
+    // This is the "operator messages preempt immediately, always" rule actually holding. The old
+    // guard was a bare `if (runtime.interruptTimer) return`, so an agent question arriving first
+    // armed the four-minute agent grace and the operator's question - which arrived second and
+    // is the one with a human sitting in front of it - silently inherited that deadline instead
+    // of its own 50 seconds. The operator waited out a grace period that exists to protect turns
+    // FROM agents.
+    if (runtime.interruptTimer) {
+      const armed = runtime.interruptArmedFor;
+      if (!oldest || !armed || armed.fromOperator) return;
+      const wouldFireAt = Date.now() + Math.max(0, interruptGraceMs - (Date.now() - Date.parse(oldest.receivedAt)));
+      // Never push an existing deadline OUT - only ever pull it in. Re-arming to a later time
+      // would turn an operator question into a delay.
+      if (wouldFireAt >= armed.firesAt) return;
+      this.clearInterruptTimer(runtime);
+    }
 
     // An agent's question arms too, but only ONCE per turn and only after a much longer wait.
     //
@@ -2162,13 +2814,17 @@ The operator addressed this to you AND ${named}, and every one of you is running
 
     const waited = Date.now() - Date.parse(oldest.receivedAt);
     const agentId = runtime.config.id;
-    runtime.interruptTimer = setTimeout(
-      () => {
-        runtime.interruptTimer = undefined;
-        this.interruptIfStillPending(agentId);
-      },
-      Math.max(0, graceMs - (Number.isFinite(waited) ? waited : 0)),
-    );
+    const delay = Math.max(0, graceMs - (Number.isFinite(waited) ? waited : 0));
+    runtime.interruptArmedFor = {
+      turnId: oldest.id,
+      fromOperator: !oldest.addressedBy,
+      firesAt: Date.now() + delay,
+    };
+    runtime.interruptTimer = setTimeout(() => {
+      runtime.interruptTimer = undefined;
+      runtime.interruptArmedFor = undefined;
+      this.interruptIfStillPending(agentId);
+    }, delay);
   }
 
   /**
@@ -2182,7 +2838,7 @@ The operator addressed this to you AND ${named}, and every one of you is running
     // Re-checked here rather than trusted from arming time, because the pending set can change
     // during the grace period - the question may have been delivered cooperatively in the
     // meantime, and aborting a turn for something already answered is pure waste.
-    const stillWaiting = runtime.pendingInbound.filter((t) => t.kind === "question");
+    const stillWaiting = runtime.pendingInbound.filter((t) => t.kind === "question" || t.ownedFileFinding === true);
     if (stillWaiting.length === 0) return;
     const onlyFromAgents = stillWaiting.every((t) => t.addressedBy);
     if (onlyFromAgents && runtime.currentTurn?.agentInterruptUsed) return;
@@ -2423,10 +3079,24 @@ The operator addressed this to you AND ${named}, and every one of you is running
     // in favour of this hand-off. The reset time is still stated, because it is the thing the
     // user most wants to know about the agent that dropped out.
     const whenResets = resetAt ? ` (its limit resets at ${resetAt.toLocaleTimeString()})` : "";
+    // Why THIS agent, stated rather than left for the user to work out from the roster. A second
+    // account of the same provider is the best possible recipient and the least obvious one - the
+    // two agents look identical in the sidebar apart from a label - so the message says outright
+    // that the model matches and the quota does not.
+    const band = handoverBand(from, to);
+    const whyThisOne =
+      band === 0
+        ? ` Same provider (${to.provider}) on a different account${to.account ? ` ("${to.account}")` : ""}, ` +
+          `so the model and its behaviour match and it has its own separate limit.`
+        : band === 1
+          ? ` No second account of ${from.provider} was available here, so this goes to ${to.provider} instead - ` +
+            `a different model, with its own quota.`
+          : ` @${to.handle} is on the SAME ${to.provider} account as @${from.handle}, so it shares the same real ` +
+            `limit and may well hit it too - it was the only agent available in this directory.`;
     say(
       `@${to.handle} is picking up @${from.handle}'s work because @${from.handle}'s provider is out of ` +
-        `usage${whenResets}. Both agents work in ${cwdOf(from)}.${trustNote} @${from.handle} will NOT also ` +
-        `re-run this. Handed over: "${describeWork(turn)}"`,
+        `usage${whenResets}. Both agents work in ${cwdOf(from)}.${whyThisOne}${trustNote} @${from.handle} will ` +
+        `NOT also re-run this. Handed over: "${describeWork(turn)}"`,
     );
 
     this.enqueueTurn(to.id, buildHandoverPrompt(turn, from.handle), turn.replyChannel, {
@@ -2435,6 +3105,8 @@ The operator addressed this to you AND ${named}, and every one of you is running
       // thread dying because a different agent answered it.
       addressedBy: turn.addressedBy,
       kind: turn.kind,
+      // Carried so a re-run of this work keeps the class it was routed as - see QueuedTurn.class.
+      class: turn.class,
       // `resume` is deliberately dropped: its elapsed-time budget belongs to the run that was
       // interrupted on the OTHER agent, and inheriting it would hand this fresh attempt a
       // near-expired clock for reasons that have nothing to do with it.
@@ -2453,6 +3125,10 @@ The operator addressed this to you AND ${named}, and every one of you is running
   private async drainQueue(agentId: string) {
     const runtime = this.agents.get(agentId);
     if (!runtime || runtime.busy) return;
+    // Paused: the queue keeps filling and simply does not drain. Checked before shift() so the
+    // work stays ON the queue - held, not dropped - and runs in arrival order when /resume
+    // calls back in through AgentGate.onResumed. See core/agentGate.ts.
+    if (this.gate.isPaused(agentId)) return;
     const turn = runtime.queue.shift();
     if (turn === undefined) return;
     this.coalesceQueuedMessages(runtime, turn);
@@ -2521,6 +3197,10 @@ The operator addressed this to you AND ${named}, and every one of you is running
     // Stable for the whole turn, so the client can fold one turn's activity into one indicator
     // instead of inferring turn boundaries from which messages happen to sit next to each other.
     const turnId = randomUUID();
+    // The progress digest counts this turn's real tool calls, and posts one derived line into
+    // the group every few minutes of a long one. A hub turn passes chatId undefined and is
+    // ignored: the hub already shows every tool call as it happens.
+    this.progress?.beginTurn(agentId, runtime.config.handle, chatTurnId);
     const post = (
       channel: ChatChannel,
       text: string,
@@ -2666,6 +3346,15 @@ The operator addressed this to you AND ${named}, and every one of you is running
             // something invented. Text keeps the old `_used …_` wrapper so a client that predates
             // agentKind - and every already-persisted message - still renders identically.
             const summary = describeToolCall(event.toolName ?? event.description, event.input);
+            // The one-line "working on:" the group shows under this agent. The same mechanically
+            // derived label the transcript uses - the provider's own tool name and arguments
+            // through the fixed table - never a description of intent.
+            runtime.workingOn = summary.label || undefined;
+            this.emitStatus(agentId);
+            // The same pair, unchanged, to the digest - which counts it rather than describing
+            // it. Passing the provider's own name and own arguments is the whole basis of the
+            // "derived, never generated" rule: a pre-formatted string would count nothing.
+            this.progress?.recordTool(agentId, event.toolName ?? event.description, event.input);
             post(ownChannel, `_used ${event.description}_`, { agentKind: "tool", tool: summary });
             if (isGroupTurn && this.settings.get().showAgentWorkInGroupChat) {
               post(replyChannel, `_used ${event.description}_`, { agentKind: "tool", tool: summary });
@@ -2674,9 +3363,15 @@ The operator addressed this to you AND ${named}, and every one of you is running
             runtime.lastUsage = event.usage;
             runtime.totalUsage = addUsage(runtime.totalUsage, event.usage);
           } else if (event.type === "rate-limit") {
-            runtime.rateLimit = event.rateLimit;
-            if (this.rateLimits.record(event.rateLimit)) {
-              this.bus.emitEvent({ type: "usage:rate-limit", payload: event.rateLimit });
+            // Stamped with the account THIS turn ran on, here rather than in each adapter: the
+            // runtime is the one place that certainly knows which login the CLI was pointed at
+            // (accountEnv was built from this same config), so no adapter can forget to say and
+            // silently file a second subscription's quota under the first. Undefined = the
+            // CLI's own default login.
+            const observation = { ...event.rateLimit, account: runtime.config.account };
+            runtime.rateLimit = observation;
+            if (this.rateLimits.record(observation)) {
+              this.bus.emitEvent({ type: "usage:rate-limit", payload: observation });
               this.onChange?.();
             }
             this.emitStatus(agentId);
@@ -2724,6 +3419,10 @@ The operator addressed this to you AND ${named}, and every one of you is running
       // so on an event - so this is the moment to go and ask. Deliberately inside the finally:
       // a turn that errored or was killed still spent the request.
       if (runtime.config.provider === "copilot-cli") this.refreshCopilotQuota();
+      // Nothing is posted on close: the agent's own answer lands in the same chat moments later,
+      // and a digest immediately in front of it is the duplicate-post noise chatNoise.test.ts
+      // already covers. The chat-wide tally /summary reads keeps everything counted so far.
+      this.progress?.endTurn(agentId);
       // A turn that wrote files may have satisfied a "file" block. Nothing else would ever
       // re-check it: the agent waiting on that path is idle by definition, so without this the
       // wake never happens and we are back to the stall this feature exists to remove.
@@ -2827,6 +3526,8 @@ The operator addressed this to you AND ${named}, and every one of you is running
             mentionChainDepth: turn.mentionChainDepth,
             addressedBy: turn.addressedBy,
             kind: turn.kind,
+            // Carried so a re-run of this work keeps the class it was routed as - see QueuedTurn.class.
+            class: turn.class,
             resume: turn.resume,
             handover: turn.handover,
           });
@@ -2884,6 +3585,13 @@ The operator addressed this to you AND ${named}, and every one of you is running
           mentionChainDepth: runtime.currentTurnDidWork ? 0 : mentionChainDepth + 1,
           model: runtime.lastResolvedModel ?? runtime.config.model,
           replyTo: addressedBy,
+          // Somebody asked this turn a question, so this answer is owed and is never filed away
+          // as a status line however it happens to be worded.
+          answeringAQuestion: turn.kind === "question",
+          // This turn's id, so a group message capped to the reply budget can point the "full
+          // detail in hub" affordance at the hub AT THIS TURN. Every hub message from this turn
+          // already carries the same turnId, including the full-length answer being capped here.
+          hubTurnId: turnId,
         });
       }
     }
@@ -2895,7 +3603,22 @@ The operator addressed this to you AND ${named}, and every one of you is running
       void this.checkLocalUrlClaims(runtime.config.id, lastText, replyChannel);
     }
 
+    // How long this turn really took, kept only when the turn actually RAN to completion.
+    //
+    // A turn that errored on arrival (seconds), one the user stopped, one killed for an
+    // interrupt, and one that hit the idle timeout are all real events but none of them is an
+    // example of how long this agent's work takes - and the median exists to answer exactly that
+    // question for somebody deciding whether to wait. Feeding failures in would drag the
+    // estimate toward the length of a failure, which is the one duration nobody is asking about.
+    if (!hadError && !cancelled) {
+      runtime.turnDurationsMs.push(Date.now() - turnStartedAt);
+      if (runtime.turnDurationsMs.length > TURN_DURATION_SAMPLES) {
+        runtime.turnDurationsMs = runtime.turnDurationsMs.slice(-TURN_DURATION_SAMPLES);
+      }
+    }
+
     runtime.turnStartedAt = undefined;
+    runtime.workingOn = undefined;
     runtime.activeController = undefined;
     runtime.activeTurnToken = undefined; // a child that outlived its turn can no longer post as this agent
     runtime.abortKind = undefined;

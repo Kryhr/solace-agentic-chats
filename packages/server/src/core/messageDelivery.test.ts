@@ -49,9 +49,11 @@ test("a genuinely enormous message is cut, and SAYS it was cut", () => {
 test("takeInboundNotice uses the deliverer, never the sidebar summariser", () => {
   // Guards the specific regression: the two functions look interchangeable at the call site and
   // one of them silently destroys content.
-  const src = readFileSync(join(import.meta.dirname, "agentManager.ts"), "utf8");
+  const src = readFileSync(join(import.meta.dirname, "agentManager.ts"), "utf8").replace(/\r\n/g, "\n");
   const at = src.indexOf("takeInboundNotice(");
   const body = src.slice(at, src.indexOf("\n  }\n", at));
-  assert.match(body, /deliverableText\(t\.prompt\)/);
+  // The cap it is given matters as much as which function is called: passing nothing would fall
+  // back to the module constant, which renders and saves a setting that changes nothing.
+  assert.match(body, /deliverableText\(t\.prompt, this\.limits\(\)\.maxDeliveredChars\)/);
   assert.ok(!/summarizePrompt\(t\.prompt\)/.test(body), "the 200-char summariser must not deliver messages");
 });

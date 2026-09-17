@@ -40,8 +40,15 @@ export interface Block {
   agentId: string;
   handle: string;
   /** "contract" waits for a contract whose title contains `value`; "file" for a path to exist;
-   * "agent" for that handle to post anything to the group. */
-  kind: "contract" | "file" | "agent";
+   * "agent" for that handle to post anything to the group; "task" for the task with that id to
+   * be finished.
+   *
+   * "task" is set by the system, never typed by an agent: claiming a task whose dependencies
+   * are unmet records one automatically, so the owner is woken when the dependency lands
+   * instead of either idling or starting early. It reuses this machinery deliberately - a
+   * separate scheduler for task dependencies would be a second thing that can forget to wake
+   * somebody, and the one that forgets is the one that matters. */
+  kind: "contract" | "file" | "agent" | "task";
   value: string;
   why?: string;
   at: string;

@@ -4,6 +4,7 @@ import { sanitizePersistedRateLimits } from "./rateLimits";
 import {
   DEFAULT_APP_SETTINGS,
   LEGACY_CHAT_ID,
+  emptyPortRegistry,
   sanitizeAppSettings,
   type AgentConfig,
   type AppSettings,
@@ -12,6 +13,8 @@ import {
   type CliProviderId,
   type ProjectMeta,
   type CoordinationState,
+  type Task,
+  type PortRegistryState,
   type ProviderRateLimit,
 } from "@solace/shared";
 import type { McpServerConfig } from "@solace/shared";
@@ -72,6 +75,13 @@ export interface PersistedState {
    * before coordination existed, which restores as empty boards rather than undefined - see
    * CoordinationBoard's constructor. */
   coordination: Record<string, CoordinationState>;
+  /** Per-chat task boards: owner, status, depends-on and files for every task in that chat.
+   * Stored beside `coordination` rather than inside it because the two boards have separate
+   * lifetimes - a chat's file claims are released as agents finish, while its tasks are the
+   * record of what the chat was for. Absent on any state file written before the task board
+   * existed, which restores as no tasks - see TaskBoard's constructor, which also drops any
+   * hand-edited entry that has no id or title rather than crashing the board on load. */
+  tasks: Record<string, Task[]>;
   /** User-registered MCP servers, injected alongside the built-in solace bridge on every CLI
    * turn (see core/mcpServers.ts). Absent on any state file written before this existed, which
    * restores as none - i.e. exactly the behaviour that file already had. */
@@ -81,6 +91,11 @@ export interface PersistedState {
    * NONE connected - not as "every CLI on this machine", which is the behaviour the connected
    * list exists to replace. See core/connectedProviders.ts. */
   connectedCliProviders: CliProviderId[];
+  /** Who holds which port, and which servers agents have started. Absent on any state file
+   * written before the registry existed, which restores as an empty registry. Every server
+   * record is re-verified against its pid on load - see PortRegistry's constructor - so a
+   * restart can never resurrect a dead server as a running one. */
+  ports: PortRegistryState;
 }
 
 const EMPTY_STATE: PersistedState = {
@@ -94,8 +109,10 @@ const EMPTY_STATE: PersistedState = {
   projects: [],
   settings: { ...DEFAULT_APP_SETTINGS },
   coordination: {},
+  tasks: {},
   mcpServers: [],
   connectedCliProviders: [],
+  ports: emptyPortRegistry(),
 };
 
 function statePath(workspaceRoot: string): string {
@@ -197,11 +214,20 @@ function migrateTurn(turn: PersistedAgentQueue["inFlight"]): NonNullable<Persist
   return isLegacyGroupChannel(t?.replyChannel) ? { ...t, replyChannel: { chatId: LEGACY_CHAT_ID } } : t;
 }
 
+function sanitizePortRegistry(value: unknown): PortRegistryState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return emptyPortRegistry();
+  const v = value as Partial<PortRegistryState>;
+  return {
+    reservations: Array.isArray(v.reservations) ? v.reservations.filter((r) => r && Number.isInteger(r.port)) : [],
+    servers: Array.isArray(v.servers) ? v.servers.filter((s) => s && Number.isInteger(s.pid)) : [],
+  };
+}
+
 export function loadState(workspaceRoot: string): PersistedState {
   const path = statePath(workspaceRoot);
   // A fresh install starts with one chat rather than an empty sidebar and a "New chat" button
   // the user has to find before they can say anything.
-  if (!existsSync(path)) return { ...EMPTY_STATE, chats: [legacyChat()] };
+  if (!existsSync(path)) return { ...EMPTY_STATE, ports: emptyPortRegistry(), chats: [legacyChat()] };
   try {
     const parsed = JSON.parse(readFileSync(path, "utf-8"));
     const migrated = migrateChatChannels(parsed);
@@ -224,6 +250,13 @@ export function loadState(workspaceRoot: string): PersistedState {
         parsed.coordination && typeof parsed.coordination === "object" && !Array.isArray(parsed.coordination)
           ? (parsed.coordination as Record<string, CoordinationState>)
           : {},
+      // Same shape guard as coordination, and for the same reason: a hand-edited array or a
+      // null here would throw on the first Object.entries and take the whole load with it,
+      // which loadState's catch reads as "everything is gone".
+      tasks:
+        parsed.tasks && typeof parsed.tasks === "object" && !Array.isArray(parsed.tasks)
+          ? (parsed.tasks as Record<string, Task[]>)
+          : {},
       // Guarded on shape for the same reason, and additionally filtered: a hand-edited entry
       // claiming the reserved "solace" name would shadow the group-chat bridge, so it is
       // dropped on load rather than trusted because it happened to be on disk.
@@ -231,11 +264,15 @@ export function loadState(workspaceRoot: string): PersistedState {
       // No key means the file predates connecting, which reads as none connected. Defaulting
       // to "all the installed ones" here would quietly re-create the sidebar this replaced.
       connectedCliProviders: sanitizeConnectedProviders(parsed.connectedCliProviders),
+      // Guarded on shape, not presence: no key means the file predates the registry, and a
+      // hand-edited array or null must restore as an empty registry rather than throwing on the
+      // first spread. The records themselves are re-verified by PortRegistry, not here.
+      ports: sanitizePortRegistry(parsed.ports),
     };
   } catch {
     // An unreadable state file already means everything is gone; at least hand back a usable
     // app rather than a sidebar with no chat in it and no obvious way forward.
-    return { ...EMPTY_STATE, chats: [legacyChat()] };
+    return { ...EMPTY_STATE, ports: emptyPortRegistry(), chats: [legacyChat()] };
   }
 }
 
