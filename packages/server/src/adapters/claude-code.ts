@@ -164,6 +164,108 @@ export function claudeCodeUsage(event: {
   return isEmptyUsage(usage) ? undefined : usage;
 }
 
+/**
+ * One line of Claude Code's `--output-format stream-json`, translated into AdapterEvents.
+ *
+ * Extracted from runTurn so the persistent transport (persistent/claudeStreamJson.ts) reads the
+ * SAME stream with the SAME code. The two paths differ only in how the process is started and
+ * how the prompt gets in - the output format is identical, and having two interpreters of it
+ * would guarantee they drift: a `thinking` block handled on one path and dropped on the other is
+ * exactly the class of bug this repo keeps rediscovering.
+ *
+ * `state` is mutated, and carries the two things that must persist ACROSS lines: the session id
+ * we believe we are in (so a fork is noticed), and the last model we reported (so an unchanged
+ * model is not re-announced on every assistant frame).
+ *
+ * Returns "turn-ended" on the terminal `result` frame. In spawn-per-turn that is redundant - the
+ * process exiting says the same thing - but in a live session the process does NOT exit, so this
+ * frame is the ONLY signal that the turn is over. Verified against the real CLI: see
+ * persistent/claudeStreamJson.ts.
+ */
+export interface ClaudeStreamState {
+  sessionId: string;
+  reportedModel?: string;
+}
+
+export function handleClaudeStreamLine(
+  line: string,
+  state: ClaudeStreamState,
+  onEvent: (event: import("./types").AdapterEvent) => void,
+): "turn-ended" | undefined {
+  if (!line.trim()) return undefined;
+  let event: {
+    type?: string;
+    message?: Record<string, unknown>;
+    usage?: Record<string, unknown>;
+    modelUsage?: Record<string, Record<string, unknown>>;
+    total_cost_usd?: unknown;
+    session_id?: unknown;
+  };
+  try {
+    event = JSON.parse(line);
+  } catch {
+    // Non-JSON line (shouldn't normally happen with --output-format stream-json) -
+    // surface it as plain text rather than dropping it silently.
+    onEvent({ type: "text", text: line });
+    return undefined;
+  }
+  // Claude Code interleaves {"type":"rate_limit_event"} lines into the same stream,
+  // carrying the real utilization of the account's 5-hour and 7-day windows. It is
+  // undocumented, so the parser returns null for anything it doesn't fully recognise
+  // and we simply emit nothing in that case.
+  const rateLimit = parseClaudeRateLimitEvent(event, new Date().toISOString());
+  if (rateLimit) onEvent({ type: "rate-limit", rateLimit });
+  // Belt and braces: if the CLI ever rejects our id or forks the session, the stream is
+  // the authority on what the session actually is.
+  const streamSessionId = (event as { session_id?: unknown }).session_id;
+  if (typeof streamSessionId === "string" && streamSessionId && streamSessionId !== state.sessionId) {
+    state.sessionId = streamSessionId;
+    onEvent({ type: "session", sessionId: streamSessionId });
+  }
+  // The model the provider actually resolved the request to. "sonnet" is an alias, so
+  // this is the only way to say which Sonnet a message really came from.
+  const model = event?.message?.model;
+  if (typeof model === "string" && model && model !== state.reportedModel) {
+    state.reportedModel = model;
+    onEvent({ type: "model", model });
+  }
+  // Claude Code's stream-json emits {type: "assistant", message: {content: [...]}}
+  // and tool-use blocks inside that content array. Schema per code.claude.com/docs/en/headless.
+  const content = event?.message?.content;
+  if (Array.isArray(content)) {
+    for (const block of content as { type?: string; text?: string; thinking?: string; name?: string; input?: unknown }[]) {
+      if (block.type === "text" && block.text) {
+        onEvent({ type: "text", text: block.text });
+      } else if (block.type === "thinking" && block.thinking) {
+        // Extended-thinking blocks used to fall through this loop entirely (only "text"
+        // and "tool_use" were handled), so an agent's reasoning was simply dropped -
+        // which is exactly the "it doesn't show their whole thinking" complaint.
+        onEvent({ type: "reasoning", text: block.thinking });
+      } else if (block.type === "tool_use") {
+        onEvent({
+          type: "tool-use",
+          description: `${block.name}(${JSON.stringify(block.input)})`,
+          toolName: block.name,
+          input: block.input,
+        });
+      }
+    }
+    return undefined;
+  }
+  if (event.type === "result") {
+    // Final message of the stream - real per-turn cost/token usage as Claude Code
+    // itself reports it. See code.claude.com/docs/en/headless.
+    const usage = claudeCodeUsage(event);
+    if (usage) onEvent({ type: "usage", usage });
+    return "turn-ended";
+  }
+  // Every other frame (system/init, stream_event, control_response, ...) carries nothing this
+  // app reports - but a line DID arrive, and the stuck-turn watchdog only ever hears about
+  // adapter events, so staying silent here would be telling it the process was dead.
+  onEvent({ type: "heartbeat" });
+  return undefined;
+}
+
 export const claudeCodeAdapter: ProviderAdapter = {
   id: "claude-code",
   async runTurn({ cwd, prompt, trustLevel, model, effort, agentId, account, turnToken, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
@@ -230,63 +332,9 @@ export const claudeCodeAdapter: ProviderAdapter = {
       };
       signal?.addEventListener("abort", onAbort);
 
-      let reportedModel: string | undefined;
-      rl.on("line", (line) => {
-        if (!line.trim()) return;
-        try {
-          const event = JSON.parse(line);
-          // Claude Code interleaves {"type":"rate_limit_event"} lines into the same stream,
-          // carrying the real utilization of the account's 5-hour and 7-day windows. It is
-          // undocumented, so the parser returns null for anything it doesn't fully recognise
-          // and we simply emit nothing in that case.
-          const rateLimit = parseClaudeRateLimitEvent(event, new Date().toISOString());
-          if (rateLimit) onEvent({ type: "rate-limit", rateLimit });
-          // The model the provider actually resolved the request to. "sonnet" is an alias, so
-          // this is the only way to say which Sonnet a message really came from.
-          // Belt and braces: if the CLI ever rejects our id or forks the session, the stream is
-          // the authority on what the session actually is.
-          const streamSessionId = event?.session_id;
-          if (typeof streamSessionId === "string" && streamSessionId && streamSessionId !== resolvedSessionId) {
-            onEvent({ type: "session", sessionId: streamSessionId });
-          }
-          const model = event?.message?.model;
-          if (typeof model === "string" && model && model !== reportedModel) {
-            reportedModel = model;
-            onEvent({ type: "model", model });
-          }
-          // Claude Code's stream-json emits {type: "assistant", message: {content: [...]}}
-          // and tool-use blocks inside that content array. Schema per code.claude.com/docs/en/headless.
-          const content = event?.message?.content;
-          if (Array.isArray(content)) {
-            for (const block of content) {
-              if (block.type === "text" && block.text) {
-                onEvent({ type: "text", text: block.text });
-              } else if (block.type === "thinking" && block.thinking) {
-                // Extended-thinking blocks used to fall through this loop entirely (only "text"
-                // and "tool_use" were handled), so an agent's reasoning was simply dropped -
-                // which is exactly the "it doesn't show their whole thinking" complaint.
-                onEvent({ type: "reasoning", text: block.thinking });
-              } else if (block.type === "tool_use") {
-                onEvent({
-                  type: "tool-use",
-                  description: `${block.name}(${JSON.stringify(block.input)})`,
-                  toolName: block.name,
-                  input: block.input,
-                });
-              }
-            }
-          } else if (event.type === "result") {
-            // Final message of the stream - real per-turn cost/token usage as Claude Code
-            // itself reports it. See code.claude.com/docs/en/headless.
-            const usage = claudeCodeUsage(event);
-            if (usage) onEvent({ type: "usage", usage });
-          }
-        } catch {
-          // Non-JSON line (shouldn't normally happen with --output-format stream-json) -
-          // surface it as plain text rather than dropping it silently.
-          onEvent({ type: "text", text: line });
-        }
-      });
+      const streamState: ClaudeStreamState = { sessionId: resolvedSessionId };
+      rl.on("line", (line) => handleClaudeStreamLine(line, streamState, onEvent));
+
 
       // Claude Code can write informational notices to stderr even on success, so don't
       // treat stderr output itself as failure - only report it if the process exits non-zero.

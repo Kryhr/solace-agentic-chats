@@ -276,6 +276,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           result: { type: "string", description: "Optional: one line on what landed, for the board." },
         },
         required: ["task_id"],
+      },
+    },
+    {
       name: "reserve_port",
       description: RESERVE_PORT_DESCRIPTION,
       inputSchema: {
@@ -520,21 +523,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return withInbound(
         `${json.task.id} is on the board: ${json.task.title}. Everyone sees it in their context. ` +
           `Call claim_task("${json.task.id}") if you are the one doing it.${unknown}`,
-    if (name === "reserve_port") {
-      const { status, json } = await callServer("/internal/solace/reserve-port", {
-        preferred: typeof args.preferred === "number" ? args.preferred : undefined,
-        purpose: args.purpose,
-      });
-      if (status === 403) return toolError("This turn is no longer the agent's in-flight turn.");
-      if (json?.ok !== true) return toolError(json?.error ?? "No port could be reserved.");
-      // The refusal reason is carried through verbatim and NOT softened: "@codex holds 4545" is
-      // the whole value of asking, and an agent told only "here is 4401" asks for 4545 again
-      // on its next turn.
-      const refused = json.preferredRefused ? ` You did not get the port you asked for: ${json.preferredRefused}` : "";
-      return withInbound(
-        `Port ${json.port} is yours - it was bind-tested free just now and is held in your name.` +
-          refused +
-          ` Start your server with start_server on ${json.port} so it outlives this turn.`,
         json,
       );
     }
@@ -562,14 +550,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return withInbound(
         `${json.task.id} is yours: ${json.task.title}. Nobody else can claim it now.${files}${clash} ` +
           `Call finish_task when it is actually done.`,
-    if (name === "release_port") {
-      const port = typeof args.port === "number" ? args.port : Number(args.port);
-      if (!Number.isInteger(port)) return toolError("release_port needs the `port` number you were given.");
-      const { status, json } = await callServer("/internal/solace/release-port", { port });
-      if (status === 403) return toolError("This turn is no longer the agent's in-flight turn.");
-      if (json?.ok !== true) return toolError(json?.error ?? "That port could not be released.");
-      return withInbound(
-        json.released ? `Released port ${port}.` : `You were not holding port ${port}, so nothing changed.`,
         json,
       );
     }
@@ -588,6 +568,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           `been given a turn already, so you do not need to @mention them about it.`
         : "";
       return withInbound(`${json.task.id} is done, and its files are released.${woke}`, json);
+    }
+
+    if (name === "reserve_port") {
+      const { status, json } = await callServer("/internal/solace/reserve-port", {
+        preferred: typeof args.preferred === "number" ? args.preferred : undefined,
+        purpose: args.purpose,
+      });
+      if (status === 403) return toolError("This turn is no longer the agent's in-flight turn.");
+      if (json?.ok !== true) return toolError(json?.error ?? "No port could be reserved.");
+      // The refusal reason is carried through verbatim and NOT softened: "@codex holds 4545" is
+      // the whole value of asking, and an agent told only "here is 4401" asks for 4545 again
+      // on its next turn.
+      const refused = json.preferredRefused ? ` You did not get the port you asked for: ${json.preferredRefused}` : "";
+      return withInbound(
+        `Port ${json.port} is yours - it was bind-tested free just now and is held in your name.` +
+          refused +
+          ` Start your server with start_server on ${json.port} so it outlives this turn.`,
+        json,
+      );
+    }
+
+    if (name === "release_port") {
+      const port = typeof args.port === "number" ? args.port : Number(args.port);
+      if (!Number.isInteger(port)) return toolError("release_port needs the `port` number you were given.");
+      const { status, json } = await callServer("/internal/solace/release-port", { port });
+      if (status === 403) return toolError("This turn is no longer the agent's in-flight turn.");
+      if (json?.ok !== true) return toolError(json?.error ?? "That port could not be released.");
+      return withInbound(
+        json.released ? `Released port ${port}.` : `You were not holding port ${port}, so nothing changed.`,
+        json,
+      );
+    }
+
     if (name === "start_server") {
       const command = typeof args.command === "string" ? args.command.trim() : "";
       const port = typeof args.port === "number" ? args.port : Number(args.port);

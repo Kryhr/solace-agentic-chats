@@ -6357,6 +6357,12 @@ body {
   padding: 5px var(--space-2);
   font-size: var(--text-xs);
   line-height: var(--lh-tight);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-1) var(--ease-in-out),
+    color var(--dur-1) var(--ease-in-out);
+}
+
 /* ==========================================================================
    GROUP CHAT v1.5 — message classes, status runs, scope, queue, roster
 
@@ -6479,6 +6485,9 @@ body {
 .task-board-toggle .count {
   font-variant-numeric: tabular-nums;
   color: var(--text-faint);
+}
+
+/* =========================================================================
    Running servers — what is up, on which port, started by whom
 
    Spacing carries the grouping, as everywhere else in this file. A row is two
@@ -6549,6 +6558,10 @@ body {
   font-size: var(--text-sm);
   line-height: var(--lh-tight);
   color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .status-run-toggle:hover {
   background: var(--surface-1);
@@ -6746,6 +6759,7 @@ body {
 }
 .url-badge-time {
   opacity: 0.62;
+}
 
 .scope-chip-clear {
   flex: 0 0 auto;

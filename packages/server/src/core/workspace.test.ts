@@ -27,7 +27,7 @@ test("control characters in a project name are refused", () => {
   // The class intends \x00-\x1f. It contained RAW control bytes rather than the escape text,
   // which is also why git treated workspace.ts as a binary file.
   assert.throws(() => createProject("na\0me"), /cannot contain/);
-  assert.throws(() => createProject("name"), /cannot contain/);
+  assert.throws(() => createProject("na\u001fme"), /cannot contain/);
 });
 
 test("an ordinary name with spaces and dots is still allowed", () => {

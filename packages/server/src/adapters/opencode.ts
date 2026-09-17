@@ -340,6 +340,24 @@ export const opencodeAdapter: ProviderAdapter = {
               turnUsage = addStepFinishUsage(turnUsage, part.tokens, part.cost);
               break;
             }
+            case "error": {
+              // The provider's OWN refusal, reported as the provider worded it.
+              //
+              // This fell through to `default` and was emitted as a heartbeat, so a turn that the
+              // provider had flatly refused looked identical to a turn quietly working: no error
+              // in the chat, nothing on the agent, nothing in the log. It cost real time to find,
+              // because every layer above was behaving correctly on the information it had.
+              //
+              // What surfaced it: OpenCode began refusing its free tier whenever an MCP server is
+              // attached - `{"type":"error","error":{"data":{"message":"Error from provider
+              // (Console): OpenCode's free tier can only be used from within OpenCode",
+              // "statusCode":403}}}` - and four agents produced a completely silent room.
+              const err = (event as { error?: { name?: string; data?: { message?: string; statusCode?: number } } })?.error;
+              const stated = err?.data?.message ?? err?.name ?? "the provider reported an error with no message";
+              const status = typeof err?.data?.statusCode === "number" ? ` (HTTP ${err.data.statusCode})` : "";
+              onEvent({ type: "error", message: `${stated}${status}` });
+              break;
+            }
             default:
               // step_start and anything else OpenCode adds later carry nothing to SHOW - but they
               // are proof the CLI is alive, and that has to be said out loud. OpenCode emits

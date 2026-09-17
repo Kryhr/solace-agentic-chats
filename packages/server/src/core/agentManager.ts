@@ -14,6 +14,8 @@ import {
   type TurnUsage,
 } from "@solace/shared";
 import { getAdapter } from "../adapters";
+import { withPersistentTransport } from "../adapters/persistent";
+import { PersistentSessionPool } from "./sessionPool";
 import { ChatBus } from "./chatBus";
 import { sameWorkingDirectory, type ChatStore } from "./chatStore";
 import { parseMentions } from "./mentions";
@@ -986,6 +988,18 @@ function scrubSecrets(text: string): { text: string; redacted: boolean } {
 export class AgentManager {
   private agents = new Map<string, AgentRuntime>();
 
+  /**
+   * The live provider processes - one per agent per conversation - for the providers whose
+   * persistent transport is switched on.
+   *
+   * Owned here because this is where a turn begins and ends, and because everything that should
+   * end a session (the agent is removed, `/reset`, the server going down) is already handled in
+   * this file. It is constructed unconditionally and is completely inert when no provider has an
+   * enabled transport: an empty pool opens nothing, installs no process hooks and starts no
+   * timer, so every existing caller and every existing test behaves exactly as it did.
+   */
+  readonly sessionPool = new PersistentSessionPool();
+
   /** Set by index.ts to persist state after every agent add/update/remove. */
   onChange: (() => void) | null = null;
 
@@ -1198,6 +1212,11 @@ export class AgentManager {
     runtime?.activeController?.abort();
     if (runtime?.scheduledRetryTimeout) clearTimeout(runtime.scheduledRetryTimeout);
     this.approvals?.expireForAgent(id);
+    // A live process would otherwise outlive the agent it belongs to - still holding its MCP
+    // bridge children, still able to write files - with nothing left in the app that knows it
+    // exists. This is the "how is a leaked process not left running" question, answered at the
+    // one place an agent can actually disappear.
+    void this.sessionPool.closeAgent(id, "agent-removed");
     // Its claims would otherwise outlive it and hold a lane nobody can release, and its block
     // would sit on the board waiting for a wake-up that can never be delivered.
     this.board.forgetAgent(id);
@@ -1231,6 +1250,10 @@ export class AgentManager {
     // and leaving another project's session behind would make the next switch resume context
     // the user just asked to be rid of.
     if (!runtime || runtime.sessions.size === 0) return false;
+    // A live process holds the conversation IN MEMORY, so clearing the stored id alone would not
+    // start cold at all: the next turn would be pushed into the same running session and answer
+    // out of exactly the context `/reset` was asked to get rid of.
+    void this.sessionPool.closeAgent(agentId, "session-reset");
     runtime.sessions.clear();
     runtime.lastRosterSignature = undefined;
     this.onChange?.();
@@ -3258,7 +3281,11 @@ The operator addressed this to you AND ${named}, and every one of you is running
     // showed "thinking" permanently with no error surfaced and its queue never drained again.
     try {
       const authMode = runtime.config.authMode ?? "cli";
-      const adapter = getAdapter(runtime.config.provider, authMode);
+      // withPersistentTransport is a pass-through for every adapter that has no live transport,
+      // and for every one whose transport is switched off - it returns the same object it was
+      // given. So the eleven spawn-per-turn adapters reach runTurn by exactly the route they
+      // always did, and this line cannot change their behaviour.
+      const adapter = withPersistentTransport(getAdapter(runtime.config.provider, authMode));
       // baseUrl is resolved from the same credential as apiKey, in the same file read: the
       // base URL is a property of the saved credential (which service the key belongs to),
       // not of the agent config - so an agent can't end up pointing a DeepSeek key at a Groq
@@ -3286,7 +3313,37 @@ The operator addressed this to you AND ${named}, and every one of you is running
         clearTimeout(idleTimeout);
         idleTimeout = setTimeout(() => giveUp("idle"), idleMs);
       };
-      await adapter.runTurn({
+
+      /*
+       * THE SEAM. One line decides whether this turn is a message pushed into a process that is
+       * already running, or a process spawned to carry it - and everything below is written once
+       * and works for both, because a live session's `send` has runTurn's exact signature and
+       * emits the same AdapterEvents.
+       *
+       * `runnerFor` returns undefined for: a provider with no live transport, a transport that
+       * is switched off, and any failure to open a session. All three mean "spawn per turn",
+       * which is what this app did before this existed - so the worst case of the new path is
+       * the old path, and that is the property that makes it safe to land while eleven adapters
+       * are still on the old one.
+       */
+      const live = await this.sessionPool.runnerFor(adapter, {
+        key: `${runtime.config.id}\0${turnSessionKey}`,
+        cwd: turnCwd,
+        agentId: runtime.config.id,
+        agentHandle: runtime.config.handle,
+        trustLevel: runtime.config.trustLevel,
+        model: runtime.config.model,
+        effort: runtime.config.effort,
+        account: runtime.config.account,
+        sessionId: turnSessionId,
+      });
+      // A live session's helper processes were started with the SESSION's token, so that is the
+      // token this turn must be recognised by. The check that matters is unchanged: it is only
+      // accepted while a turn is in flight, and cleared the moment this one ends.
+      if (live?.session.sessionToken) runtime.activeTurnToken = live.session.sessionToken;
+      const runTurn = live ? live.run : adapter.runTurn.bind(adapter);
+
+      await runTurn({
         cwd: turnCwd,
         prompt,
         trustLevel: runtime.config.trustLevel,
