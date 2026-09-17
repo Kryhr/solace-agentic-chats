@@ -83,6 +83,11 @@ a trust level** — asked to write a file it wrote it without ever requesting pe
 enabling it would silently promote `plan` and `manual` agents to unrestricted writes while the
 UI showed their chosen level.
 
+**Claude Code's transport is now ON**, and it is the only one. Verified in the running app, not
+just in the probe: a message to a live agent was answered, the `claude` child of the server was
+still alive after the turn had ended, and a second message was answered out of the first turn's
+context by the same pid — no respawn and no resume. Everything below records how it got there.
+
 **Claude Code's side is no longer blocked.** The earlier note here said its OAuth was expired and
 that no real model output had come through a live session. That was measured against the default
 login, which has no refresh token and cannot heal itself. Driven against a working account the
@@ -180,7 +185,15 @@ Add:
 Keep the analysis that produced the table above as `scripts/chat-metrics.mjs`. Targets for
 v1.5: **p90 reply < 90 s · ≥ 70% of agent messages addressed · 0 cutoffs · 0 contradicted
 live claims · < 10% acks/status in the group stream.** Run it after every collaboration test,
-and run scripted four-agent scenarios on OpenCode's free models so it costs nothing.
+and run scripted four-agent scenarios to exercise it.
+
+The original plan here was to run those scenarios on OpenCode's free models so they cost
+nothing. That is no longer available: OpenCode's free tier refuses any turn with an MCP server
+attached — `"OpenCode's free tier can only be used from within OpenCode"`, 403, on a paid-tier
+model too, so it is the account's tier and not the model — which makes it useless for measuring
+a system whose whole point is the bridge. The harness therefore needs a provider the operator
+actually uses, and a scenario run costs real quota. Budget for it rather than assuming it is
+free.
 
 ---
 

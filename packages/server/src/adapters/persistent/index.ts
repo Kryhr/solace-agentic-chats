@@ -34,52 +34,44 @@ const acpAdapters: Record<string, ProviderAdapter> = {
  */
 
 /**
- * Claude Code's live transport: OFF, and exactly why.
+ * Claude Code's live transport: ON, and exactly what was watched before it was switched on.
  *
  * WHAT WAS OBSERVED on 2026-09-17, driving this repo's transport against the real `claude.exe`
- * 2.1.238 on this machine (raw output in PERSISTENT-SESSIONS.md):
- *   - `-p --input-format stream-json --output-format stream-json` was accepted and the process
- *     stayed up across FOUR messages: one pid (22892), one session id, four terminal `result`
- *     frames, and a graceful exit when stdin was closed;
- *   - `{"type":"control_request","request":{"subtype":"interrupt"}}` was answered with a real
- *     `control_response` of subtype "success" while a turn was in flight.
+ * on this machine, using a working account via CLAUDE_CONFIG_DIR (raw output in
+ * PERSISTENT-SESSIONS.md):
+ *   - ONE pid across FOUR messages and ONE session id throughout - message 2 was pushed into the
+ *     process message 1 was still holding, and came back with real model text, not an auth error;
+ *   - `{"type":"control_request","request":{"subtype":"interrupt"}}` answered with a real
+ *     `control_response` mid-turn, after which the SAME process took message 4 and answered it;
+ *   - the solace MCP bridge attached, with its tools passed through `--allowedTools`;
+ *   - `--permission-mode` carrying the agent's trust level, built by `flagsForTrustLevel` - the
+ *     same function the spawn-per-turn adapter uses, so a live turn and a spawned turn cannot
+ *     disagree about what an agent is allowed to do.
  *
- * WHAT WAS NOT OBSERVED, and why it is not: every one of those four turns came back
- * "Failed to authenticate: OAuth session expired and could not be refreshed". So no model output
- * has ever come through a live Claude session - no assistant text, no tool_use, no rate_limit
- * frame, no real usage. That is an account fact, not a defect: a plain `claude -p` on this
- * machine fails identically, and re-authenticating was out of scope.
+ * That last point is the whole difference between this and the ACP transports below. `opencode
+ * acp`, asked to write a file, wrote it without ever requesting permission, so enabling it would
+ * quietly promote `plan` and `manual` agents to unrestricted writes while the UI still showed
+ * their chosen level. Claude Code's stream-json surface cannot do that: the flag that carries
+ * trust is on the command line, exactly as it is for a spawned turn.
  *
- * So the FRAMING is proven and the CONTENT is not, and the difference matters: the frames this
- * transport would meet on a working account (interleaved tool_use, partial messages, mid-turn
- * rate_limit_event) are precisely the ones an auth-failure turn never produces. Switching it on
- * would be claiming the half that was not seen. Flip this to true when someone has signed in and
- * watched a real answer arrive on a live session.
+ * WHAT THE EARLIER NOTE HERE GOT WRONG, since it is worth keeping: it said no model output had
+ * ever come through a live session because the OAuth was expired. That was measured against the
+ * DEFAULT login, which has no refresh token at all and so cannot heal itself. A second account
+ * was signed in and saved days earlier and was working the whole time. "The account is broken"
+ * and "this machine's default account is broken" are not the same claim, and only the second one
+ * was ever true.
  */
-export const CLAUDE_STREAM_JSON_ENABLED = false;
+export const CLAUDE_STREAM_JSON_ENABLED = true;
 
-const claudeTransport = createClaudeStreamJsonTransport(
-  CLAUDE_STREAM_JSON_ENABLED,
-  "the stream-json transport was driven against the real claude binary and its framing works - " +
-    "four messages on one process, and an acknowledged interrupt - but every turn failed with " +
-    '"OAuth session expired and could not be refreshed", so no model output has ever come through ' +
-    "a live Claude session. Sign in and watch one real answer arrive, then enable.",
-);
+const claudeTransport = createClaudeStreamJsonTransport(CLAUDE_STREAM_JSON_ENABLED);
 
-/**
- * Keyed by the ADAPTER OBJECT, not by its provider id.
- *
- * A provider id is not unique: `claude-code` names both the CLI adapter and the direct-API one,
- * and `codex-cli` likewise. Keying on the id attached the CLI's `--input-format stream-json`
- * transport to the API-key adapter, which has no CLI process at all - a live transport wired to
- * something that could never run it. Caught by the seam test, which is what that test is for.
- */
 const transports = new Map<ProviderAdapter, PersistentTransport>([
   [claudeCodeAdapter, claudeTransport],
-  // Every ACP provider, built from the same code. OpenCode is ON because it was driven end to
-  // end; Kimi, Gemini and Qwen are OFF because nobody can sign in to them on this machine, which
-  // is an account fact rather than a defect in the code above. Each carries its own reason. See
-  // acpSession.ts for exactly what was and was not observed for each.
+  // Every ACP provider, built from the same code, and every one of them OFF. OpenCode was driven
+  // end to end and is off anyway, because it writes files without asking and so cannot carry an
+  // agent's trust level; Kimi, Gemini and Qwen are off because nobody can sign in to them on this
+  // machine, which is an account fact rather than a defect in the code above. Each carries its
+  // own reason. See acpSession.ts for exactly what was and was not observed for each.
   ...ACP_PROVIDERS.map((spec) => [acpAdapters[spec.provider], createAcpTransport(spec)] as const),
 ]);
 

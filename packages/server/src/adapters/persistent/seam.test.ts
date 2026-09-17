@@ -60,11 +60,16 @@ test("no provider's live transport is reachable while it is switched off", () =>
   }
 });
 
-test("nothing is enabled today, and every entry says why - the honest state, asserted", () => {
-  // This test is expected to CHANGE when a transport is switched on, and that is the point: no
-  // transport becomes reachable without somebody editing an assertion that says it was verified.
+test("exactly one transport is enabled, and every other entry says why not - asserted", () => {
+  // This test CHANGES when a transport is switched on, and that is the point: no transport
+  // becomes reachable without somebody editing an assertion that says it was driven. claude-code
+  // was, on 2026-09-17, against the real binary on a working account - four messages on one pid,
+  // real model text on the second, an acknowledged mid-turn interrupt, and --permission-mode
+  // carrying the agent's trust level. See index.ts for what was watched.
+  const enabled = persistentTransportStatus().filter((e) => e.enabled).map((e) => e.provider);
+  assert.deepEqual(enabled, ["claude-code"]);
   for (const entry of persistentTransportStatus()) {
-    assert.equal(entry.enabled, false, `${entry.provider} is enabled - was it actually driven?`);
+    if (entry.enabled) continue;
     assert.ok(entry.disabledReason, `${entry.provider} must say why it is off`);
   }
 });
