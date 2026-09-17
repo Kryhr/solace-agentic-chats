@@ -90,16 +90,19 @@ function matches(p: ConnectableProvider, terms: string[]): boolean {
  * this card. Add agent is then only ever a CHOICE between logins that already exist, which is
  * what makes that screen simple.
  *
- * The danger this exists to prevent: a CLI keeps one set of credentials in one file, so a plain
- * second `claude auth login` overwrites the first and silently signs it out. Every command shown
- * here sets CLAUDE_CONFIG_DIR first, so a login lands in its own directory instead of on top of
- * the account currently in use.
+ * The danger this exists to prevent: a CLI keeps one set of credentials in one file - Claude
+ * Code in `~/.claude/.credentials.json`, Codex in `~/.codex/auth.json` - so a plain second
+ * `claude auth login` or `codex login` overwrites the first and silently signs it out. Every
+ * command shown here sets that CLI's own config-directory variable first (CLAUDE_CONFIG_DIR,
+ * CODEX_HOME), so a login lands in its own directory instead of on top of the account currently
+ * in use. The command comes from the server, which only offers one for a CLI whose isolation
+ * was actually verified - see core/providerAccounts.ts.
  */
 function AccountsSection({ provider }: { provider: ProviderId }) {
   const [accounts, setAccounts] = useState<AccountIdentity[] | null>(null);
   const [adding, setAdding] = useState(false);
   const [label, setLabel] = useState("");
-  const [pending, setPending] = useState<{ label: string; powershell: string; bash: string } | null>(null);
+  const [pending, setPending] = useState<{ label: string; powershell: string; bash: string; note?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -144,8 +147,10 @@ function AccountsSection({ provider }: { provider: ProviderId }) {
             <span className={`connection-dot ${a.loggedIn ? "ok" : "unknown"}`} />
             <span className="account-who">
               {/* The CLI's own words for who this is. Never inferred here - two agents both
-                  saying "claude-code" is exactly the confusion this row exists to end. */}
-              {a.loggedIn ? (a.email ?? "signed in") : "not signed in"}
+                  saying "claude-code" is exactly the confusion this row exists to end. Some CLIs
+                  (kimi, qwen) have no read-only way to answer at all; that is said plainly rather
+                  than collapsed into "not signed in", which would be a claim nobody made. */}
+              {a.identityUnknown ? "sign-in state not reported" : a.loggedIn ? (a.email ?? "signed in") : "not signed in"}
               {a.subscriptionType && <span className="account-plan">{a.subscriptionType}</span>}
             </span>
             <span className="account-label">{a.label ?? "default"}</span>
@@ -161,6 +166,10 @@ function AccountsSection({ provider }: { provider: ProviderId }) {
           </div>
           <CommandLine command={pending.powershell} />
           <div className="cli-card-source">PowerShell. On bash: {pending.bash}</div>
+          {/* Qwen has no login subcommand - the command above only starts the CLI with the right
+              home, and the actual sign-in is a slash command inside it. Saying so is the
+              difference between a working instruction and one that appears to do nothing. */}
+          {pending.note && <div className="cli-card-note">{pending.note}</div>}
         </div>
       )}
 

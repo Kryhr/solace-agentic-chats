@@ -4,8 +4,10 @@ import * as readline from "node:readline";
 import { join } from "node:path";
 import type { ProviderId, TrustLevel, TurnUsage } from "@solace/shared";
 import { killCliTree, spawnCli } from "../core/spawnCli";
+import { SERVER_PORT } from "../core/serverPort";
 import { addStepFinishUsage } from "../core/usage";
 import { mcpServersForAgent, type ResolvedMcpServer } from "../core/mcpServers";
+import { accountEnv } from "../core/providerAccounts";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 
 /** The group-chat MCP bridge, re-anchored to the *source* copy from the package root exactly as
@@ -291,8 +293,8 @@ export const kiloAdapter: ProviderAdapter = {
   // own providers to the same union), so the exact edit is specified in KILO-REGISTRATION.md
   // instead of being made here. Once it lands, this cast should be deleted.
   id: "kilo",
-  async runTurn({ cwd, prompt, trustLevel, model, effort, agentId, turnToken, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
-    const serverPort = Number(process.env.PORT ?? 4310);
+  async runTurn({ cwd, prompt, trustLevel, model, effort, agentId, account, turnToken, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
+    const serverPort = SERVER_PORT;
     // Not `sessionId` directly: a session minted under a different trust level must not be
     // resumed, or the agent keeps authority the user has since changed. See resumableSessionId.
     const resumeId = resumableSessionId(sessionId, trustLevel);
@@ -323,6 +325,12 @@ export const kiloAdapter: ProviderAdapter = {
           SOLACE_AGENT_ID: agentId,
           SOLACE_SERVER_PORT: String(serverPort),
           ...(turnToken ? { SOLACE_TURN_TOKEN: turnToken } : {}),
+          // Empty unless this agent names an account, in which case it is XDG_DATA_HOME
+          // pointing at that account's own data directory - where Kilo keeps auth.json, as its
+          // upstream OpenCode does. KILO_CONFIG above moves the SETTINGS only, so the two
+          // variables do different jobs and neither overwrites the other. Spread LAST so a
+          // UI choice beats an ambient XDG_DATA_HOME. See core/providerAccounts.ts.
+          ...accountEnv("kilo", account),
         },
       });
 

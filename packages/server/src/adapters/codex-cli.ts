@@ -2,6 +2,8 @@ import * as readline from "node:readline";
 import { join } from "node:path";
 import type { TrustLevel, TurnUsage } from "@solace/shared";
 import { killCliTree, spawnCli } from "../core/spawnCli";
+import { SERVER_PORT } from "../core/serverPort";
+import { accountEnv } from "../core/providerAccounts";
 import { isEmptyUsage, num, put } from "../core/usage";
 import { parseCodexRateLimitEvent, readCodexRateLimitFromRollout } from "../core/rateLimits";
 import { mcpServersForAgent, type ResolvedMcpServer } from "../core/mcpServers";
@@ -142,9 +144,9 @@ export function codexUsage(raw: unknown): TurnUsage | undefined {
 
 export const codexCliAdapter: ProviderAdapter = {
   id: "codex-cli",
-  async runTurn({ cwd, prompt, trustLevel, model, effort, agentId, turnToken, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
+  async runTurn({ cwd, prompt, trustLevel, model, effort, agentId, account, turnToken, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
     const { beforeExec, forExec } = flagsForTrustLevel(trustLevel);
-    const serverPort = Number(process.env.PORT ?? 4310);
+    const serverPort = SERVER_PORT;
     // Resume this agent's own prior conversation so it remembers its own work across turns.
     // Deliberately NOT `--last`: that is scoped to the user's entire codex session store, so
     // with two codex agents configured it would silently resume the other one's conversation.
@@ -184,8 +186,15 @@ export const codexCliAdapter: ProviderAdapter = {
         env: {
           ...process.env,
           SOLACE_AGENT_ID: agentId,
-          SOLACE_SERVER_PORT: String(process.env.PORT ?? 4310),
+          SOLACE_SERVER_PORT: String(SERVER_PORT),
           ...(turnToken ? { SOLACE_TURN_TOKEN: turnToken } : {}),
+          // Empty unless this agent names an account, in which case it is CODEX_HOME pointing
+          // at that account's own config directory - codex keeps its credentials in
+          // <CODEX_HOME>/auth.json, so a directory per account is a login per account. Spread
+          // LAST so an account the user chose in the UI beats a CODEX_HOME that happens to be
+          // in the server's own environment, otherwise the setting would silently do nothing
+          // on such a machine.
+          ...accountEnv("codex-cli", account),
         },
       });
       const rl = readline.createInterface({ input: child.stdout! });
@@ -282,7 +291,13 @@ export const codexCliAdapter: ProviderAdapter = {
         // worse, inventing one. Best-effort: a miss simply reports nothing.
         const sid = seenSessionId ?? sessionId;
         if (sid) {
-          const fromDisk = readCodexRateLimitFromRollout(sid, new Date().toISOString());
+          // Same CODEX_HOME the child ran under, so a named account's meter reads that
+          // account's own rollout rather than the default login's.
+          const fromDisk = readCodexRateLimitFromRollout(
+            sid,
+            new Date().toISOString(),
+            accountEnv("codex-cli", account).CODEX_HOME,
+          );
           if (fromDisk) onEvent({ type: "rate-limit", rateLimit: fromDisk });
         }
         signal?.removeEventListener("abort", onAbort);

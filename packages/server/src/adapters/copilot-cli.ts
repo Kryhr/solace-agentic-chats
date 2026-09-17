@@ -4,6 +4,7 @@ import * as readline from "node:readline";
 import { join } from "node:path";
 import type { TrustLevel, TurnUsage } from "@solace/shared";
 import { killCliTree, spawnCli } from "../core/spawnCli";
+import { SERVER_PORT } from "../core/serverPort";
 import { addUsage, isEmptyUsage, num, put } from "../core/usage";
 import { mcpServersForAgent, type ResolvedMcpServer } from "../core/mcpServers";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
@@ -442,7 +443,7 @@ export const copilotCliAdapter: ProviderAdapter = {
     onEvent,
     signal,
   }: RunTurnOptions): Promise<void> {
-    const serverPort = Number(process.env.PORT ?? 4310);
+    const serverPort = SERVER_PORT;
     const loader = findLoader();
     if (!loader) {
       onEvent({

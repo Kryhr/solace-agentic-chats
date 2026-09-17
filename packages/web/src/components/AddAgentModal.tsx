@@ -44,6 +44,9 @@ const PROVIDER_ORDER: ProviderId[] = ["claude-code", "codex-cli", "gemini-cli", 
  */
 function accountOptionLabel(a: AccountIdentity): string {
   const who = a.email ?? (a.label ? a.label : "default login");
+  // Kimi and Qwen cannot be asked who they are without spending a turn, so their slots are named
+  // by label alone. Falling through to "not signed in" would libel a perfectly good login.
+  if (a.identityUnknown) return a.label ?? "default login";
   if (!a.loggedIn) return `${a.label ?? "default"} - not signed in`;
   const plan = a.subscriptionType ? ` - ${a.subscriptionType}` : "";
   return a.label ? `${who}${plan} (${a.label})` : `${who}${plan}`;

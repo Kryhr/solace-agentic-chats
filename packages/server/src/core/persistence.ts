@@ -27,6 +27,15 @@ export interface PersistedAgentSession {
   agentId: string;
   provider: string;
   cwd: string;
+  /**
+   * The chat this conversation belongs to, or "hub" for the agent's own 1:1.
+   *
+   * Optional only because records written before sessions were per-conversation lack it.
+   * Those are DROPPED on load rather than guessed at: a session restored into the wrong chat
+   * is the bug this field exists to prevent - an agent answering a brand-new chat out of an
+   * older chat's memory, insisting the work is already done.
+   */
+  conversationId?: string;
   sessionId: string;
   updatedAt: string;
 }

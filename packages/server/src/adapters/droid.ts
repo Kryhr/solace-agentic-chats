@@ -1,5 +1,6 @@
 import * as readline from "node:readline";
 import type { ProviderId, TrustLevel, TurnUsage } from "@solace/shared";
+import { accountEnv } from "../core/providerAccounts";
 import { killCliTree, spawnCli } from "../core/spawnCli";
 import { isEmptyUsage, num, put } from "../core/usage";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
@@ -213,14 +214,28 @@ export const droidAdapter: ProviderAdapter = {
   // own providers to the same union), so the exact edit is specified in DROID-REGISTRATION.md
   // instead of being made here. Once it lands, this cast should be deleted.
   id: "droid",
-  async runTurn({ cwd, prompt, trustLevel, model, effort, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
+  async runTurn({ cwd, prompt, trustLevel, model, effort, account, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
     const args = buildDroidArgs({ cwd, trustLevel, model, effort, sessionId });
 
     await new Promise<void>((resolve) => {
       const child = spawnCli("droid", args, {
         cwd,
         stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env },
+        env: {
+          ...process.env,
+          // Empty unless this agent names an account, in which case it is FACTORY_HOME_OVERRIDE
+          // pointing at that account's own directory - droid puts its .factory, and with it the
+          // encrypted credential file it logs into, inside whatever that names. Spread LAST so an
+          // account the user chose in the UI beats a FACTORY_HOME_OVERRIDE that happens to be in
+          // the server's own environment, which would otherwise make the setting silently do
+          // nothing on such a machine.
+          //
+          // One thing this canNOT beat: FACTORY_API_KEY. droid's own doctor says it "overrides
+          // any stored login session", so a key in the server's environment puts every account on
+          // that one subscription regardless of directory. listAccounts surfaces that case with
+          // the CLI's own words instead of showing the accounts as separate.
+          ...accountEnv("droid", account),
+        },
       });
 
       // droid only starts the turn once stdin reaches EOF, so this must always end(). An EPIPE

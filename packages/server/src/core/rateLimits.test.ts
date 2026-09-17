@@ -5,8 +5,12 @@ import {
   labelForWindowMinutes,
   parseClaudeRateLimitEvent,
   parseCodexRateLimitEvent,
+  readCodexRateLimitFromRollout,
   sanitizePersistedRateLimits,
 } from "./rateLimits.ts";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 const OBSERVED = "2026-01-02T03:04:05.000Z";
 
@@ -145,4 +149,69 @@ test("persisted state from before this feature (or with junk in it) loads as no 
 test("a well-formed persisted observation round-trips with its timestamp", () => {
   const parsed = parseCodexRateLimitEvent(CODEX_EVENT, OBSERVED)!;
   assert.deepEqual(sanitizePersistedRateLimits(JSON.parse(JSON.stringify([parsed]))), [parsed]);
+});
+
+
+/**
+ * Codex writes its rate limits into a session rollout under CODEX_HOME/sessions/, and an agent
+ * on a named account runs with CODEX_HOME pointed at that account's own directory. So the meter
+ * has to be read from the home that turn actually ran under, not from the server's own.
+ *
+ * Reading the wrong one is not a blank meter, which would be honest - it is one account's usage
+ * displayed against another account's agent, which is the exact confusion the multi-account
+ * feature exists to remove.
+ */
+function writeRollout(home: string, sessionId: string, usedPercent: number): void {
+  const dir = join(home, "sessions", "2026", "09", "16");
+  mkdirSync(dir, { recursive: true });
+  // Rollout lines wrap the stream event in a {timestamp, type, payload} envelope, and the file
+  // name carries the session id - both matching what codex 0.149.0 writes.
+  const line = JSON.stringify({
+    timestamp: OBSERVED,
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      rate_limits: { primary: { used_percent: usedPercent, window_minutes: 300 }, secondary: null, plan_type: "plus" },
+    },
+  });
+  writeFileSync(join(dir, `rollout-2026-09-16T00-00-00-${sessionId}.jsonl`), `${line}\n`);
+}
+
+test("a codex account's rate limits are read from that account's own CODEX_HOME", () => {
+  const serverHome = mkdtempSync(join(tmpdir(), "codex-default-"));
+  const accountHome = mkdtempSync(join(tmpdir(), "codex-account-"));
+  const sessionId = "11111111-2222-3333-4444-555555555555";
+  // The same session id in both homes, with different usage - so a reader that ignored the
+  // override would still find a file and silently report the wrong number.
+  writeRollout(serverHome, sessionId, 11);
+  writeRollout(accountHome, sessionId, 88);
+
+  const previous = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = serverHome;
+  try {
+    const onAccount = readCodexRateLimitFromRollout(sessionId, OBSERVED, accountHome);
+    assert.equal(onAccount?.windows[0].usedPercent, 88, "the account's own rollout, not the server's");
+
+    // No account named: the default login, which is the server's own CODEX_HOME. This is the
+    // path every existing single-account user is on and it must not have changed.
+    const onDefault = readCodexRateLimitFromRollout(sessionId, OBSERVED, undefined);
+    assert.equal(onDefault?.windows[0].usedPercent, 11);
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previous;
+  }
+});
+
+test("an account home with no rollout for the session reports nothing rather than another account's", () => {
+  const accountHome = mkdtempSync(join(tmpdir(), "codex-empty-"));
+  const serverHome = mkdtempSync(join(tmpdir(), "codex-other-"));
+  writeRollout(serverHome, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", 99);
+  const previous = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = serverHome;
+  try {
+    assert.equal(readCodexRateLimitFromRollout("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", OBSERVED, accountHome), null);
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previous;
+  }
 });

@@ -5617,6 +5617,7 @@ body {
   font-style: italic;
   opacity: 0.75;
 }
+
 /* ---- accounts on a connection card -------------------------------------------------------
    Spacing carries the grouping here: rows inside the list sit one step apart (--space-1),
    the list sits from its label at --space-2, and the whole block sits from the rest of the

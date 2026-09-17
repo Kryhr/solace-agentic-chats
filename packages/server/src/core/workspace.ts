@@ -38,7 +38,8 @@ export function listProjects(): ProjectInfo[] {
         return false;
       }
     })
-    .map((name) => ({ name, path: join(WORKSPACE_ROOT, name) }));
+    .map((name) => ({ name, path: join(WORKSPACE_ROOT, name) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** Characters that are genuinely unsafe in a folder name on Windows, plus path separators.

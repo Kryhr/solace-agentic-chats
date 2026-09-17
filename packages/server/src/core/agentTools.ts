@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { SERVER_PORT } from "./serverPort";
 import {
   existsSync,
   mkdirSync,
@@ -438,7 +439,7 @@ function defaultRequestApproval(agentId: string, turnToken: string | undefined) 
     // No token means we cannot prove an in-flight turn, and the route would 403 anyway. Deny
     // rather than treating an unanswerable question as a yes.
     if (!turnToken) return false;
-    const port = Number(process.env.PORT ?? 4310);
+    const port = SERVER_PORT;
     try {
       const res = await fetch(`http://127.0.0.1:${port}/internal/approvals`, {
         method: "POST",

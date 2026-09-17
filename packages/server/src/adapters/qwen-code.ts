@@ -3,8 +3,10 @@ import * as readline from "node:readline";
 import { join } from "node:path";
 import type { TrustLevel, TurnUsage } from "@solace/shared";
 import { isEmptyUsage, num, put } from "../core/usage";
+import { SERVER_PORT } from "../core/serverPort";
 import { killCliTree, spawnCli } from "../core/spawnCli";
 import { mcpServersForAgent, type ResolvedMcpServer } from "../core/mcpServers";
+import { accountEnv } from "../core/providerAccounts";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 
 /** The group-chat MCP bridge, re-anchored to the *source* copy from the package root exactly as
@@ -201,8 +203,8 @@ export function qwenUsage(raw: unknown): TurnUsage | undefined {
 
 export const qwenCodeAdapter: ProviderAdapter = {
   id: "qwen-code",
-  async runTurn({ cwd, prompt, trustLevel, model, agentId, turnToken, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
-    const serverPort = Number(process.env.PORT ?? 4310);
+  async runTurn({ cwd, prompt, trustLevel, model, agentId, turnToken, sessionId, account, onEvent, signal }: RunTurnOptions): Promise<void> {
+    const serverPort = SERVER_PORT;
     // Qwen accepts BOTH --session-id (undocumented in --help: "Specify a session ID for this
     // run") and --resume <id>, so this is the same first-turn-picks-the-id pattern as
     // claude-code.ts. Deliberately NOT -c/--continue: like codex's `--last` that resumes "the
@@ -237,6 +239,11 @@ export const qwenCodeAdapter: ProviderAdapter = {
           // user chose that trust level in the UI, and leaving it on meant a stderr buffer that
           // a non-zero exit would then report to the group chat as if it were the failure.
           QWEN_CODE_SUPPRESS_YOLO_WARNING: "1",
+          // Empty unless this agent names an account, in which case it is QWEN_HOME pointing at
+          // that account's own global Qwen directory - the one Storage.getGlobalQwenDir()
+          // resolves, which is where oauth_creds.json lives. Spread LAST so a UI choice beats an
+          // ambient QWEN_HOME in the server's own environment.
+          ...accountEnv("qwen-code", account),
         },
       });
       // qwen only starts the turn once stdin reaches EOF, so this must always end(). An EPIPE

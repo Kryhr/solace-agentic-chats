@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import * as readline from "node:readline";
 import { join } from "node:path";
 import { killCliTree, spawnCli } from "../core/spawnCli";
+import { accountEnv } from "../core/providerAccounts";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 
 /**
@@ -231,7 +232,7 @@ interface KimiLine {
 
 export const kimiAdapter: ProviderAdapter = {
   id: "kimi",
-  async runTurn({ cwd, prompt, model, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
+  async runTurn({ cwd, prompt, model, sessionId, account, onEvent, signal }: RunTurnOptions): Promise<void> {
     const entry = findKimiEntry();
     if (!entry) {
       onEvent({
@@ -277,6 +278,13 @@ export const kimiAdapter: ProviderAdapter = {
           // mid-turn. A turn is the worst possible moment to swap the binary underneath
           // ourselves, and the user's own `kimi` remains free to update normally.
           KIMI_CODE_NO_AUTO_UPDATE: "1",
+          // Empty unless this agent names an account, in which case it is KIMI_CODE_HOME
+          // pointing at that account's own Kimi home - credentials included, which is what makes
+          // two Kimi subscriptions genuinely independent rather than one overwriting the other.
+          // Spread LAST so an account the user chose in the UI beats a KIMI_CODE_HOME that
+          // happens to already be in the server's environment; otherwise the choice would
+          // silently do nothing on exactly the machines where it matters most.
+          ...accountEnv("kimi", account),
         },
       });
       // Nothing is ever written to the child's stdin - Kimi does not read a prompt from it -

@@ -5,8 +5,10 @@ import * as readline from "node:readline";
 import { join } from "node:path";
 import type { TrustLevel, TurnUsage } from "@solace/shared";
 import { isEmptyUsage, num, put } from "../core/usage";
+import { SERVER_PORT } from "../core/serverPort";
 import { killCliTree, spawnCli } from "../core/spawnCli";
 import { mcpServersForAgent, type ResolvedMcpServer } from "../core/mcpServers";
+import { accountEnv } from "../core/providerAccounts";
 import type { ProviderAdapter, RunTurnOptions } from "./types";
 
 /** The group-chat MCP bridge, re-anchored to the *source* copy from the package root exactly as
@@ -213,8 +215,8 @@ export function geminiUsage(raw: unknown): TurnUsage | undefined {
 
 export const geminiCliAdapter: ProviderAdapter = {
   id: "gemini-cli",
-  async runTurn({ cwd, prompt, trustLevel, model, agentId, turnToken, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
-    const serverPort = Number(process.env.PORT ?? 4310);
+  async runTurn({ cwd, prompt, trustLevel, model, agentId, account, turnToken, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
+    const serverPort = SERVER_PORT;
     // Same session model as claude-code.ts: gemini records every session automatically and
     // documents `gemini --resume <full session UUID>` alongside the index/"latest" forms, so we
     // pick the UUID ourselves on the first turn (--session-id takes "a manually provided UUID")
@@ -249,6 +251,11 @@ export const geminiCliAdapter: ProviderAdapter = {
           SOLACE_AGENT_ID: agentId,
           SOLACE_SERVER_PORT: String(serverPort),
           ...(turnToken ? { SOLACE_TURN_TOKEN: turnToken } : {}),
+          // Empty unless this agent names an account, in which case it is GEMINI_CLI_HOME pointing
+          // at that account's own directory, plus GEMINI_FORCE_FILE_STORAGE so the credentials go
+          // there too instead of the machine-wide keychain. Spread LAST so an account the user
+          // picked in the UI beats the same variable inherited from the environment.
+          ...accountEnv("gemini-cli", account),
         },
       });
       // gemini only starts the turn once stdin reaches EOF, so this must always end(). An

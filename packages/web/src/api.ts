@@ -640,6 +640,9 @@ export interface AccountIdentity {
   email?: string;
   subscriptionType?: string;
   error?: string;
+  /** The CLI has no read-only way to report who is signed in (kimi, qwen-code). `loggedIn` above
+   * carries no information in that case and must never be rendered as "not signed in". */
+  identityUnknown?: boolean;
 }
 
 /** Every login available for a provider. `supported:false` means this provider has no verified
@@ -654,7 +657,7 @@ export async function fetchAccounts(provider: ProviderId): Promise<{ supported: 
 export async function createAccount(
   provider: ProviderId,
   label: string,
-): Promise<{ label: string; dir: string; signIn?: { powershell: string; bash: string } }> {
+): Promise<{ label: string; dir: string; signIn?: { powershell: string; bash: string; note?: string } }> {
   const res = await fetch(`/api/accounts/${provider}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

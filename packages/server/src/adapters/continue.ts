@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TrustLevel, TurnUsage } from "@solace/shared";
 import { killCliTree, spawnCli } from "../core/spawnCli";
+import { SERVER_PORT } from "../core/serverPort";
 import { num, put } from "../core/usage";
 import { mcpServersForAgent, type ResolvedMcpServer } from "../core/mcpServers";
 import type { AdapterEvent, ProviderAdapter, RunTurnOptions } from "./types";
@@ -447,7 +448,7 @@ export const continueAdapter: ProviderAdapter = {
   // orchestrator applies it this becomes a plain `id: "continue"` and the cast must be deleted.
   id: "continue",
   async runTurn({ cwd, prompt, trustLevel, agentId, turnToken, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
-    const serverPort = Number(process.env.PORT ?? 4310);
+    const serverPort = SERVER_PORT;
     const globalDir = continueGlobalDir();
     const sessionsDir = join(globalDir, "sessions");
 

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TrustLevel, TurnUsage } from "@solace/shared";
 import { isEmptyUsage, num, put } from "../core/usage";
+import { SERVER_PORT } from "../core/serverPort";
 import { killCliTree, spawnCli } from "../core/spawnCli";
 import { mcpServersForAgent, type ResolvedMcpServer } from "../core/mcpServers";
 import type { AdapterEvent, ProviderAdapter, RunTurnOptions } from "./types";
@@ -411,7 +412,7 @@ export function isNoProviderError(text: string): boolean {
 export const crushAdapter: ProviderAdapter = {
   id: "crush",
   async runTurn({ cwd, prompt, trustLevel, model, effort, agentId, turnToken, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
-    const serverPort = Number(process.env.PORT ?? 4310);
+    const serverPort = SERVER_PORT;
     const config = buildCrushConfig(trustLevel, mcpServersForAgent(agentId));
     const configDir = writeTurnConfigDir(config, defaultGlobalConfigDir());
     const env: NodeJS.ProcessEnv = {

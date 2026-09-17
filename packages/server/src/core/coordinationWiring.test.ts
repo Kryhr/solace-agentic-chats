@@ -50,7 +50,17 @@ test("a claim from a real turn is recorded and announced to the user", () => {
   assert.deepEqual(h.board.forChat(h.chat.id).claims[0].paths, ["src/checker.py"]);
   // Every coordination act is visible to the user rather than happening invisibly.
   const posted = h.bus.getHistoryFor({ chatId: h.chat.id });
-  assert.match(posted.at(-1)!.text, /@claude is now working in: src\/checker\.py \(core logic\)/);
+  const text = posted.at(-1)!.text;
+  assert.match(text, /@claude is now working in: src\/checker\.py/);
+  assert.match(text, /core logic/);
+  // The WORKING DIRECTORY has to be in there. A bare path is ambiguous between two agents in
+  // different folders, and that ambiguity nearly caused real damage: one agent claimed
+  // `package.json`, `astro.config.mjs` and `src/` for a site in its own directory, another read
+  // it as the Solace monorepo root - this repo's actual files - and raised an urgent alarm that
+  // took three messages and four minutes to resolve. The alarm was correct given what the board
+  // showed; the board was the thing not showing enough.
+  assert.match(text, /under .+/, "the claim must say which directory it is in");
+  assert.ok(text.includes(h.manager.listAgents()[0].cwd), "and it must be that agent's real cwd");
 });
 
 test("a claim without an in-flight turn is refused", () => {

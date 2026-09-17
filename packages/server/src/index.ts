@@ -22,6 +22,7 @@ import {
   connectableProvider,
   isConnectableProvider,
 } from "./core/connectedProviders";
+import { SERVER_PORT } from "./core/serverPort";
 import {
   accountDir,
   accountEnv,
@@ -80,7 +81,9 @@ import {
 } from "./core/skills";
 import type { Block, ProviderId } from "@solace/shared";
 
-const PORT = Number(process.env.PORT ?? 4310);
+// From core/serverPort.ts, which is the ONLY place the port is decided - the listener, the MCP
+// bridge and the group-context block all read that one constant. See that file for why.
+const PORT = SERVER_PORT;
 
 /**
  * Loopback by DEFAULT. This server holds a credential vault (SSH keys, passwords, API tokens),

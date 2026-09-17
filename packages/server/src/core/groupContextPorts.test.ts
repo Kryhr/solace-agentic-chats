@@ -25,11 +25,15 @@ test("the group context names the app's own ports and forbids reporting them", (
   assert.match(SRC, /re-check YOUR port - do not/);
 });
 
-test("the API port is read from the env var the server actually binds, not hardcoded", () => {
-  // A literal 4310 in the sentence would become a lie the moment PORT is set, and it would be a
-  // confident, specific lie - the worst kind to hand an agent that is debugging a URL.
-  assert.match(SRC, /const solacePorts = String\(Number\(process\.env\.PORT \?\? 4310\)\)/);
+test("the API port comes from the one constant the listener also binds", () => {
+  // Stronger than it used to be, and for a real reason. This used to assert the block computed
+  // `process.env.PORT ?? 4310` for itself. That WAS the bug: when a second instance moved its
+  // listener, this copy went on naming the old port, so agents were told the wrong port was the
+  // app's own - by the very sentence that exists to stop them confusing the app with their own
+  // work. A port decided in two places is a port that will disagree, so there is one constant.
+  assert.match(SRC, /const solacePorts = String\(SERVER_PORT\);/);
   assert.match(SRC, /\$\{solacePorts\} is its API/);
+  assert.ok(!/process\.env\.PORT\s*\?\?\s*\d{4}/.test(SRC), "must not recompute the port here");
 });
 
 test("the UI port is stated as the default rather than asserted as certain", () => {

@@ -3,6 +3,7 @@ import * as readline from "node:readline";
 import { join } from "node:path";
 import type { TrustLevel, TurnUsage } from "@solace/shared";
 import { killCliTree, spawnCli } from "../core/spawnCli";
+import { SERVER_PORT } from "../core/serverPort";
 import { accountEnv } from "../core/providerAccounts";
 import { isEmptyUsage, num, put } from "../core/usage";
 import { parseClaudeRateLimitEvent } from "../core/rateLimits";
@@ -166,7 +167,7 @@ export function claudeCodeUsage(event: {
 export const claudeCodeAdapter: ProviderAdapter = {
   id: "claude-code",
   async runTurn({ cwd, prompt, trustLevel, model, effort, agentId, account, turnToken, sessionId, onEvent, signal }: RunTurnOptions): Promise<void> {
-    const serverPort = Number(process.env.PORT ?? 4310);
+    const serverPort = SERVER_PORT;
     // The prompt goes in on STDIN, never as an argv element. On Windows `claude` resolves to
     // an npm .cmd shim, so cross-spawn has to route it through `cmd.exe /d /s /c` - and a
     // cmd.exe command line is TERMINATED by a literal newline, with everything after it

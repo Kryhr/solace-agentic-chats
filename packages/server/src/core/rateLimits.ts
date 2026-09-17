@@ -197,9 +197,20 @@ export function sanitizePersistedRateLimits(value: unknown): ProviderRateLimit[]
  * Returns null for anything it cannot confidently read; the meter then shows nothing, which
  * is the honest outcome rather than a fabricated zero.
  */
-export function readCodexRateLimitFromRollout(sessionId: string, now: string): ProviderRateLimit | null {
+export function readCodexRateLimitFromRollout(
+  sessionId: string,
+  now: string,
+  /**
+   * The CODEX_HOME this turn actually ran under. An agent on a named account runs with
+   * CODEX_HOME pointed at that account's own directory, so its rollout - and therefore the only
+   * rate_limits block that describes the subscription it just spent - is written there, not in
+   * the server's own CODEX_HOME. Reading the wrong home showed the meter for a different
+   * account's limits, which is worse than showing none. Undefined means the default login.
+   */
+  codexHome?: string,
+): ProviderRateLimit | null {
   if (!sessionId) return null;
-  const home = process.env.CODEX_HOME ?? join(homedir(), ".codex");
+  const home = codexHome ?? process.env.CODEX_HOME ?? join(homedir(), ".codex");
   const file = findRolloutFile(join(home, "sessions"), sessionId);
   if (!file) return null;
   try {

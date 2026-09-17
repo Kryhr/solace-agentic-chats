@@ -23,6 +23,7 @@ import { CoordinationBoard } from "./coordination";
 import { buildSkillsPointer } from "./skills";
 import type { Block } from "@solace/shared";
 import { SettingsStore } from "./settingsStore";
+import { SERVER_PORT } from "./serverPort";
 import type { ApprovalRegistry } from "./approvalRegistry";
 import { extractLiveClaims, findUnreachableClaims, unreachableClaimNotice } from "./claimCheck";
 import { getCredentialSecrets, listSecretValues } from "./credentials";
@@ -194,6 +195,16 @@ interface AgentRuntime {
    * nothing killed and no context lost. Only a question nobody picks up escalates to actually
    * aborting the turn - see INTERRUPT_GRACE_MS. */
   pendingInbound: QueuedTurn[];
+  /**
+   * Did the turn currently in flight actually DO anything - run a tool, touch a file?
+   *
+   * Used to reset the agent-to-agent hop counter. The cap exists to stop two agents volleying
+   * pleasantries forever, but it was counting message hops alone, so four agents doing real
+   * collaborative work tripped it constantly: ten "Stopped an agent-to-agent reply chain after 6
+   * hops" notices in one session, each one a message that never reached its recipient. A chain
+   * that is producing work is not a loop, so work resets the count and only pure talk advances it.
+   */
+  currentTurnDidWork?: boolean;
   /** The armed escalation for the oldest unpicked-up question in pendingInbound. Held here so
    * Stop/Remove can disarm it: auto-resuming work after the user explicitly pressed Stop would
    * be the worst possible behaviour of this whole feature. */
@@ -212,13 +223,39 @@ interface AgentRuntime {
  * for, and those take longer than fifteen minutes.
  */
 /**
- * The key an agent's provider session is stored under: its working directory, normalised the
- * same way chatStore.ts normalises paths (resolved, case-folded, no trailing separator).
- * Windows hands us the same folder as both "C:\x\y" and "c:/x/y", and two spellings of one
- * directory must not mean two cold conversations.
+ * The key an agent's provider session is stored under: the CONVERSATION plus its working
+ * directory.
+ *
+ * The directory half is normalised the same way chatStore.ts normalises paths (resolved,
+ * case-folded, no trailing separator), because Windows hands us one folder as both "C:\x\y" and
+ * "c:/x/y" and two spellings must not mean two cold conversations.
+ *
+ * The conversation half fixes a real complaint. This used to be the directory ALONE, so every
+ * chat working in the same folder shared one provider session. Opening a NEW chat and giving the
+ * agents the same brief got back "this looks like a replay of your original kickoff" and "it's
+ * already live" - the agent answering out of the previous chat's memory, in a chat the operator
+ * had created precisely to start over. A new chat is a new conversation and now starts one.
+ * Within a chat, memory still carries across turns, which is the half that was working.
+ *
+ * The cost is honest and expected: each conversation pays one cold start. That is the price of
+ * a new chat actually being new.
  */
-export function sessionKey(cwd: string): string {
-  return resolve(cwd).toLowerCase().replace(/[\/]+$/, "");
+/**
+ * The inverse of sessionKey(), used only when writing state to disk.
+ *
+ * The separator is a NUL because it is the one byte that cannot appear in a Windows or POSIX
+ * path, so a directory can never be mistaken for the conversation half or vice versa.
+ */
+export function splitSessionKey(key: string): [cwd: string, conversationId: string] {
+  const at = key.indexOf("\u0000");
+  return at === -1 ? [key, "hub"] : [key.slice(0, at), key.slice(at + 1)];
+}
+
+export function sessionKey(cwd: string, conversationId: string | undefined): string {
+  const dir = resolve(cwd).toLowerCase().replace(/[\/]+$/, "");
+  // A hub turn has no chat, and the agent's own 1:1 is a conversation in its own right - so it
+  // gets its own stable key rather than sharing with whichever chat runs in the same folder.
+  return `${dir}\u0000${conversationId ?? "hub"}`;
 }
 
 /**
@@ -447,15 +484,42 @@ function stripPromptWrapper(prompt: string): string {
   // front one at a time.
   //
   // The old version stripped `[group context: ...]` and then expected the message marker to be
-  // next. buildGroupPrompt also inserts once-per-session blocks between them - the skills
-  // pointer today, and whatever is added later - and the moment one of those sits in between,
-  // the second strip matches nothing and an agent's sidebar "current task" renders as raw prompt
-  // scaffolding instead of the message. Observed live. Cutting at the marker is immune to
-  // whatever else grows in front of it, which is the only version of this that stays correct.
+  // next. buildGroupPrompt now also inserts once-per-session blocks between them - the
+  // project-context pointer, the skills pointer - so the second strip matched nothing and an
+  // agent's sidebar "current task" read `[project context: this project keeps a living context
+  // file at ...`. Cutting at the marker is immune to whatever else is added in front of it,
+  // which is the only version of this that stays correct as the wrapper grows.
   const marker = prompt.match(/\[group chat message from [^\]]+\]:\s*/);
   if (marker?.index !== undefined) return prompt.slice(marker.index + marker[0].length);
   // A direct hub message has no wrapper at all; a group turn always carries the marker above.
   return prompt.replace(/^\[group context:.*?\]\n\n/s, "");
+}
+
+/**
+ * A message being HANDED TO an agent to act on, with the prompt wrapper removed and nothing cut.
+ *
+ * Deliberately not summarizePrompt(). That one caps at 200 characters because it feeds the
+ * sidebar's task line, and it was being reused to deliver mid-turn messages - so an agent's
+ * numbered audit arrived as finding #1 and an ellipsis. Twice. Observed live:
+ *   "I only received a truncated preview of your audit findings"
+ *   "the group-chat notification truncates long messages, so I've now twice only gotten #1"
+ * The sender eventually wrote its findings to a file on disk to get them across, burning two
+ * turns to work around a 200-character cap.
+ *
+ * The cap here exists only because Codex and Copilot take their prompt on argv, where Windows
+ * stops at ~32,764 characters for the WHOLE command line - and this is one part of a prompt that
+ * already carries the group context. 12,000 leaves room for the rest. When it does bite, it says
+ * so in words: a silent ellipsis is what made the original failure so hard to see from outside.
+ */
+const MAX_DELIVERED_CHARS = 12_000;
+
+export function deliverableText(prompt: string): string {
+  const stripped = stripPromptWrapper(prompt).replace(/\r\n/g, "\n").trim();
+  if (stripped.length <= MAX_DELIVERED_CHARS) return stripped;
+  const notice =
+    `[solace: this message was ${stripped.length} characters and was cut here at ` +
+    `${MAX_DELIVERED_CHARS}. Ask the sender for the rest, or ask them to write it to a file.]`;
+  return `${stripped.slice(0, MAX_DELIVERED_CHARS)}\n\n${notice}`;
 }
 
 export function summarizePrompt(prompt: string): string {
@@ -801,7 +865,12 @@ export class AgentManager {
       // restored rather than the last one written winning. A provider change still discards
       // them all: the id belongs to that CLI's own store.
       if (runtime.config.provider !== saved.provider) continue;
-      runtime.sessions.set(sessionKey(saved.cwd), saved.sessionId);
+      // A record written before sessions were per-conversation has no conversationId, and there
+      // is no way to know which chat it belonged to. Guessing would restore one chat's memory
+      // into another - the exact bug this change fixes - so it is dropped, and that
+      // conversation pays one cold start.
+      if (!saved.conversationId) continue;
+      runtime.sessions.set(sessionKey(saved.cwd, saved.conversationId), saved.sessionId);
     }
     for (const saved of initialQueues) {
       const runtime = this.agents.get(saved.agentId);
@@ -869,11 +938,16 @@ export class AgentManager {
   getPersistableSessions(): PersistedAgentSession[] {
     const out: PersistedAgentSession[] = [];
     for (const runtime of this.agents.values()) {
-      for (const [cwd, sessionId] of runtime.sessions) {
+      for (const [key, sessionId] of runtime.sessions) {
+        // The map key is the composite sessionKey() builds. Split back into its parts so the
+        // stored record stays readable and so a future change to the key's shape cannot silently
+        // write a mangled path into state as if it were a directory.
+        const [cwd, conversationId] = splitSessionKey(key);
         out.push({
           agentId: runtime.config.id,
           provider: runtime.config.provider,
           cwd,
+          conversationId,
           sessionId,
           updatedAt: new Date().toISOString(),
         });
@@ -972,7 +1046,35 @@ export class AgentManager {
    * "Stop" action in the UI, distinct from "Remove agent" which also deletes the config. */
   stopAgent(id: string): boolean {
     const runtime = this.agents.get(id);
-    if (!runtime?.activeController) return false;
+    if (!runtime) return false;
+
+    // Stop also calls off a rate-limit retry, and works when nothing is in flight.
+    //
+    // It used to require an active turn, so an agent that had hit its provider's usage limit
+    // could not be stopped at all: Stop answered "no turn in flight" while two re-runs of the
+    // same work sat armed for whenever the quota reset. Observed live - Codex hit its limit,
+    // two retries were scheduled for 1:09 AM, and there was no way to cancel them short of
+    // deleting the agent or restarting the server.
+    const hadScheduledRetry = Boolean(runtime.scheduledRetryTimeout || runtime.scheduledRetryAt);
+    if (runtime.scheduledRetryTimeout) clearTimeout(runtime.scheduledRetryTimeout);
+    runtime.scheduledRetryTimeout = undefined;
+    runtime.scheduledRetryAt = undefined;
+    runtime.lastFailedTurn = undefined;
+
+    if (!runtime.activeController) {
+      // Nothing was running, but a retry may have been called off - and the queue is dropped
+      // either way, since "stop" on an agent with queued work and no live turn can only sensibly
+      // mean "do not start any of it".
+      const dropped = runtime.queue.length;
+      runtime.queue = [];
+      this.abandonInterruptState(runtime, true);
+      if (hadScheduledRetry || dropped > 0) {
+        this.emitStatus(id);
+        this.onChange?.();
+        return true;
+      }
+      return false;
+    }
     runtime.abortKind = "stop";
     // Stop has to mean stop. Without this, an agent the user deliberately stopped would sail on
     // through a queued resume turn (and keep a primed interrupt timer pointed at a turn that no
@@ -1163,6 +1265,54 @@ export class AgentManager {
    * cascade into everyone replying to everyone forever. Only an explicit @mention can trigger
    * another agent from an agent-authored message.
    */
+
+  /**
+   * Which agents the OPERATOR has scoped this chat's current work to.
+   *
+   * The incident this exists for: the operator wrote "@claude @Claude2 work together to think of
+   * a landing page idea". Routing was correct - only those two were given turns. But @claude's
+   * reply carried mentions ['Claude2','codex','copilot'], so codex and copilot were pulled into
+   * a task the operator had deliberately scoped to two agents, and each spent a real turn. From
+   * the operator's side that is indistinguishable from the app ignoring their addressing.
+   *
+   * The agents were not misbehaving: the group context tells them an @mention is the delivery
+   * mechanism and hands them a roster of everyone in the chat. So the rule has to be enforced
+   * here rather than asked for in the prompt.
+   *
+   * Derived from history rather than held in memory, so it survives a restart: the most recent
+   * HUMAN message in the chat defines the scope. No mentions on it - an unaddressed broadcast -
+   * means no scope, and everyone is fair game, which is what the operator asked for by not
+   * naming anyone.
+   */
+  private operatorScope(chatId: string): Set<string> | undefined {
+    const history = this.bus.getHistoryFor({ chatId });
+    for (let i = history.length - 1; i >= 0; i--) {
+      const m = history[i];
+      if (this.agents.has(m.authorId) || m.authorId === "system") continue;
+      // The most recent human message. Its mentions are the scope; none means unscoped.
+      return m.mentions.length > 0 ? new Set(m.mentions) : undefined;
+    }
+    return undefined;
+  }
+
+
+  /**
+   * Handles that have already spoken since the operator's most recent message.
+   *
+   * Used to decide who still owes a first response to the current request, which is how the
+   * opener's proposal reaches the agents waiting on it even if the opener forgets to name them.
+   */
+  private spokenSinceOperator(chatId: string): Set<string> {
+    const history = this.bus.getHistoryFor({ chatId });
+    const spoken = new Set<string>();
+    for (let i = history.length - 1; i >= 0; i--) {
+      const m = history[i];
+      if (!this.agents.has(m.authorId) && m.authorId !== "system") break; // the operator's message
+      if (this.agents.has(m.authorId)) spoken.add(m.authorHandle);
+    }
+    return spoken;
+  }
+
   private routeChatMessage(
     chatId: string,
     authorId: string,
@@ -1215,7 +1365,12 @@ export class AgentManager {
       });
     }
     text = scrubbedIncoming.text;
-    const displayText = text.replace(END_THREAD_MARKER, "").trim() || text.trim();
+    // Falling back to the raw text when stripping leaves nothing put the marker ITSELF in the
+    // chat: four messages reading exactly "[no-reply]", which is routing metadata rendered as
+    // conversation. An agent that has nothing to add and says only "[no-reply]" has said
+    // nothing, so nothing is posted - the marker still ends the thread below.
+    const displayText = text.replace(END_THREAD_MARKER, "").trim();
+    const isMarkerOnly = displayText.length === 0 && END_THREAD_MARKER.test(text);
 
     const message: ChatMessage = {
       id: nanoid(),
@@ -1232,7 +1387,9 @@ export class AgentManager {
       // uses the same renderer as the hub instead of relying on absence-means-answer.
       agentKind: authorId === "user" ? undefined : "answer",
     };
-    this.bus.postMessage(message);
+    // A marker-only message still ends the thread (endsThread below reads the raw text) - it
+    // just is not shown, because there is nothing in it to show.
+    if (!isMarkerOnly) this.bus.postMessage(message);
 
     if (unreachable.length > 0) {
       const chatName = this.chats.chatLabel(chatId);
@@ -1290,12 +1447,47 @@ export class AgentManager {
     }
 
     const isAgentAuthor = this.agents.has(authorId);
+
+    // An agent may not summon an agent the operator left out of this task. It may still reply to
+    // anyone already in it - including whoever addressed it - so genuine collaboration between
+    // the scoped agents is untouched; what is refused is widening the roster, which costs the
+    // operator real turns on agents they deliberately did not ask for.
+    let reachable: string[] = targets;
+    if (isAgentAuthor) {
+      const scope = this.operatorScope(chatId);
+      if (scope) {
+        // Whoever addressed this agent is always answerable, even if the operator's last message
+        // did not name them - otherwise an agent could be spoken to and forbidden from replying.
+        const allowed = new Set(scope);
+        if (replyTarget) allowed.add(replyTarget);
+        allowed.add(authorHandle);
+        const refused = targets.filter((t) => !allowed.has(t));
+        reachable = targets.filter((t) => allowed.has(t));
+        if (refused.length > 0) {
+          this.bus.postMessage({
+            id: nanoid(),
+            channel,
+            authorId: "system",
+            authorHandle: "system",
+            mentions: [],
+            systemKind: "verification",
+            text:
+              `@${authorHandle} tried to bring ${refused.map((r) => `@${r}`).join(", ")} into this, but ` +
+              `you scoped this work to ${[...scope].map((r) => `@${r}`).join(", ")}. ` +
+              `No turn was spent. @mention them yourself if you do want them on it.`,
+            createdAt: new Date().toISOString(),
+          });
+        }
+      }
+    }
+    if (reachable.length === 0 && targets.length > 0) return; // every target was out of scope
+
     for (const runtime of this.agents.values()) {
       if (runtime.config.id === authorId) continue; // an agent doesn't reply to itself
       if (!memberIds.has(runtime.config.id)) continue; // works in a different project's directory
       // targets empty here means an unaddressed *human* message (the broadcast case above) -
       // everyone in this chat gets a turn and decides relevance for themselves.
-      if (targets.length > 0 && !targets.includes(runtime.config.handle)) continue;
+      if (reachable.length > 0 && !reachable.includes(runtime.config.handle)) continue;
       this.enqueueTurn(runtime.config.id, this.buildGroupPrompt(chatId, authorHandle, displayText, runtime.config.id), channel, {
         mentionChainDepth: opts.mentionChainDepth + 1,
         addressedBy: isAgentAuthor ? { id: authorId, handle: authorHandle } : undefined,
@@ -1350,7 +1542,16 @@ export class AgentManager {
     if (claimed.length > 0) {
       this.sayInChat(
         ctx.chatId,
-        `@${ctx.runtime.config.handle} is now working in: ${claimed.join(", ")}${note ? ` (${note})` : ""}`,
+        // The agent's WORKING DIRECTORY is stated, because a bare path is ambiguous and the
+        // ambiguity nearly caused real damage. One agent claimed `package.json`,
+        // `astro.config.mjs`, `tsconfig.json` and `src/` for a site it was building in its own
+        // folder; another read that as the Solace monorepo root - those are exactly this repo's
+        // real files - and raised an urgent alarm. It took three messages and four minutes to
+        // establish they were in different directories entirely. It was also the RIGHT alarm to
+        // raise given what the board showed, which is the point: the board was not showing
+        // enough to tell.
+        `@${ctx.runtime.config.handle} is now working in: ${claimed.join(", ")} ` +
+          `(under ${ctx.runtime.config.cwd})${note ? ` - ${note}` : ""}`,
       );
     }
     this.onChange?.();
@@ -1391,7 +1592,10 @@ export class AgentManager {
     const block = this.board.blockOn(ctx.chatId, ctx.runtime.config, kind, value, why);
     this.sayInChat(
       ctx.chatId,
-      `@${ctx.runtime.config.handle} is waiting on ${kind === "agent" ? "@" : ""}${block.value}` +
+      // The agent may or may not have typed the "@" itself - "@@Claude2" appeared in a real run
+      // because it did and this added another. Normalised rather than assumed either way.
+      `@${ctx.runtime.config.handle} is waiting on ` +
+        `${kind === "agent" ? `@${block.value.replace(/^@+/, "")}` : block.value}` +
         `${why ? ` - ${why}` : ""}. It will be woken automatically when that lands.`,
     );
     // Something may ALREADY satisfy this - a file that exists, a contract posted moments ago -
@@ -1533,7 +1737,9 @@ export class AgentManager {
 
     this.routeChatMessage(chatId, agentId, runtime.config.handle, routed, {
       broadcastIfUnmentioned: false,
-      mentionChainDepth: turn.mentionChainDepth + 1,
+      // A turn that ran tools is work, not a volley, so it starts the count over. Pure talk
+      // still advances it, which is what the cap is actually for.
+      mentionChainDepth: runtime.currentTurnDidWork ? 0 : turn.mentionChainDepth + 1,
       model: runtime.lastResolvedModel ?? runtime.config.model,
       replyTo: turn.addressedBy,
       declaredKind: kind,
@@ -1561,7 +1767,7 @@ export class AgentManager {
     // same rule as the chat context block.
     // A hub turn has no chat and therefore no project, so it runs in the agent's own folder;
     // ask that folder's conversation whether the house style has been sent yet.
-    const needsStyle = !runtime.sessions.has(sessionKey(runtime.config.cwd));
+    const needsStyle = !runtime.sessions.has(sessionKey(runtime.config.cwd, undefined));
     const prompt = needsStyle ? `[how to answer here]
 ${HOUSE_STYLE}
 
@@ -1600,7 +1806,7 @@ ${text}` : text;
     // project, and states outright that the tool's own name has nothing to do with it.
     // Read at build-time of the block, from the same env var index.ts binds with, so this can
     // never tell an agent a port the server is not actually on.
-    const solacePorts = String(Number(process.env.PORT ?? 4310));
+    const solacePorts = String(SERVER_PORT);
     const identity =
       `[group context: you are "${self.handle}", one of several AI coding agents in a shared group chat. ` +
       `You are working on the project in your working directory (${this.chats.workingDirectoryFor(self, chatId)}) - ` +
@@ -1662,6 +1868,20 @@ ${text}` : text;
     // The house style rides along with the context block, so it follows the same
     // send-once-per-session rule and costs nothing on every later turn.
     const coordination = this.coordinationBlock(chatId, self);
+    // When the operator addresses SEVERAL agents in one message, they are asking for
+    // collaboration, and the default behaviour is the opposite of it.
+    //
+    // Observed: "@claude @Claude2 work together to think of a landing page idea ... think back
+    // and forth" produced no exchange at all. Both agents went straight to building, and the
+    // first thing either said in the chat was "I've got the landing page live and verified" -
+    // by which point there was nothing left to plan together. They then spent turns fighting
+    // over the same port and reconciling two separate builds of one page.
+    //
+    // Why it happens: the group chat only ever shows an agent's FINAL answer for a turn, so an
+    // agent that does its thinking and its building inside one turn is silent until it finishes.
+    // Saying "post as you go" in the house style was not enough, because a turn that builds the
+    // whole thing is a perfectly good turn by every other measure.
+    const collaboration = this.collaborationBlock(chatId, self);
     // Only the skill NAMES ride in the prompt; the descriptions are written to a file the agent
     // can read. Codex and Copilot pass the prompt in argv, and the full catalogue blew Windows'
     // ~32KB command-line limit outright - spawn ENAMETOOLONG, every Codex and Copilot turn dead.
@@ -1670,15 +1890,53 @@ ${text}` : text;
     // this agent's provider conversation for the folder it is about to work in. After that the
     // agent has already been told, and the CLI's own session carries it forward.
     const skills = this.sessionIsNew(runtime, chatId) ? `\n\n${buildSkillsPointer()}` : "";
-    return `${identity}${roster}${coordination}\n\n${HOUSE_STYLE}]${skills}\n\n[group chat message from ${fromHandle}]: ${text}`;
+    return `${identity}${roster}${coordination}\n\n${HOUSE_STYLE}${collaboration}]${skills}\n\n[group chat message from ${fromHandle}]: ${text}`;
   }
+
+
+  /**
+   * The instruction an agent gets when the operator addressed this work to more than one agent.
+   *
+   * Deliberately narrow: it is emitted ONLY when the operator's own message named two or more
+   * agents. A single-agent request is untouched, because there is nobody to plan with and the
+   * fastest useful thing is to do the work.
+   */
+  private collaborationBlock(chatId: string, self: AgentConfig): string {
+    const scope = this.operatorScope(chatId);
+    if (!scope || scope.size < 2) return "";
+    const others = [...scope].filter((h) => h.toLowerCase() !== self.handle.toLowerCase());
+    if (others.length === 0) return "";
+    const named = others.map((h) => `@${h}`).join(", ");
+    return (
+      `
+
+The operator addressed this to you AND ${named}, and every one of you is running ` +
+      `RIGHT NOW, at the same time, on the same request. None of you can see the others' replies ` +
+      `yet - when your turn began, they had not been written. Two agents that discover this only ` +
+      `at the end produce two versions of one thing that fight over the same files and ports, ` +
+      `which has actually happened here.
+` +
+      `So, before you commit to a direction or touch anything shared: use post_to_group to say ` +
+      `what you are taking or proposing, @mentioning ${named}. That tool's reply carries whatever ` +
+      `the others have said since your turn started - READ IT, and adapt to it rather than ` +
+      `restating your own plan as though theirs did not exist.
+` +
+      `Then judge from what the operator actually asked for. If they asked you to think, plan or ` +
+      `agree something TOGETHER, post your proposal and end your turn there so the others can ` +
+      `answer - do not create files, start a server, or call anything live on that turn. If they ` +
+      `instead gave each of you a distinct piece of work, do not wait: announce which piece you ` +
+      `are taking, check nobody has claimed it, and get on with it.`
+    );
+  }
+
+
 
   /** Is this the first turn of this agent's conversation for the folder this chat works in?
    * Used to send once-per-session context - the skills catalogue - without re-sending it on
    * every single message. */
   private sessionIsNew(runtime: AgentRuntime | undefined, chatId: string): boolean {
     if (!runtime) return false;
-    return !runtime.sessions.has(sessionKey(this.chats.workingDirectoryFor(runtime.config, chatId)));
+    return !runtime.sessions.has(sessionKey(this.chats.workingDirectoryFor(runtime.config, chatId), chatId));
   }
 
   /**
@@ -1825,7 +2083,10 @@ ${text}` : text;
 
     const lines = delivered.map((t) => {
       const who = promptAuthorHandle(t);
-      const text = summarizePrompt(t.prompt).replace(/\s+/g, " ").trim();
+      // The whole message, not a 200-char preview - see deliverableText. Newlines are kept:
+      // these are numbered findings and file paths, and flattening them was half of why the
+      // truncated delivery read as a "preview" rather than as content.
+      const text = deliverableText(t.prompt);
       if (t.kind === "question") {
         return `- ${who} asked: "${text}" - answer it now with post_to_group, then continue what you were doing.`;
       }
@@ -2247,7 +2508,9 @@ ${text}` : text;
     // the spawn, the session lookup and the prompt's own statement of where it is working, so
     // those three can never disagree about which codebase the agent is in.
     const turnCwd = this.chats.workingDirectoryFor(runtime.config, chatTurnId);
-    const turnSessionKey = sessionKey(turnCwd);
+    const turnSessionKey = sessionKey(turnCwd, chatTurnId);
+    // Fresh per turn: a previous turn's work must not credit this one.
+    runtime.currentTurnDidWork = false;
     const turnSessionId = runtime.sessions.get(turnSessionKey);
     const isGroupTurn = chatTurnId !== undefined;
     const ownChannel: ChatChannel = { agentId: runtime.config.id };
@@ -2395,6 +2658,8 @@ ${text}` : text;
               post(replyChannel, event.text, { agentKind: "reasoning" });
             }
           } else if (event.type === "tool-use") {
+            // Proof this turn is doing something rather than talking - see currentTurnDidWork.
+            runtime.currentTurnDidWork = true;
             // The label comes from the provider's real tool name and real arguments; when the
             // adapter had no structured input to give (an in-stream notice), the already-built
             // description is used as the name so the row still says something true rather than
@@ -2585,9 +2850,27 @@ ${text}` : text;
     // turns for one question. Routing the final text is skipped when it's effectively something
     // this turn already said (whitespace/case-normalised); it is not re-posted either, because
     // the group already has it.
-    const alreadyPostedMidTurn =
+    const midTurnPosts = turn.midTurnPosts ?? [];
+    const exactRepeat =
       lastText.trim().length > 0 &&
-      (turn.midTurnPosts ?? []).some((p) => normalizeForDuplicateCheck(p) === normalizeForDuplicateCheck(lastText));
+      midTurnPosts.some((p) => normalizeForDuplicateCheck(p) === normalizeForDuplicateCheck(lastText));
+
+    // Exact equality was too weak. An agent that posts mid-turn and then REWORDS the same thing
+    // as its final answer sails past it, which is why one session produced pairs like "@claude
+    // @copilot @Claude2 I'm taking the Codex lane..." followed by "I posted my Codex lane update
+    // to the group and did not touch shared files." - the same news, twice, in the same channel.
+    // Roughly ten of the run's messages were that.
+    //
+    // So: if this turn already said something to the group, its final answer only goes there too
+    // when it carries a NEW @mention - i.e. it is addressed to somebody who has not had it. The
+    // agent's own hub still gets the full final answer either way, so nothing is lost; the group
+    // just stops hearing it twice.
+    const saidSomethingAlready = midTurnPosts.length > 0;
+    const newMentions = parseMentions(
+      lastText,
+      this.chats.agentsForChat(chatTurnId ?? "", this.listAgents()).map((a) => a.handle),
+    ).filter((h) => !midTurnPosts.some((p) => p.includes(`@${h}`)));
+    const alreadyPostedMidTurn = exactRepeat || (saidSomethingAlready && newMentions.length === 0);
 
     if (chatTurnId && lastText.trim() && !hadError && !alreadyPostedMidTurn && !wasInterrupted) {
       // Route the agent's own final answer through the same mention-parsing/triggering logic
@@ -2597,7 +2880,8 @@ ${text}` : text;
       if (this.agents.has(runtime.config.id)) {
         this.routeChatMessage(chatTurnId, runtime.config.id, runtime.config.handle, lastText.trim(), {
           broadcastIfUnmentioned: false,
-          mentionChainDepth: mentionChainDepth + 1,
+          // Same rule as the mid-turn path: work resets the hop count, talk advances it.
+          mentionChainDepth: runtime.currentTurnDidWork ? 0 : mentionChainDepth + 1,
           model: runtime.lastResolvedModel ?? runtime.config.model,
           replyTo: addressedBy,
         });
