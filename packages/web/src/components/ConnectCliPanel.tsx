@@ -154,6 +154,16 @@ function AccountsSection({ provider }: { provider: ProviderId }) {
               {a.subscriptionType && <span className="account-plan">{a.subscriptionType}</span>}
             </span>
             <span className="account-label">{a.label ?? "default"}</span>
+            {/* The failure this row exists to catch. Adding an account gives you a directory, a
+                credentials file and an agent card whether or not the sign-in reached a different
+                account - and two directories on one login share a quota and race each other's
+                token refresh until one is signed out. Said on the row itself, because that is
+                where the belief "these are two accounts" is formed. */}
+            {a.duplicateOf && (
+              <span className="account-dupe" title={`Same login as "${a.duplicateOf}" - one account, one quota`}>
+                same account as {a.duplicateOf}
+              </span>
+            )}
           </li>
         ))}
       </ul>
@@ -162,7 +172,9 @@ function AccountsSection({ provider }: { provider: ProviderId }) {
         <div className="account-pending">
           <div className="cli-card-note">
             Run this in your terminal to sign <strong>{pending.label}</strong> in. It sets the config
-            directory first, so it cannot overwrite the account you are already using.
+            directory first, so it cannot overwrite the credentials you are already using — but it
+            cannot pick the account for you. Sign in as a <strong>different</strong> account than
+            your other ones, or you will end up with the same login twice.
           </div>
           <CommandLine command={pending.powershell} />
           <div className="cli-card-source">PowerShell. On bash: {pending.bash}</div>

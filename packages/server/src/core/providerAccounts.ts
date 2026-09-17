@@ -172,7 +172,14 @@ function providerConfigDir(provider: ProviderId, dir: string): string {
 
 /** The command that signs an account in, per provider. Absent where the CLI has no such command. */
 const SIGN_IN_COMMAND: Partial<Record<ProviderId, { command?: string; note?: string }>> = {
-  "claude-code": { command: "claude auth login" },
+  // The env var isolates the CONFIG DIRECTORY, not the browser. A browser already signed in to
+  // claude.ai authorizes the account it already has, without showing a chooser - so the command
+  // below succeeds, writes a real credentials file, and can leave you with the same account
+  // twice. `--email` pre-fills the login page, which is the one lever the CLI gives you here.
+  "claude-code": {
+    command: "claude auth login",
+    note: "sign in as a different account than your other ones - a browser already signed in to claude.ai will reuse that account without asking. Use a private window, or add --email you@example.com",
+  },
   "codex-cli": { command: "codex login" },
   kimi: { command: "kimi login" },
   opencode: { command: "opencode auth login" },
@@ -259,6 +266,23 @@ export interface AccountIdentity {
   email?: string;
   /** e.g. "max", "team", "pro". The CLI's own word for it. */
   subscriptionType?: string;
+  /**
+   * The org the login belongs to, when the CLI reports one. Carried because an email alone does
+   * not identify an account: the same address can own a personal login and sit in a team, and
+   * two accounts are only the same account when both match.
+   */
+  orgId?: string;
+  /**
+   * Set when another account in the same list resolves to this same login.
+   *
+   * This exists because a duplicate is silent otherwise, and expensive: adding an account gives
+   * you a new directory, a new credentials file and a new agent card whether or not the sign-in
+   * actually reached a different account, and a browser already signed in to claude.ai will
+   * re-authorize the account it already has without ever showing a chooser. Two directories then
+   * hold one login, share one quota, and race each other's refresh - which ends with one of them
+   * holding a rotated-out token and silently signed out.
+   */
+  duplicateOf?: string;
   /** True when this CLI has no read-only way to report its sign-in state at all. */
   identityUnknown?: boolean;
   /** Present only when something went wrong, carrying the CLI's own words. */
@@ -298,6 +322,7 @@ function parseStatus(provider: ProviderId, out: string): AccountIdentity {
       return {
         loggedIn: json.loggedIn === true,
         email: typeof json.email === "string" ? json.email : undefined,
+        orgId: typeof json.orgId === "string" ? json.orgId : undefined,
         subscriptionType: typeof json.subscriptionType === "string" ? json.subscriptionType : undefined,
       };
     } catch {
@@ -408,5 +433,32 @@ export async function listAccounts(provider: ProviderId): Promise<AccountIdentit
     statusFor(provider, undefined),
     ...labels.map((l) => statusFor(provider, accountDir(provider, l))),
   ]);
-  return [def, ...rest.map((r, i) => ({ ...r, label: labels[i] }))];
+  return markDuplicates([def, ...rest.map((r, i) => ({ ...r, label: labels[i] }))]);
 }
+
+/**
+ * Flag every account that resolves to a login another account in the list already has.
+ *
+ * Only signed-in accounts that actually report an identity can be compared: a CLI that says
+ * nothing about who it is (`identityUnknown`) must not be called a duplicate of another silent
+ * one, because "we cannot tell" is not "they are the same". The first account carrying a given
+ * identity keeps it; each later one points at that first account's label.
+ */
+export function markDuplicates(accounts: AccountIdentity[]): AccountIdentity[] {
+  const firstSeen = new Map<string, string>();
+  return accounts.map((a) => {
+    if (!a.loggedIn || a.identityUnknown || !a.email) return a;
+    // Both halves must match. The same address can hold a personal login and a seat in an org,
+    // and those genuinely are two accounts with two quotas.
+    const key = `${a.email.toLowerCase()}\u0000${a.orgId ?? ""}`;
+    const owner = firstSeen.get(key);
+    if (owner === undefined) {
+      firstSeen.set(key, a.label ?? DEFAULT_ACCOUNT_LABEL);
+      return a;
+    }
+    return { ...a, duplicateOf: owner };
+  });
+}
+
+/** What the CLI's own unlabelled login is called wherever a label is required. */
+export const DEFAULT_ACCOUNT_LABEL = "default login";

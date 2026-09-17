@@ -6133,6 +6133,26 @@ body {
   letter-spacing: 0.03em;
 }
 
+/* A warning, not a status: this row looks like a second account and is not one. It borrows the
+   caution colour the rest of the app uses for a claim that turned out not to hold, rather than
+   --danger, because nothing is broken yet - the setup just does not do what it looks like it
+   does. Sits after the label so the row still reads "who - which directory - and the catch". */
+.account-dupe {
+  /* Its own row across the whole card, not a fourth cell: as a cell it landed in the grid's
+     first column and sized it, which pushed the email out of line with the row above and made
+     the one row carrying a warning the one row that looked misaligned. Starts at the dot's edge
+     so the warning reads as belonging to the row it sits under. */
+  grid-column: 1 / -1;
+  justify-self: start;
+  margin-top: var(--space-1);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--warn-wash, var(--surface-2));
+  color: var(--warn, var(--text-muted));
+  font-size: var(--text-2xs);
+  white-space: nowrap;
+}
+
 .account-label {
   flex-shrink: 0;
   color: var(--text-faint);

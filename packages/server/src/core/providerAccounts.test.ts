@@ -15,6 +15,8 @@ import {
   isValidAccountLabel,
   signInCommandFor,
   supportsMultipleAccounts,
+  markDuplicates,
+  DEFAULT_ACCOUNT_LABEL,
 } from "./providerAccounts";
 import type { ProviderId } from "@solace/shared";
 
@@ -157,4 +159,55 @@ test("accounts live under Solace's own root, namespaced per provider then per la
   assert.ok(dir.startsWith(process.env.SOLACE_ACCOUNTS_ROOT!), "under the accounts root");
   assert.ok(dir.endsWith(`claude-code${sep}work`), "namespaced per provider, then per label");
   assert.ok(!dir.includes(`.claude${sep}`), "never inside ~/.claude");
+});
+
+/*
+ * Adding an account is silent about the one thing that can go wrong with it.
+ *
+ * `CLAUDE_CONFIG_DIR` isolates the directory, not the browser: a browser already signed in to
+ * claude.ai re-authorizes that account with no chooser, so the sign-in succeeds, writes a real
+ * credentials file, and hands back the account you already had. Nothing downstream notices -
+ * you get a new agent card, and two directories quietly sharing one login, one quota, and one
+ * rotating refresh token that each will invalidate for the other.
+ *
+ * This happened on the operator's machine: two "accounts" with the same accountUuid, and the
+ * first one eventually found with its tokens blanked.
+ */
+test("two accounts that are the same login are flagged, and the first one keeps it", () => {
+  const marked = markDuplicates([
+    { loggedIn: true, email: "a@example.com", orgId: "org-1", subscriptionType: "max" },
+    { label: "second", loggedIn: true, email: "a@example.com", orgId: "org-1", subscriptionType: "max" },
+  ]);
+  assert.equal(marked[0].duplicateOf, undefined, "the first account is the one that holds the login");
+  assert.equal(marked[1].duplicateOf, DEFAULT_ACCOUNT_LABEL);
+});
+
+test("the same address in a different org is a different account, and is not flagged", () => {
+  // A personal login and a seat in a team share an address and genuinely are two accounts with
+  // two quotas. Flagging that would be telling the user to undo a setup that is correct.
+  const marked = markDuplicates([
+    { loggedIn: true, email: "a@example.com", orgId: "org-personal" },
+    { label: "work", loggedIn: true, email: "a@example.com", orgId: "org-team" },
+  ]);
+  assert.ok(marked.every((m) => m.duplicateOf === undefined));
+});
+
+test("a CLI that cannot say who it is is never called a duplicate", () => {
+  // "we cannot tell" is not "they are the same", and guessing here would put a warning on a
+  // setup that is fine.
+  const marked = markDuplicates([
+    { loggedIn: true, identityUnknown: true },
+    { label: "second", loggedIn: true, identityUnknown: true },
+    { label: "third", loggedIn: false },
+  ]);
+  assert.ok(marked.every((m) => m.duplicateOf === undefined));
+});
+
+test("a labelled duplicate points at the label that holds the login, not at the default", () => {
+  const marked = markDuplicates([
+    { loggedIn: false },
+    { label: "work", loggedIn: true, email: "a@example.com", orgId: "org-1" },
+    { label: "work-2", loggedIn: true, email: "a@example.com", orgId: "org-1" },
+  ]);
+  assert.equal(marked[2].duplicateOf, "work");
 });

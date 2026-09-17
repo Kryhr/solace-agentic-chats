@@ -663,6 +663,13 @@ export interface AccountIdentity {
   loggedIn: boolean;
   email?: string;
   subscriptionType?: string;
+  /** The org the login belongs to. An email alone does not identify an account: the same address
+   * can hold a personal login and a seat in a team, and those are two accounts with two quotas. */
+  orgId?: string;
+  /** The label of the account this one turned out to be a second copy of. Set by the server when
+   * two logins resolve to the same account - which the sign-in flow can produce silently, since
+   * the config directory is isolated but the browser's session is not. */
+  duplicateOf?: string;
   error?: string;
   /** The CLI has no read-only way to report who is signed in (kimi, qwen-code). `loggedIn` above
    * carries no information in that case and must never be rendered as "not signed in". */
